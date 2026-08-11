@@ -38,7 +38,19 @@ import {
   withTimeout,
   DOCTOR_STATES,
   SECRET_ENV_VARS,
+  resolveMcpCommand,
+  mcpCredentialGaps,
+  assessMcpServer,
+  cachingSupport,
+  redactConfigEcho,
 } from '../lib/doctor.mjs';
+/**
+ * ⚠️ IMPORTED SO THE COUPLING IS PINNED, NOT RESTATED. doctor.mjs has to model
+ * how `mcp.mjs` starts a server (it must never actually start one), and a model
+ * of somebody else's behaviour is a copy that goes stale silently. Two tests
+ * below assert the real functions still behave the way doctor assumes.
+ */
+import { readMcpConfig, connectServer, MCP_CONFIG_FILES } from '../lib/mcp.mjs';
 
 /** The repo under test — a real workspace, so the tool offer is real. */
 const REPO = new URL('..', import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1').replace(/\/$/, '');
@@ -783,4 +795,288 @@ test('the report names the workspace and the platform without leaking the enviro
   assert.equal(report.root, REPO);
   assert.equal(typeof report.platform, 'string');
   assert.match(formatDoctor(report), /node/i);
+});
+
+// ────────────────────────────────────────────────────────────────────────────
+// MCP — DECLARED, AND WHAT CAN BE KNOWN WITHOUT SPAWNING ANYTHING
+//
+// ⚠️ THE BOUND IS THE DESIGN. An MCP server is a program, most are `npx`, and on
+// this network an npx server HANGS for minutes on a cold cache. A diagnostic
+// that spawns eight of them to answer "is it configured" is a diagnostic nobody
+// runs twice. So every test below asserts a verdict reached WITHOUT a spawn.
+// ────────────────────────────────────────────────────────────────────────────
+
+test('resolveMcpCommand: an absolute path that exists resolves; one that does not is missing', () => {
+  assert.equal(resolveMcpCommand(process.execPath).kind, 'path');
+  assert.equal(resolveMcpCommand(join(tmpdir(), 'no-such-server-zzz', 'server.js')).kind, 'missing-path');
+});
+
+test('⚠️ resolveMcpCommand walks PATH with PATHEXT, extensions BEFORE the bare name', () => {
+  // The exact trap mcp.mjs documents: nodejs ships both `npx` (a bash script
+  // Windows cannot spawn) and `npx.cmd`. Resolving the bare name first finds a
+  // file that exists and still fails — the hardest kind to diagnose.
+  const exists = (p) => /\.CMD$/i.test(p) || /server$/.test(p);
+  const r = resolveMcpCommand('server', {
+    platform: 'win32',
+    env: { PATH: 'C:\\tools', PATHEXT: '.EXE;.CMD' },
+    existsImpl: exists,
+    statImpl: () => ({ isFile: () => true }),
+  });
+  assert.equal(r.kind, 'path');
+  assert.match(r.path, /\.CMD$/i, `the bare name won the race: ${r.path}`);
+});
+
+test('resolveMcpCommand: a command on no PATH at all is missing, and an EMPTY PATH is not knowable', () => {
+  assert.equal(resolveMcpCommand('definitely-not-installed-zzz', {
+    platform: 'linux', env: { PATH: '/usr/bin:/bin' }, existsImpl: () => false,
+  }).kind, 'missing');
+  assert.equal(resolveMcpCommand('anything', { platform: 'linux', env: {} }).kind, 'unknown');
+});
+
+test('⭐ resolveMcpCommand routes npm/npx through node own entry point, exactly as mcp.mjs spawns them', () => {
+  const r = resolveMcpCommand('npx', { execPath: process.execPath, existsImpl: (p) => /npx-cli\.js$/.test(p) });
+  assert.equal(r.kind, 'node-entry');
+  assert.match(r.path, /npx-cli\.js$/);
+  assert.equal(resolveMcpCommand('npx', { existsImpl: () => false }).kind, 'missing-npm');
+});
+
+test('⚠️⚠️ COUPLING: readMcpConfig does NOT expand ${VAR} — if that ever changes, doctor lies', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'doctor-mcp-cfg-'));
+  try {
+    writeFileSync(join(dir, '.mcp.json'), JSON.stringify({
+      mcpServers: { gh: { command: 'node', args: ['s.js'], env: { GITHUB_TOKEN: '${GITHUB_TOKEN}' } } },
+    }));
+    const cfg = readMcpConfig(dir);
+    assert.equal(cfg.ok, true);
+    assert.equal(cfg.servers[0].env.GITHUB_TOKEN, '${GITHUB_TOKEN}',
+      'mcp.mjs now expands placeholders — update assessMcpServer, it reports this as broken');
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('⚠️⚠️ COUPLING: a config env entry OVERRIDES the real variable — proven without spawning', async () => {
+  let captured = null;
+  // A spawnImpl that records and returns no stdio: connectServer gives up
+  // immediately, so nothing is ever executed, and we still see the env it built.
+  const res = await connectServer(
+    { name: 'gh', command: 'node', args: [], env: { GITHUB_TOKEN: '${GITHUB_TOKEN}' } },
+    { root: process.cwd(), spawnImpl: (_f, _a, opts) => { captured = opts; return {}; } },
+  );
+  assert.equal(res.ok, false);
+  assert.equal(captured.env.GITHUB_TOKEN, '${GITHUB_TOKEN}',
+    'the literal placeholder must land in the child env, overriding any real token — this is what doctor reports');
+});
+
+test('mcpCredentialGaps: a ${VAR} placeholder and an empty value are gaps; a real value is not', () => {
+  const gaps = mcpCredentialGaps({ A: '${A_TOKEN}', B: '', C: 'a-real-literal-value' }, { A_TOKEN: 'set-in-the-shell' });
+  assert.deepEqual(gaps.map((g) => g.key).sort(), ['A', 'B']);
+  assert.equal(gaps.find((g) => g.key === 'A').kind, 'placeholder');
+  assert.equal(gaps.find((g) => g.key === 'B').kind, 'empty');
+});
+
+test('⭐ assessMcpServer: a healthy server is live-but-UNVERIFIED and says so in words', () => {
+  const c = assessMcpServer(
+    { name: 'files', command: 'node', args: [], env: {} },
+    { file: '.mcp.json', env: {}, resolution: { kind: 'path', path: '/usr/bin/node' } },
+  );
+  assert.equal(c.state, 'live');
+  assert.equal(c.verified, false, 'nothing was spawned, so nothing was proved');
+  assert.match(c.detail, /not checked/i);
+  assert.match(c.detail, /\.mcp\.json/);
+});
+
+test('⭐⭐ assessMcpServer: a command that cannot be found is BROKEN and names the command', () => {
+  const c = assessMcpServer(
+    { name: 'linear', command: 'linear-mcp', args: [], env: {} },
+    { file: '.acuvo/mcp.json', env: {}, resolution: { kind: 'missing', path: null } },
+  );
+  assert.equal(c.state, 'broken');
+  assert.match(c.detail, /linear-mcp/);
+  assert.match(c.fix, /\.acuvo\/mcp\.json/);
+});
+
+test('⭐⭐ assessMcpServer: the placeholder that is never expanded is named — variable, file and remedy', () => {
+  const c = assessMcpServer(
+    { name: 'gh', command: 'node', args: [], env: { GITHUB_TOKEN: '${GITHUB_TOKEN}' } },
+    { file: '.mcp.json', env: { GITHUB_TOKEN: 'a-real-token-value' }, resolution: { kind: 'path', path: '/usr/bin/node' } },
+  );
+  // ⚠️ The variable IS set in the shell — and it is still broken, because the
+  // config value overwrites it with the literal text. A "gap" check that only
+  // looked for an absent variable would give this an all-clear.
+  assert.equal(c.state, 'broken');
+  assert.match(c.detail, /GITHUB_TOKEN/);
+  assert.ok(!c.detail.includes('a-real-token-value'), 'a doctor never prints a credential');
+  assert.ok(c.fix.length > 3);
+});
+
+test('the MCP section is dark and names BOTH config files when there is no config', async () => {
+  const report = await runDoctor({ ...BASE, env: {}, fetchImpl: null });
+  const c = find(report, 'mcp.config');
+  assert.equal(c.state, 'dark');
+  for (const f of MCP_CONFIG_FILES) assert.ok(`${c.detail} ${c.fix}`.includes(f), `${f} is not named`);
+});
+
+test('⭐ end to end: a real config is read, each server judged, and NOTHING is spawned', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'doctor-mcp-'));
+  try {
+    mkdirSync(join(dir, '.acuvo'), { recursive: true });
+    writeFileSync(join(dir, '.acuvo', 'mcp.json'), JSON.stringify({
+      mcpServers: {
+        good: { command: process.execPath, args: ['server.js'] },
+        gone: { command: 'definitely-not-installed-zzz', args: [] },
+        leaky: { command: process.execPath, args: [], env: { API_TOKEN: 'ghp_TESTTOKEN0123456789abcdefXYZ' } },
+      },
+    }));
+    const t0 = Date.now();
+    // ⚠️ A REAL PATH, DELIBERATELY: 'is this command installed' is a question
+    // about PATH, and an empty one makes the answer 'not checked' rather than
+    // 'missing' — which is the honest answer, and not the one under test here.
+    const report = await runDoctor({ ...BASE, root: dir, env: { PATH: process.env.PATH }, fetchImpl: null, gitStatusImpl: async () => ({ ok: false, error: 'not a repo' }) });
+    assert.ok(Date.now() - t0 < 5_000, 'the MCP section must not spawn or wait on anything');
+
+    assert.equal(find(report, 'mcp.good').state, 'live');
+    assert.equal(find(report, 'mcp.good').verified, false);
+    assert.equal(find(report, 'mcp.gone').state, 'broken');
+    assert.match(find(report, 'mcp.gone').detail, /definitely-not-installed-zzz/);
+
+    /**
+     * ⚠️ A LITERAL CREDENTIAL IN mcp.json IS STILL A CREDENTIAL, and it is not
+     * an environment variable, so `SECRET_ENV_VARS` never knew about it.
+     *
+     * ⚠️⚠️ AND BE HONEST ABOUT WHAT THIS PROVES: today it passes for TWO
+     * reasons — the MCP section never prints a config value in the first place,
+     * and the final scrub covers it as a second line. Mutating either one alone
+     * leaves this green, so read it as a boundary that must hold, not as proof
+     * that the scrub is wired. The parse-echo test below is the falsifiable one.
+     */
+    const text = JSON.stringify(report) + '\n' + formatDoctor(report);
+    assert.ok(!text.includes('ghp_TESTTOKEN0123456789abcdefXYZ'), 'a token written into mcp.json leaked into the report');
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('⚠️ a malformed mcp.json is broken and points at the file, not at a server', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'doctor-mcp-bad-'));
+  try {
+    writeFileSync(join(dir, '.mcp.json'), '{ this is not json');
+    const report = await runDoctor({ ...BASE, root: dir, env: {}, fetchImpl: null, gitStatusImpl: async () => ({ ok: false, error: 'not a repo' }) });
+    const c = find(report, 'mcp.config');
+    assert.equal(c.state, 'broken');
+    assert.match(`${c.detail} ${c.fix}`, /\.mcp\.json/);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('⚠️⚠️ a broken mcp.json must not print the file back — V8 quotes ~20 chars into the error', async () => {
+  // Measured on node 22.17:
+  //   Unexpected token 'g', ..."env":{"T":ghp_REALTO"... is not valid JSON
+  // An mcp.json is one of the few files people type a raw API token into, so
+  // that echo is a credential going to scrollback, CI logs and bug reports.
+  const dir = mkdtempSync(join(tmpdir(), 'doctor-mcp-echo-'));
+  const TOKEN = 'ghp_REALTOKEN0123456789abcdefXYZ';
+  try {
+    writeFileSync(join(dir, '.mcp.json'), `{"mcpServers":{"gh":{"command":"node","env":{"T":${TOKEN}}}}}`);
+    const report = await runDoctor({ ...BASE, root: dir, env: {}, fetchImpl: null, gitStatusImpl: async () => ({ ok: false, error: 'not a repo' }) });
+    const text = JSON.stringify(report) + '\n' + formatDoctor(report);
+    for (let n = 8; n <= TOKEN.length; n += 4) {
+      assert.ok(!text.includes(TOKEN.slice(0, n)), `${n} characters of the token reached the report — a prefix is still a credential`);
+    }
+    // …and the line must still be useful: it says what is wrong and which file.
+    const c = find(report, 'mcp.config');
+    assert.equal(c.state, 'broken');
+    assert.match(`${c.detail} ${c.fix}`, /\.mcp\.json/);
+    assert.match(c.detail, /json/i, 'dropping the echo must not drop the diagnosis');
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('redactConfigEcho keeps the diagnosis and drops only the quoted file content', () => {
+  assert.equal(
+    redactConfigEcho(`Unexpected token 'g', ..."env":{"T":ghp_REALTO"... is not valid JSON`),
+    `Unexpected token 'g', … is not valid JSON`,
+  );
+  assert.equal(
+    redactConfigEcho(`Unexpected token 'g', "ghp_REALTO"... is not valid JSON`),
+    `Unexpected token 'g', … is not valid JSON`,
+  );
+  // ⚠️ A MESSAGE THAT ECHOES NOTHING MUST SURVIVE INTACT — a redactor that eats
+  // the position would be a check that damages correct work.
+  const positional = 'Expected double-quoted property name in JSON at position 72 (line 1 column 73)';
+  assert.equal(redactConfigEcho(positional), positional);
+  assert.equal(redactConfigEcho('.mcp.json has no "mcpServers" object'), '.mcp.json has no "mcpServers" object');
+  assert.equal(redactConfigEcho(undefined), '');
+});
+
+// ────────────────────────────────────────────────────────────────────────────
+// PROMPT CACHE — WHETHER THE CONFIGURED MODEL CACHES AT ALL
+// ────────────────────────────────────────────────────────────────────────────
+
+test('cachingSupport knows DeepSeek caches automatically and Anthropic does not without cache_control', () => {
+  assert.equal(cachingSupport('deepseek/deepseek-v4-flash-0731').kind, 'automatic');
+  assert.equal(cachingSupport('deepseek/deepseek-chat:free').kind, 'automatic');
+  assert.equal(cachingSupport('openai/gpt-4o-mini').kind, 'automatic');
+  assert.equal(cachingSupport('anthropic/claude-sonnet-4.5').kind, 'explicit');
+  // ⚠️ UNKNOWN IS THE DEFAULT AND IT IS A FEATURE. Inventing a caching claim for
+  // a model nobody measured is how a cost estimate becomes fiction.
+  assert.equal(cachingSupport('some-lab/brand-new-model').kind, 'unknown');
+  assert.equal(cachingSupport(undefined).kind, 'unknown');
+});
+
+test('⭐ the default model reports automatic caching — and admits it is documented, not measured', async () => {
+  const report = await runDoctor({ ...BASE, env: {}, fetchImpl: null, maxRounds: 8 });
+  const c = find(report, 'cache.model');
+  assert.equal(c.state, 'live');
+  assert.equal(c.verified, false, 'no cache-hit telemetry exists yet — a green tick here would be a claim we cannot back');
+  assert.match(c.detail, /deepseek/i);
+  assert.match(c.detail, /automatic/i);
+});
+
+test('⭐⭐ a model that only caches with cache_control is DARK and names OPENROUTER_CODEGEN_MODEL', async () => {
+  const report = await runDoctor({
+    ...BASE, env: { OPENROUTER_CODEGEN_MODEL: 'anthropic/claude-sonnet-4.5' }, fetchImpl: null, maxRounds: 8,
+  });
+  const c = find(report, 'cache.model');
+  assert.equal(c.state, 'dark');
+  assert.match(c.detail, /cache_control/);
+  assert.match(c.fix, /OPENROUTER_CODEGEN_MODEL/);
+});
+
+test('an unmeasured model says so plainly rather than guessing either way', async () => {
+  const report = await runDoctor({
+    ...BASE, env: { OPENROUTER_CODEGEN_MODEL: 'some-lab/brand-new-model' }, fetchImpl: null, maxRounds: 8,
+  });
+  const c = find(report, 'cache.model');
+  assert.equal(c.state, 'dark');
+  assert.match(c.detail, /not known/i);
+  assert.ok(c.fix);
+});
+
+test('⭐ a single-shot run says no cache hit is possible, whatever the model does', async () => {
+  const one = await runDoctor({ ...BASE, env: {}, fetchImpl: null, maxRounds: 1 });
+  const c = find(one, 'cache.rounds');
+  assert.equal(c.state, 'dark');
+  assert.match(c.detail, /single-shot|sent once/i);
+  assert.ok(c.fix);
+  // …and it is silent on a normal multi-round run rather than nagging.
+  const many = await runDoctor({ ...BASE, env: {}, fetchImpl: null, maxRounds: 8 });
+  assert.equal(find(many, 'cache.rounds'), undefined);
+});
+
+test('the two new sections obey every rule the old ones do', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'doctor-newsec-'));
+  try {
+    mkdirSync(join(dir, '.acuvo'), { recursive: true });
+    writeFileSync(join(dir, '.acuvo', 'mcp.json'), JSON.stringify({
+      mcpServers: { gone: { command: 'definitely-not-installed-zzz' }, gh: { command: process.execPath, env: { T: '' } } },
+    }));
+    const report = await runDoctor({
+      ...BASE, root: dir, env: { OPENROUTER_CODEGEN_MODEL: 'anthropic/claude-sonnet-4.5', PATH: process.env.PATH },
+      fetchImpl: null, maxRounds: 1, gitStatusImpl: async () => ({ ok: false, error: 'not a repo' }),
+    });
+    const mine = flat(report).filter((c) => c.id.startsWith('mcp.') || c.id.startsWith('cache.'));
+    assert.ok(mine.length >= 4, `expected the new sections to have content, got ${mine.length}`);
+    for (const c of mine) {
+      assert.ok(DOCTOR_STATES.includes(c.state), `${c.id}: ${c.state}`);
+      if (c.state !== 'live') assert.ok(c.fix && c.fix.length > 3, `${c.id} (${c.state}) has no usable fix`);
+    }
+    const out = formatDoctor(report);
+    assert.ok(!/\bunavailable\b/i.test(out), 'the banned word is back');
+    for (const c of mine.filter((x) => x.state !== 'live')) assert.ok(out.includes(c.fix), `the rendering dropped the fix for ${c.id}`);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 });

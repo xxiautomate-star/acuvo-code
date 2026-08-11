@@ -1,7 +1,7 @@
 {
   "name": "acuvo-code",
   "version": "0.2.0",
-  "description": "Acuvo Code \u2014 the terminal client for the Acuvo capability registry. Zero dependencies, by design.",
+  "description": "Acuvo Code — the terminal client for the Acuvo capability registry. Zero dependencies, by design.",
   "type": "module",
   "bin": {
     "acuvo": "./bin/acuvo.mjs",
@@ -21,9 +21,12 @@
   "files": [
     "bin/",
     "lib/",
+    "test/",
     "README.md",
     "LICENSE",
-    "CHANGELOG.md"
+    "CHANGELOG.md",
+    "ENTERPRISE.md",
+    "ROADMAP.md"
   ],
   "repository": {
     "type": "git",

@@ -255,7 +255,26 @@ test('⭐ rmDirWithRetry outlasts a lock that clears a moment later', { skip: WI
     const r = await rmDirWithRetry(root, { delayMs: 50, attempts: 200 });
     clearTimeout(release);
 
-    assert.equal(gone, true, 'the lock holder was still alive, so the removal cannot have been blocked by it');
+    /**
+     * ⚠️⚠️ THE `gone` ASSERTION WAS REMOVED — IT WAS FLAKY BY CONSTRUCTION.
+     *
+     * It read `assert.equal(gone, true, …)`, where `gone` is set by the child's
+     * `exit` EVENT. But the directory becomes removable the instant the OS drops
+     * the child's cwd handle, and Node delivers the exit callback to the parent
+     * some microseconds later. So `rmDirWithRetry` can legitimately win the race
+     * and return while `gone` is still false.
+     *
+     * Measured: 2 passes then a fail, over three consecutive runs, on unchanged
+     * code. ⭐ It was asserting NODE'S EVENT SCHEDULING, not our behaviour — and
+     * a test that fails one run in three trains everyone to ignore red, which
+     * costs more than the assertion was ever worth.
+     *
+     * ⭐ WHAT ACTUALLY PROVES THE POINT IS `attempts > 1`. If the lock had not
+     * been in force, the very first attempt would have succeeded. Retrying at
+     * all IS the evidence that something blocked it, and that assertion is
+     * deterministic. The `finally` below still awaits the child, so nothing is
+     * left running either way.
+     */
     assert.equal(r.removed, true, `still locked after ${r.attempts} attempts: ${r.error && r.error.code}`);
     assert.ok(r.attempts > 1, `it removed on attempt ${r.attempts}, so the lock was not in force`);
     assert.equal(existsSync(root), false);

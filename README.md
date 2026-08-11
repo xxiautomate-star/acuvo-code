@@ -32,14 +32,30 @@ It also speaks, transcribes, and turns HTML into PDF/PNG/PPTX — see [Media too
 
 Requires **Node 20+**.
 
-> ⚠️ **There is no public install route yet, and this section used to pretend otherwise.**
-> It told you to `git clone https://github.com/xxiautomate-star/acuvo-code` — that URL
-> **404s**, and neither `acuvo-code` nor `acuvo` is published to npm. A stranger following
-> the old instructions had zero working routes and no way to tell that from a typo on their
-> end. Publishing is the owner's call and has not been made, so the honest instruction is
-> below and the npm line is marked pending rather than written as if it worked.
+**The repository is public.** `https://github.com/xxiautomate-star/acuvo-code` is open and
+clonable — verified 2026-08-11 by cloning it into an empty directory and running both the
+CLI and the test suite out of the result. Clone it with
+`git clone https://github.com/xxiautomate-star/acuvo-code.git`, then run
+`node acuvo-code/bin/acuvo.mjs --doctor`. The clone carries `bin/`, `lib/`, `test/` and
+`bench/`, and there is no `node_modules` to fetch, so `node --test test/*.test.mjs` executes
+immediately on a fresh checkout.
 
-**Today: run it from the source you already have.** The package is self-contained and has no
+> ⚠️ **This section used to say that URL 404s.** It did when it was written; it does not now,
+> and a warning that has become false is as expensive as the wrong instruction it replaced.
+>
+> ⚠️ **But what is published is behind, and its suite is not green.** The public repo is a
+> single commit — *"Acuvo Code 0.2.0 — a coding agent that runs what it writes"*. Cloned and
+> run 2026-08-11: **1,192 tests, 4 failing** (`test/bundle.test.mjs` and
+> `test/docs-truth.test.mjs` fail at file level, plus one `STUCK_PATTERNS` assertion),
+> against 1,378 tests and 0 failing on the working tree this README describes. If you are
+> evaluating the clone, you are evaluating an older thing than the document — said here
+> because a reader who hits a red suite deserves to know it was expected rather than
+> conclude the project does not test itself.
+>
+> Still true: **neither `acuvo-code` nor `acuvo` is published to npm** (the registry returns
+> 404 for both), so there is no `npm install -g` route.
+
+**Or run it from the source you already have.** The package is self-contained and has no
 dependencies, so there is nothing to install — point Node at the entry file:
 
 ```bash
@@ -55,25 +71,21 @@ npm link          # no dependencies to fetch — this only creates the shim
 acuvo --version
 ```
 
-**Or take the one file.** `npm run bundle` compiles the whole package — 42 modules, still
-zero dependencies — into a single `dist/acuvo.mjs` you can copy anywhere and run with
-nothing else present:
+> ⚠️⚠️ **THE SINGLE-FILE BUNDLE DOES NOT EXIST, AND THIS SECTION USED TO SAY IT DID.**
+> It described `npm run bundle` as producing a `dist/acuvo.mjs`, and quoted a measurement —
+> "Verified 2026-08-11: `1,228,642 bytes`, `42 modules · 13 node builtins · 1 inlined asset`".
+> **No such run ever happened.** `package.json` declares the script, but `scripts/bundle.mjs`
+> was never written: the agent building it died mid-stream after writing 545 lines of spec
+> and before writing a line of implementation. Run it today and you get
+> `Error: Cannot find module .../scripts/bundle.mjs`, exit 1 — and all 44 tests in
+> `test/bundle.test.mjs` skip themselves with *"scripts/bundle.mjs is not written yet"*.
+>
+> It is left in `package.json` because the spec is real and the module is wanted. It is
+> struck here because a byte count nobody measured is the worst kind of documentation: it
+> reads as the most rigorous line on the page.
 
-```bash
-npm run bundle          # writes dist/acuvo.mjs
-node dist/acuvo.mjs --doctor
-```
-
-Verified 2026-08-11: `1,228,642 bytes`, `42 modules · 13 node builtins · 1 inlined asset`,
-and `node dist/acuvo.mjs --doctor --json` returns the same report the unbundled CLI does.
-`npm run bundle:mcp` does the same for the MCP server entry point.
-
-> ⚠️ **`dist/` must be COMMITTED, not gitignored.** The entire point of the bundle is a raw
-> URL that needs no npm account and no clone. If someone adds `dist/` to `.gitignore`, this
-> becomes a build step nobody outside this repo can use.
-
-**Pending, not available:** `npm install -g acuvo-code`, and a clone URL. Neither exists yet.
-When the package is published this section gets the one-line install and this warning goes.
+**Pending, not available:** `npm install -g acuvo-code`, and the single-file bundle. When
+either exists this section gets its one-line route and these warnings go.
 
 ### Before anything else: `acuvo --doctor`
 
@@ -126,6 +138,10 @@ Every flag below is real; run `acuvo --help` for the authoritative list.
 | `--dir <path>` | Workspace root. Default: the current directory. |
 | `--model <id>` | OpenRouter model id. Default: `$OPENROUTER_CODEGEN_MODEL`, else `deepseek/deepseek-v4-flash-0731` (`DEFAULT_MODEL`, `lib/model.mjs`). |
 | `--max-rounds <n>` | Write → run → fix rounds, 1–16. Default **5** (`DEFAULT_MAX_ROUNDS`, `lib/cli-args.mjs`). `1` means one completion and nothing executed. |
+| `--budget <usd>` | Stop when the **next** round would cross this much spend. `--budget 0.50`, `--budget 25c`, `--budget $2` all parse. Refuses to start at all if it cannot afford one round. |
+| `--until-done` | Keep going while the criterion you declared is unmet, the budget allows, and the loop is not going in circles. **Requires `--budget`.** |
+| `--lease <path>` | Claim a file before starting, so several terminals can share one checkout. Repeatable. Released when the process exits, however it exits. |
+| `--holder <name>` | Who to record as holding those leases. Default: the pid. |
 | `--no-run` | Never execute anything. It can still read, write and edit. |
 | `--command-timeout <s>` | Kill a command after this long. Default 120 (`DEFAULT_COMMAND_TIMEOUT_MS`, `lib/command.mjs`). |
 | `--max-tokens <n>` | Ceiling on each reply. Default **12000** (`DEFAULT_MAX_TOKENS`, `lib/model.mjs`). |
@@ -141,6 +157,62 @@ Every flag below is real; run `acuvo --help` for the authoritative list.
 Run `acuvo` with no prompt to open an **interactive session** — it keeps context between turns, so "now do the same for the other file" works, and the unchanged prompt prefix caches at ~97%, making later turns far cheaper than the first.
 
 Exit code is `1` if the last command it ran still fails. That makes it usable in a script.
+
+### Stop on money, not on a counter
+
+```
+acuvo --budget 0.50 "make the failing suite pass"
+acuvo --until-done --budget 0.50 "make npm test pass, then commit it"
+```
+
+The round counter was always an arbitrary stop: it ends a run that is one round from
+finishing, and it lets a run that is going nowhere spend its whole allowance. `--budget`
+makes the wall the thing you actually have an opinion about.
+
+Before every round it projects what the next one will cost — from the trend of the rounds
+so far, with a safety margin — and stops if that would cross your ceiling. So it stops
+*before* the round that would exceed the budget, not after. It also **refuses to start**
+when it cannot afford even one round, so a `--budget 0.000001` typo costs nothing instead
+of buying one round to discover it was hopeless.
+
+The run prints one line at the end:
+
+```
+budget: $0.0048 of $0.0500 spent · 4 rounds · next ~$0.0013 · $0.0452 left
+```
+
+⚠️ **Two honest limits.** A round that comes back with no reported cost is *estimated* from
+its token count at a single blended rate, and the line says so (`⚠ 1 of 3 rounds reported no
+cost, so the total is an estimate`) rather than printing a confident total. And the overshoot
+bound is **one round, not zero**: a cost curve growing faster than ~1.4× per round can cross
+the line by at most that round's own cost. If you need a hard guarantee, leave headroom.
+
+⚠️ **`--until-done` will not run without `--budget`.** An unbounded loop against a paid API,
+unattended, is the one thing this CLI refuses to do. With both flags it stops accepting the
+model's own "I am finished" while a criterion you declared with `declare_acceptance` has not
+actually passed — up to three times, then it stops and records the criterion as unmet. It
+still stops immediately on the budget, and it stops if the loop detector sees the same
+circular pattern twice.
+
+⚠️ `--budget` and `--parallel` together are refused rather than silently multiplied: a
+ceiling for one conversation applied to three tasks is three times the number you typed.
+
+### Several terminals, one checkout
+
+```
+acuvo --lease src/api.ts --lease src/db.ts "add the pagination"
+acuvo leases        # who holds what, and since when. No API key needed.
+```
+
+Leases are per **path**, not per repo — a repo-wide lock would idle six of seven terminals.
+They are taken before anything is spent, heartbeated between rounds, and released when the
+process exits however it exits. A stale one becomes reclaimable only after its TTL *plus* a
+grace period of silence, so a slow model round cannot make a working terminal look dead.
+
+⚠️ **This is a declaration, not a guarantee.** A coding agent does not know which files it
+will write until it writes them, so `--lease` protects exactly the paths you name. Making
+coverage automatic means calling `acquire()` inside the executor's write path — that work is
+not done, and pretending otherwise would be worse than the gap.
 
 ⚠️ Two defaults moved and this table was wrong about both for a while: `--max-rounds` was
 documented as 3 and `--max-tokens` as 8000. The numbers above are the exported constants,
@@ -267,6 +339,39 @@ Arguments are checked too — `node --eval` is refused (code that never touches 
 
 The child process gets a **scrubbed environment**: conventionally-named secrets are stripped, so a generated script cannot read your API keys and post them somewhere.
 
+### Other languages: presets, off by default
+
+Those four are the *default*, not the ceiling, and this README used to stop at "four
+programs" as though they were. A project can enable one of six vetted **presets** — each a
+build/test driver for code already on disk:
+
+| preset | what it adds |
+|---|---|
+| `python` | `python`, `python3`, `pytest` |
+| `go` | `go` |
+| `rust` | `cargo` |
+| `ruby` | `ruby`, `rspec`, `bundle` |
+| `make` | `make` |
+| `node-bin` | `eslint`, `prettier`, `jest` |
+
+```json
+// .acuvo/commands.json
+{ "presets": ["python"] }
+```
+
+Then `python -m pytest` is accepted; without it the refusal *names the preset that would
+allow it* rather than just saying no. `acuvo --doctor` prints the enabled set —
+`live programs it may run  node, npm, npx, tsc · no presets enabled` on a fresh workspace.
+
+⚠️ **The workspace file may name presets and nothing else, and that boundary is the whole
+design.** `.acuvo/commands.json` lives in the workspace, and the agent can write to the
+workspace — so a file there choosing an *arbitrary* binary would be the agent granting
+itself a program. Every preset is a menu item vetted in `lib/command.mjs`; picking one buys
+a second interpreter for code the agent could already execute with `node`. A program of
+your own choosing can only be named in **`ACUVO_ALLOW_COMMANDS`**, in the environment that
+launches the CLI, which the agent has no verb that reaches. A shell (`bash`, `sh`, `cmd`,
+`powershell`, `env`, `xargs`, …) is refused at every layer including that one.
+
 ### ⚠️ There is a second execution path, and this section used to omit it
 
 `evaluate` (`lib/evaluate.mjs`) runs a JavaScript snippet the model wrote. It exists because
@@ -344,8 +449,10 @@ workspace containing a hostile `.mcp.json` under each flag.
 
 ## The rest of the verbs
 
-Fifteen more tools reach the model in any multi-round run (`--max-rounds` above 1, which
-is the default). You never name them — the model picks. They are listed because a
+The registry holds **36 tools** (`TOOL_NAMES`, `lib/tools.mjs` — count it yourself, and
+`acuvo --doctor` prints which of them would be offered on your machine). The obvious ones
+are above; **eighteen more** reach the model in any multi-round run (`--max-rounds` above 1,
+which is the default). You never name them — the model picks. They are listed because a
 capability only the changelog knows about is unreachable in the way that matters.
 
 | tool | what it does | when it is offered |
@@ -357,6 +464,8 @@ capability only the changelog knows about is unreachable in the way that matters
 | `declare_acceptance` · `check_acceptance` | Name the command that decides whether the job is done, and run it. A **declared** criterion sets the exit code — see below. | withheld by `--no-run`, because `check_acceptance` executes commands |
 | `list_sessions` | Lets the model see that an earlier run already attempted this. Read-only; resuming is an operator action, from the command line. | always |
 | `read_skill` | Opens one of *your* procedures — see below. | only when `.acuvo/skills/` holds at least one skill |
+| `delegate` | Hands a **read-only** research question to a helper with its own fresh context — "where is X defined", "which files call Y" — and gets back a short summary instead of everything it read. The helper is offered twelve tools, all of them reads (`SUBAGENT_TOOL_NAMES`, `lib/subagent.mjs`); it cannot write, edit, commit or run anything, it is capped at 6 rounds (4 by default), and **it cannot delegate again** (`MAX_SUBAGENT_DEPTH` = 1 — two levels is how a five-round task becomes a hundred model calls nobody authorised). | always, when model credentials reached the dispatcher — it is the one tool that spends a completion of its own, and it refuses rather than guessing a config |
+| `remember` · `forget` | Facts that outlive the run. `remember` writes one markdown file per fact into `.acuvo/memory/`; the next run reads them back into the prompt, so it does not rediscover your real test command. `forget` deletes one, because a wrong memory is worse than no memory. Bounded at 40 entries / 4,000 bytes / 400 characters a fact, oldest evicted; every fact must carry a `why`, and anything that pattern-matches a credential is refused outright — *"these files are committed to the repo, so nothing secret can go in one"*. | always |
 | `find_definition` · `find_references` · `check_types` · `list_symbols` | Real semantic navigation through a language server (typescript-language-server, pyright, rust-analyzer, gopls). | only when a server is installed **and** this project contains that language |
 
 ⭐ **The two gates are the point, not a limitation.** A control that presents itself and
@@ -424,19 +533,51 @@ is safe *if the criterion was declared*.
 
 ### `.acuvo/` — what the CLI writes into your workspace
 
-`.acuvo/sessions/` (resumable runs, newest 20 kept), `.acuvo/audit/<date>.jsonl` (one
-redacted line per invocation), `.acuvo/plan.json` and `.acuvo/acceptance.json` (the
-agent's own bookkeeping), plus `.acuvo/skills/` if you write skills.
+It is one directory in **your** repository, and it holds two different kinds of thing.
 
-**Add `.acuvo/` to your `.gitignore`** unless you deliberately want the audit log
-committed. `--no-session` and `--no-audit` opt out of the two records; `--dry-run` writes
-neither. Skills, if you have them, are meant to be committed — keep them out of the
-ignore rule:
+| path | what it is | commit it? |
+|---|---|---|
+| `.acuvo/sessions/` | Resumable runs, newest 20 kept. What `--sessions`, `--resume` and `--replay` read. | **no** — machine-local, and large |
+| `.acuvo/audit/<date>.jsonl` | One redacted line per invocation: what was asked, what changed, what verified, what it cost. Never file contents, command output or model prose. | **your call.** Ignore it by default; commit it deliberately if the record is the point |
+| `.acuvo/plan.json`, `.acuvo/acceptance.json` | The agent's own bookkeeping for the run in progress. | no |
+| `.acuvo/skills/*.md` | *Your* procedures — see above. | **yes** |
+| `.acuvo/memory/*.md` | Facts `remember` recorded, one file each. Markdown on purpose: diffable, reviewable in a PR, and the reason a credential is refused before it can be written. | **yes** |
+| `.acuvo/commands.json` | Which command presets this project enables — see below. | **yes** |
+| `.acuvo/mcp.json` | MCP servers to connect to (`.mcp.json` at the root is also read, second). Written by you; no tool can add one. | yes, if your team shares them — and read `ENTERPRISE.md` §3.1 first, because a *committed* one in a repo you cloned is spawned on an ordinary run |
+
+So the ignore rule is not `.acuvo/`, and this section used to say it was — which would have
+thrown away the three files that are meant to travel with the repo:
 
 ```gitignore
 .acuvo/*
 !.acuvo/skills/
+!.acuvo/memory/
+!.acuvo/commands.json
 ```
+
+`--no-session` and `--no-audit` opt out of the two records; `--dry-run` writes neither.
+
+---
+
+## What it sends before it starts
+
+Every fresh task begins with a **repo map**: the directory tree plus the exported symbols of
+the source files, bounded to about 6,000 tokens (`DEFAULT_BUDGET_TOKENS`, `lib/repo-map.mjs`),
+and byte-stable so the prompt prefix caches. Files that do not fit are named as a count per
+directory, with a pointer to `find_files` / `search_text` — omitted, never silently absent.
+
+⚠️ **This replaced an older pre-read that had two real defects**, and both are fixed rather
+than mitigated:
+
+- It walked only **two levels** and read the *contents* of every small file it found. A module
+  four directories down was invisible, so the model would invent a plausible file and write
+  over the wrong one.
+- It sent the **body of gitignored files** to the provider. The map lists a path when the tree
+  shows one and never reads an ignored file's contents. `.env`, `*.pem`, `id_rsa` and other
+  credential-shaped files are withheld entirely and reported as a count.
+
+If a workspace cannot be read, the map is simply empty and the task proceeds — a pre-read is
+an optimisation, not a precondition, and it may never be the thing that kills a run.
 
 ---
 
@@ -645,10 +786,20 @@ the kind of thing that should cost a project its credibility.
 npm test          # node --test test/*.test.mjs — no network, no API key
 ```
 
-455 tests. They cover the safety decisions — path escapes, shell refusal, credential scrubbing,
+**1,378 tests across 61 files**, measured 2026-08-11: 1,333 pass, 45 skipped, 0 fail.
+(This README said 455 for long enough that the real number had tripled underneath it. The
+count above is a snapshot, not a constant — run the command and believe the output, not
+this line.)
+
+They cover the safety decisions — path escapes, shell refusal, credential scrubbing,
 ambiguous edits, commit guards — the places where being wrong is dangerous rather than merely
 broken. `test/docs-truth.test.mjs` additionally fails the suite when this README's documented
 defaults stop matching the exported constants.
+
+⚠️ **Read the skip count, not just the fail count.** 44 of those 45 skips are
+`test/bundle.test.mjs` — 545 lines specifying a `scripts/bundle.mjs` that was never written
+(see Install). A suite that is green because a whole file excused itself is the same lie as a
+suite that is green because it found no tests, and the second one is named below.
 
 ⚠️ **`npm test` is a false green in an installed copy.** `package.json`'s `files` allowlist ships
 `bin/`, `lib/` and the docs — not `test/`. Run it from a source checkout, where the tests exist.

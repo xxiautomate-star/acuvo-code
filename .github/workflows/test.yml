@@ -1,0 +1,122 @@
+# ── ⭐ CI FOR A ZERO-DEPENDENCY PACKAGE ──────────────────────────────────────
+#
+# There is no `npm ci` here and that is not an oversight: this package has no
+# dependencies, so there is nothing to install. `npm ci` would fail outright
+# without a lockfile, and adding one to install nothing would be theatre.
+#
+# ⚠️ IT RUNS WITH NO API KEY, DELIBERATELY. Every test in this suite is designed
+# to pass offline against injected fakes — `callImpl`, `fetchImpl`, `sleepImpl`,
+# an injected clock. If a test starts needing a live model, CI turns red and that
+# is the correct outcome: a suite that quietly costs money per run is a suite
+# nobody can afford to keep green.
+#
+# ⚠️ AND IT RUNS ON WINDOWS AS WELL AS LINUX. Almost every hard-won bug in this
+# package is platform-specific: `node --test test/` resolves a directory as a
+# MODULE PATH on Windows and always exits 1; a `.cmd` shim cannot be spawned
+# without `shell: true` since CVE-2024-27980; a directory keeps an EBUSY lock for
+# milliseconds after a tree kill. A Linux-only matrix would have caught none of
+# them, and the owner develops on Windows.
+
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# ⚠️ Read-only. This workflow runs code from pull requests; it must never hold a
+# token that can write to the repository.
+permissions:
+  contents: read
+
+concurrency:
+  # A superseded run tells you about code nobody is looking at any more.
+  group: test-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: node ${{ matrix.node }} · ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      # ⭐ One red cell should not hide the others. The whole point of a matrix
+      # is learning WHICH platform broke, and fail-fast throws that away.
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        # 20 is the engines floor; 22 is what the owner runs.
+        node: ['20', '22']
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+
+      - name: no dependencies, and prove it
+        # ⭐ The headline enterprise claim is "nothing to audit but this package".
+        # A claim worth making is worth failing the build over.
+        shell: bash
+        run: |
+          node -e "
+            const p = require('./package.json');
+            const deps = { ...(p.dependencies || {}), ...(p.peerDependencies || {}) };
+            const n = Object.keys(deps).length;
+            if (n > 0) {
+              console.error('FAIL: this package claims zero dependencies and declares ' + n + ': ' + Object.keys(deps).join(', '));
+              process.exit(1);
+            }
+            console.log('zero dependencies confirmed');
+          "
+
+      - name: test
+        # ⚠️ An explicit glob, never `node --test test/`. Measured on Node 22 /
+        # Windows: a DIRECTORY argument is resolved as a module path and exits 1
+        # with MODULE_NOT_FOUND before a single test runs.
+        run: node --test test/*.test.mjs
+
+      - name: it starts, with no key and no network
+        # ⭐ The cheapest possible smoke test of the thing a stranger types first.
+        # `--version` and `--doctor` must both answer without credentials; if they
+        # ever need a key, the first-run experience is broken and nothing else in
+        # the suite would notice.
+        shell: bash
+        env:
+          OPENROUTER_API_KEY: ''
+        run: |
+          node bin/acuvo.mjs --version
+          node bin/acuvo.mjs --doctor > /dev/null
+          echo "starts clean without credentials"
+
+  pack:
+    name: the tarball a stranger installs
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      # ⚠️⚠️ THIS JOB EXISTS BECAUSE THE PACKED COPY WAS A SILENT FALSE GREEN.
+      # `test/` was missing from package.json `files`, so `npm test` inside an
+      # installed copy matched nothing and exited 0 having run ZERO tests — while
+      # the README advertised the suite as a safety guarantee. The clone was green
+      # and the install was empty, and nothing in CI could tell the difference.
+      - name: pack, install elsewhere, and run the suite from there
+        run: |
+          set -euo pipefail
+          npm pack --pack-destination /tmp/tb
+          mkdir -p /tmp/consumer && cd /tmp/consumer
+          npm init -y > /dev/null
+          npm install /tmp/tb/acuvo-code-*.tgz
+          cd node_modules/acuvo-code
+          COUNT=$(node --test test/*.test.mjs 2>&1 | grep -E '^# tests [0-9]+' | grep -oE '[0-9]+')
+          echo "tests inside the installed copy: ${COUNT:-0}"
+          if [ "${COUNT:-0}" -lt 100 ]; then
+            echo "FAIL: an installed copy ran ${COUNT:-0} tests — that is the false green this job exists to catch"
+            exit 1
+          fi

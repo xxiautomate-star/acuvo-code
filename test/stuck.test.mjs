@@ -343,8 +343,24 @@ test('STUCK_PATTERNS names every pattern the detector can return', () => {
   seen.add(detectStuck([round(1, [write('a.js', body)]), round(2, [write('a.js', body)])]).pattern);
   seen.add(detectStuck([round(1, [write('a.js', 'A')]), round(2, [write('a.js', 'B')]), round(3, [write('a.js', 'A')])]).pattern);
   seen.add(detectStuck([round(1, [cmd('t', 1, 'e')]), round(2, [cmd('t', 1, 'e')]), round(3, [cmd('t', 1, 'e')])]).pattern);
-  seen.add(detectStuck([round(1, [read('a')]), round(2, [read('a')]), round(3, [read('a')])]).pattern);
+  /**
+   * ⚠️ THIS LINE USED TO BE THREE REPEATED READS, AND IT WAS THE TEST THAT WAS
+   * WRONG, NOT THE DETECTOR.
+   *
+   * `detectStuck` returns `null` for a run that only reads the same file — and
+   * that is the single most important thing it does. Re-reading while working
+   * out what to change is normal, and the brief for this module named it as one
+   * of the five legitimate shapes that must NEVER be flagged, because killing a
+   * run that was about to succeed costs the user the work AND the money.
+   *
+   * So the old case correctly produced `null`, `null` went into `seen`, and the
+   * assertion below then reported "null is missing from STUCK_PATTERNS" — a red
+   * accusing correct code. ⭐ `no-progress` means rounds where NOTHING happened:
+   * nothing written, nothing run. That is what this now builds.
+   */
+  seen.add(detectStuck([round(1, []), round(2, []), round(3, [])]).pattern);
   seen.add(detectStuck([round(1, [editFail('a', 'x', 'no match')]), round(2, [editFail('a', 'y', 'no match')]), round(3, [editFail('a', 'z', 'no match')])]).pattern);
+  assert.equal(seen.has(null), false, 'a scenario meant to trigger a pattern produced none — fix the SCENARIO, not the detector');
   for (const p of seen) assert.ok(STUCK_PATTERNS.includes(p), `${p} is missing from STUCK_PATTERNS`);
   assert.equal(seen.size, STUCK_PATTERNS.length, 'STUCK_PATTERNS lists a pattern nothing produces');
 });

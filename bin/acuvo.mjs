@@ -62,6 +62,23 @@ import {
   extractVoiceFlags, taskFromAudio, confirmationLines, decideTranscript, speakSummary, VOICE_USAGE,
 } from '../lib/voice-task.mjs';
 import { createPainter, colourEnabled } from '../lib/colour.mjs';
+/**
+ * ── ⭐⭐ FILE LEASES — THE SIXTH CAPABILITY THAT WAS BUILT AND REACHED BY
+ *        NOTHING ─────────────────────────────────────────────────────────────
+ *
+ * `lib/lease.mjs` (868 lines) shipped finished and was imported by its own test
+ * and nothing else. The owner runs seven terminals against one checkout; without
+ * this, two of them writing the same file is silent data loss that shows up as
+ * "the agent undid my change".
+ *
+ * ⚠️ AND THE HONEST LIMIT, STATED HERE RATHER THAN IN A CHANGELOG: a coding
+ * agent does not know which files it will write until it writes them, so
+ * `--lease a.ts --lease b.ts` is a DECLARATION, not a guarantee. It protects
+ * exactly the paths named. The complete fix is one `acquire()` call inside the
+ * executor's write path (lib/workspace.mjs) — a different lane, and the module
+ * is shaped for it (single-path acquire is cheap and re-entrant).
+ */
+import { acquireAll, renewAll, releaseAll, inspect, formatLeaseSummary, DEFAULT_TTL_MS } from '../lib/lease.mjs';
 
 const EXIT_OK = 0;
 const EXIT_FAILED = 1;
@@ -258,7 +275,16 @@ async function main() {
    * shape it can honour, which is the defect this guard was written to end.
    */
   const resumeRequested = life.resume !== null || life.continueLatest;
-  const emitsOwnObject = life.sessions || life.doctor || life.replay !== null || life.design !== null;
+  /**
+   * ⚠️ `leases` BELONGS IN THIS LIST FOR THE SAME REASON `--doctor` DOES: it
+   * emits ONE object and nothing else, so refusing `--json` on it would be the
+   * flag declining a shape it can honour perfectly. Leaving it out is also what
+   * would make `acuvo leases --json` die at "run one task per invocation" —
+   * `opts.task` is empty for a command, which is exactly the trap `--task-audio`
+   * fell into.
+   */
+  const emitsOwnObject = life.sessions || life.doctor || life.replay !== null || life.design !== null
+    || opts.command !== null;
   if (opts.json && !emitsOwnObject && (opts.parallel || (!opts.task && opts.issue === null && !resumeRequested && !voice.taskAudio))) {
     die('--json emits one object for one task. --parallel and interactive mode print a running report instead, so run one task per invocation (acuvo --json "<task>"), or drop --json.', EXIT_USAGE);
   }
@@ -340,6 +366,31 @@ async function main() {
       process.stderr.write(`  (${listed.unreadable} unreadable session file${listed.unreadable === 1 ? '' : 's'} skipped)\n`);
     }
     process.stdout.write('\n  carry one on:  acuvo --resume <id> ["what to do next"]\n\n');
+    return EXIT_OK;
+  }
+
+  /**
+   * ── ⭐⭐ `acuvo leases` — WHO IS HOLDING WHAT, AND SINCE WHEN ──────────────
+   *
+   * ⚠️ ABOVE THE KEY CHECK, like `--version`, `--sessions`, `--doctor` and
+   * `--replay`, and for the identical reason: reading a directory this tool
+   * wrote needs no account. The person typing this is usually the person whose
+   * SEVENTH terminal just refused to start, and answering "no API key" there is
+   * a true statement about the wrong problem.
+   *
+   * ⚠️ IT RUNS NOTHING, WRITES NOTHING AND RECLAIMS NOTHING. `inspect` reports a
+   * stale lease as `expired`/`reclaimable` and leaves it exactly where it is —
+   * a diagnostic that quietly breaks other people's locks would be the worst
+   * possible reading of "show me what is going on".
+   */
+  if (opts.command === 'leases') {
+    const view = inspect(root);
+    if (opts.json) {
+      process.stdout.write(`${JSON.stringify(view, null, 2)}\n`);
+      return view.ok ? EXIT_OK : EXIT_FAILED;
+    }
+    process.stdout.write(`\n${formatLeaseSummary(view).map((l) => `  ${l}`).join('\n')}\n\n`);
+    if (view.ok === false) return EXIT_FAILED;
     return EXIT_OK;
   }
 
@@ -438,6 +489,47 @@ async function main() {
     process.stdout.write(`${lines.join('\n')}\n`);
     if (!pass.ok && pass.error) process.stderr.write(`  ${pass.error}\n`);
     return pass.ok && (pass.findings?.length ?? 0) === 0 ? EXIT_OK : EXIT_FAILED;
+  }
+
+  /**
+   * ── ⭐⭐ `--lease <path>` — CLAIM THE FILES BEFORE ANYTHING IS SPENT ───────
+   *
+   * ⚠️ ABOVE THE KEY CHECK, AND THAT IS NOT AN ACCIDENT. "Somebody else has
+   * that file" is the answer the user needs FIRST — before a model is chosen,
+   * before a banner is printed, and certainly before a completion is bought.
+   * A run that discovers the contention after writing three files has already
+   * done the damage the lease exists to prevent.
+   *
+   * ⚠️ BELOW THE READ-ONLY COMMANDS, equally deliberately: `--doctor`,
+   * `--replay`, `--design` and `acuvo leases` write nothing to the workspace, so
+   * taking a write lease for them would block a colleague for no reason.
+   *
+   * ⚠️ RELEASED ON `exit`, WHICH COVERS EVERY PATH OUT OF THIS PROCESS —
+   * `die()`, the ordinary return, and a throw caught by the handler at the
+   * bottom. Releasing only at the end of the happy path is how a crashed
+   * terminal leaves a file locked and the person at the next desk concludes the
+   * feature is broken.
+   *
+   * ⚠️ AND THE ALL-OR-NOTHING IS `acquireAll`'s, not ours: it takes every path
+   * in a fixed global order or gives back the ones it took. A terminal holding
+   * three of five files and waiting on the fourth is a stall nobody can
+   * diagnose.
+   */
+  let held = { ok: true, leases: [], warnings: [] };
+  /** Set by the heartbeat below. Non-null means another terminal took a file. */
+  let leaseLost = null;
+  if (opts.lease.length > 0) {
+    const holder = opts.holder ?? `pid-${process.pid}`;
+    held = acquireAll(root, { paths: opts.lease, holder, ttlMs: DEFAULT_TTL_MS });
+    if (!held.ok) {
+      const who = held.heldBy ? ` — held by ${held.heldBy}` : '';
+      die(`${held.error}${who}\n\nRun \`acuvo leases\` to see who holds what.`, EXIT_FAILED);
+    }
+    for (const w of held.warnings) process.stderr.write(`  ! ${w}\n`);
+    process.on('exit', () => { try { releaseAll(held.leases); } catch { /* exiting anyway */ } });
+    (opts.json ? process.stderr : process.stdout).write(
+      `  · leased ${held.leases.length} path${held.leases.length === 1 ? '' : 's'} as ${holder}\n`,
+    );
   }
 
   // ⚠️ THE KEY IS CHECKED BEFORE THE WORKSPACE IS TOUCHED. Discovering the
@@ -568,6 +660,52 @@ async function main() {
     (opts.json ? process.stderr : process.stdout).write(
       `  · resuming ${resumed.id} — ${priorMessages.length} messages restored, nothing re-run${warn}\n`,
     );
+
+    /**
+     * ── ⚠️⚠️ A RESUMED RUN USED TO GET A WHOLE FRESH BUDGET ──────────────────
+     *
+     * `createBudget` starts at `spentUsd = 0` every time, so
+     * `acuvo --budget 0.50 …` followed by `acuvo --resume <id> --budget 0.50`
+     * spent a DOLLAR while the person believed they had capped it at fifty
+     * cents. `budget.mjs` flagged this against itself; nothing had closed it.
+     *
+     * ⭐ THE FIX IS SUBTRACTION, NOT A NEW PARAMETER. The limit is lowered by
+     * what the earlier run already spent, so `budget.mjs` stays pure (data in,
+     * data out, no disk) and `turn.mjs` is untouched. One task, one ceiling,
+     * however many processes it takes.
+     *
+     * ⚠️ "$0.50" IS AMBIGUOUS ON A RESUME — is it fifty cents MORE, or fifty
+     * cents TOTAL? Total is the reading that cannot silently overspend, so it
+     * is the one taken, and it is SAID OUT LOUD rather than assumed. A person
+     * who meant "more" can pass a bigger number; a person who meant "total" and
+     * got "more" has no way to find out until the bill.
+     */
+    if (opts.budgetUsd) {
+      /**
+       * ⚠️ `loadSession` returns `{ ok, session }` — the cost lives at
+       * `session.usage.cost`. My first draft read `.record.usage.cost` and
+       * silently found `undefined`, which coerces to 0 and would have made this
+       * whole guard a no-op that LOOKED like it worked. Verified against a real
+       * record: `{"cost":0.000250116,"total_tokens":10218}`.
+       */
+      const prior = loadSession(root, id);
+      const spent = Number(prior?.session?.usage?.cost ?? 0);
+      if (Number.isFinite(spent) && spent > 0) {
+        const left = opts.budgetUsd - spent;
+        const money = (n) => (n < 0.01 ? `${(n * 100).toFixed(2)}c` : `$${n.toFixed(4)}`);
+        if (left <= 0) {
+          die(
+            `that run already spent ${money(spent)}, which is at or over the ${money(opts.budgetUsd)} budget. `
+            + `Raise it (--budget ${money(spent * 2)}) if you want it to carry on.`,
+            EXIT_USAGE,
+          );
+        }
+        opts.budgetUsd = left;
+        (opts.json ? process.stderr : process.stdout).write(
+          `  · budget ${money(opts.budgetUsd + spent)} total — ${money(spent)} already spent, ${money(left)} left for this run\n`,
+        );
+      }
+    }
   }
 
   /**
@@ -589,6 +727,13 @@ async function main() {
       maxRounds: opts.maxRounds,
       allowRun: opts.allowRun && !opts.dryRun,
       commandTimeoutMs: opts.commandTimeoutMs,
+      /**
+       * ── ⭐⭐ THE TWO OPTIONS THAT MOVE THE WALL FROM A COUNTER TO MONEY ────
+       * `null` / `false` are what a caller who typed neither flag gets, and both
+       * are no-ops inside the loop — see the option docs in `runSession`.
+       */
+      budgetUsd: opts.budgetUsd,
+      untilDone: opts.untilDone,
       // ⚠️ STREAMED, NOT BUFFERED. A bounded loop that prints only at the end is
       // indistinguishable from a hang for however long it takes, and the whole
       // value of watching a fix land is watching it land.
@@ -598,6 +743,34 @@ async function main() {
        * into stdout makes the flag useless while appearing to work.
        */
       onEvent: (event) => {
+        /**
+         * ── ⭐ THE HEARTBEAT, DRIVEN OFF THE ROUND BOUNDARY ─────────────────
+         *
+         * A lease has a TTL, and a model round can take a minute. Without this,
+         * a working terminal starts looking stale to the others and its files
+         * become reclaimable while it is still writing them.
+         *
+         * ⚠️ IT CANNOT ABORT THE ROUND, AND THAT LIMIT IS STATED RATHER THAN
+         * HIDDEN. `runSession` takes no abort signal, so the honest thing this
+         * callback can do is record the loss, say so immediately, and make the
+         * PROCESS fail — see `leaseLost` at the exit. Aborting mid-round is a
+         * real improvement and it needs a signal parameter on `runSession`,
+         * which is a change to the loop's contract, not to this callback.
+         *
+         * ⚠️ Only when leases are held. `renewAll([])` is harmless but running
+         * it on every round of every run would put filesystem work in the hot
+         * path of the 99% of runs that never asked for a lease.
+         */
+        if (event.type === 'round-start' && held.leases.length > 0 && !leaseLost) {
+          const beat = renewAll(held.leases);
+          if (!beat.ok) {
+            leaseLost = beat.lost;
+            process.stderr.write(
+              `  ✖ lost a file lease mid-run: ${beat.lost.map((l) => `${l.path} (${l.reason})`).join(', ')}\n`
+              + '    another terminal may be writing these files. This run will exit non-zero.\n',
+            );
+          }
+        }
         const lines = renderEvent(event);
         if (lines.length === 0) return;
         const text = `${lines.join('\n')}\n`;
@@ -709,16 +882,36 @@ async function main() {
    * `… --dry-run --json | jq -r '.changes[].path' | xargs git add` believed
    * files existed that were never written.
    */
+  /**
+   * ⚠️⭐ `leaseLost` IS PART OF THE VERDICT, NOT A WARNING. A run whose file was
+   * taken by another terminal mid-flight may have written over someone else's
+   * work; `acuvo … && git push` must not believe that succeeded. Same reasoning
+   * as `sessionFailed` itself — the exit code is the machine-readable version of
+   * the verdict, and it has to agree with it.
+   *
+   * ⚠️ AND `budget` IS CARRIED INTO THE DOCUMENT because the one question a
+   * script asks about an unattended run is what it cost. It is absent — not
+   * zero — when no `--budget` was given, so the shape only grows for a caller
+   * who asked for it.
+   */
   const jsonDoc = (result, { task = null, fields = null } = {}) => {
-    const failed = sessionFailed(result);
+    const failed = sessionFailed(result) || leaseLost !== null;
     return {
       ...toJson(result, { changes: changesOf(result), task }),
       failed,
       exitCode: failed ? EXIT_FAILED : EXIT_OK,
       dryRun: opts.dryRun === true,
+      ...(result?.budget ? { budget: result.budget } : {}),
+      ...(leaseLost ? { leaseLost } : {}),
       ...(fields ?? {}),
     };
   };
+
+  /**
+   * The process verdict. One helper so the four return sites cannot drift —
+   * which is exactly how one of them would end up ignoring a lost lease.
+   */
+  const verdictExit = (outcome) => ((sessionFailed(outcome) || leaseLost !== null) ? EXIT_FAILED : EXIT_OK);
 
   /**
    * ── ⭐ NO TASK ⇒ INTERACTIVE SESSION ──────────────────────────────────────
@@ -798,7 +991,7 @@ async function main() {
       process.stdout.write(`${JSON.stringify(doc, null, 2)}\n`);
       return doc.exitCode;
     }
-    return sessionFailed(outcome) ? EXIT_FAILED : EXIT_OK;
+    return verdictExit(outcome);
   }
 
   if (opts.parallel) {
@@ -910,7 +1103,7 @@ async function main() {
     const shot = renderImage(resolve(root, c.path));
     if (shot.text) process.stdout.write(shot.text);
   }
-  return sessionFailed(outcome) ? EXIT_FAILED : EXIT_OK;
+  return verdictExit(outcome);
 }
 
 main().then(
