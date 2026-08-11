@@ -1,0 +1,39 @@
+{
+  "name": "acuvo-code",
+  "version": "0.2.0",
+  "description": "Acuvo Code \u2014 the terminal client for the Acuvo capability registry. Zero dependencies, by design.",
+  "type": "module",
+  "bin": {
+    "acuvo": "./bin/acuvo.mjs",
+    "acuvo-mcp": "./bin/acuvo-mcp.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.mjs",
+    "bundle": "node scripts/bundle.mjs --out dist/acuvo.mjs",
+    "bundle:mcp": "node scripts/bundle.mjs --entry bin/acuvo-mcp.mjs --out dist/acuvo-mcp.mjs"
+  },
+  "dependencies": {},
+  "devDependencies": {},
+  "license": "MIT",
+  "files": [
+    "bin/",
+    "lib/",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/xxiautomate-star/acuvo-code"
+  },
+  "keywords": [
+    "ai",
+    "cli",
+    "coding-agent",
+    "deepseek",
+    "terminal"
+  ]
+}
