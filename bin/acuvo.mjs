@@ -328,6 +328,21 @@ async function main() {
   }
 
   /**
+   * ⚠️⚠️ THE `.acuvo/` SELF-IGNORE IS DELIBERATELY *NOT* CALLED HERE, and it was
+   * on the first attempt. Running it at startup created the directory on every
+   * invocation — including `--dry-run`, whose `--help` promises it "touches
+   * nothing", and `--no-audit --no-session`, which promises to leave the
+   * workspace alone. The suite caught it immediately
+   * (`lifecycle-wiring.test.mjs`), and the test was right: creating a directory
+   * and a file IS touching something.
+   *
+   * ⭐ So the ignore belongs with whoever actually CREATES the directory —
+   * `appendAudit` and the session writer — because those already respect every
+   * opt-out. A convenience placed one layer too high broke a promise two flags
+   * had made.
+   */
+
+  /**
    * ── ⚠️⭐ LOAD `.env` FROM THE WORKSPACE. THE MEDIA HALF WAS DARK WITHOUT IT ──
    *
    * Measured today: `mediaToolNames(process.env)` returned `[]` in an ordinary
