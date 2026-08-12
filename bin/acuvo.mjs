@@ -47,7 +47,7 @@ import {
   loadPolicy, invocationDecision, roundBudget, filterToolNames, mcpDecision,
   USER_POLICY_FILE, USER_POLICY_ENV, WORKSPACE_POLICY_FILE,
 } from '../lib/policy.mjs';
-import { createBudget } from '../lib/budget.mjs';
+import { createBudget, remainingForTurn } from '../lib/budget.mjs';
 
 /**
  * ── ⭐⭐ THE FIVE CAPABILITIES THAT WERE BUILT AND REACHED BY NOTHING ────────
@@ -821,7 +821,39 @@ async function main() {
    * the ladder needs a different workspace and a smaller budget, and nothing
    * else, so those are the only two things overridable.
    */
+  /**
+   * ── ⚠️⚠️ THE CEILING WAS PER TURN AND IS SOLD AS PER RUN ──────────────────
+   *
+   * `runChat` loops calling `oneTurn`, and `oneTurn` handed out
+   * `opts.budgetUsd` FRESH EVERY TIME. A forty-turn conversation therefore
+   * permitted forty times the number the user agreed to — $0.80 against a
+   * stated $0.02 — while `--help` and the README both call it the run's ceiling.
+   *
+   * ⭐ The one-shot path was always right (one turn, nothing to accumulate) and
+   * the RESUME path already subtracts prior spend. This is the same subtraction
+   * for the turn loop, using the same pure helper, so the two cannot drift.
+   */
+  let sessionSpentUsd = 0;
+
   const oneTurn = async (turnTask, priorTurnMessages, over = {}) => {
+    /**
+     * ⚠️ ONLY WHEN THIS IS A REAL TURN, NOT A LADDER RUNG. `over.budgetUsd` is a
+     * slice `escalate.allocate()` already carved out of the session total, so
+     * subtracting session spend from it would charge the same dollars twice and
+     * starve rung three of a budget it was correctly allocated.
+     */
+    if (over.budgetUsd === undefined) {
+      const room = remainingForTurn(opts.budgetUsd, sessionSpentUsd);
+      if (!room.ok) {
+        const sentence = room.message;
+        (opts.json ? process.stderr : process.stdout).write(`\n  ⛔ ${sentence}\n`);
+        // ⚠️ `error` AND `message`, because formatSummary prints `error` for a
+        // failed run and printing "✖ undefined" is worse than the refusal.
+        return { ok: false, stage: 'budget', stoppedBecause: 'limit-reached', error: sentence, message: sentence };
+      }
+      if (room.remainingUsd !== null) over = { ...over, budgetUsd: room.remainingUsd };
+    }
+
     const result = await runSession({
       task: turnTask,
       priorMessages: priorTurnMessages,
@@ -935,6 +967,17 @@ async function main() {
       if (said.spoken) out.write(`  · verdict spoken → ${said.path}\n    ${said.hint}\n`);
       else if (!said.ok) out.write(`  · the verdict was not spoken: ${said.reason}\n`);
     }
+
+    /**
+     * ⚠️ CHARGE THE SESSION, NOT JUST THE TURN. Without this the subtraction
+     * above always subtracts zero and the ceiling stays per-turn — the whole
+     * defect. Counted on EVERY turn including a ladder rung, because the dollars
+     * left the account either way; what `over.budgetUsd` changes is which
+     * allowance the turn draws from, never whether it was spent.
+     */
+    const turnCost = Number(result?.usage?.cost ?? 0);
+    if (Number.isFinite(turnCost) && turnCost > 0) sessionSpentUsd += turnCost;
+
     return result;
   };
 
