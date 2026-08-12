@@ -436,13 +436,33 @@ test('a run cut off by budget or rounds is out of road, not a success', () => {
   assert.equal(outOfRoad(null), false);
 });
 
-test('the wired predicate escalates a budget-stopped run that sessionFailed calls fine', async () => {
+test('the wired predicate escalates a budget-stopped run, and BOTH halves now catch it', async () => {
   // The exact outcome shape the real run produced: ok, files written, nothing
-  // verified, stopped on budget. `sessionFailed` returns false for this.
+  // verified, stopped on budget.
   const cutOff = {
     ok: true, stoppedBecause: 'would-exceed', verification: { ran: false }, usage: { cost: 0.0016 }, executed: [],
   };
-  assert.equal(sessionFailed(cutOff), false, 'the process verdict tolerates it — that is why the bug hid');
+
+  /**
+   * ⚠️ THIS ASSERTION USED TO READ `sessionFailed(cutOff) === false`, with the
+   * note "the process verdict tolerates it — that is why the bug hid". It was an
+   * accurate description of a defect, and `outOfRoad` was built to work around
+   * it here in the ladder while the PROCESS exit code went on returning 0 for a
+   * run that stopped mid-job with a half-written repo.
+   *
+   * ⭐ Fixed 2026-08-13: a budget stop now fails `sessionFailed` outright, on the
+   * same footing as a dead provider — a run cut off by a limit did not complete,
+   * whatever it managed first. It became urgent the day before, when the $0.02
+   * ceiling was turned on by default and this stopped being a path you had to
+   * opt into.
+   *
+   * ⚠️ `outOfRoad` IS STILL LOAD-BEARING and is not now redundant: it also covers
+   * 'round-cap' and 'stuck', which `sessionFailed` deliberately does not treat as
+   * process failures. Two predicates, two questions — "did this attempt finish"
+   * and "did this run succeed" — and the ladder needs the first one.
+   */
+  assert.equal(sessionFailed(cutOff), true, 'the process verdict catches it now too');
+  assert.equal(outOfRoad(cutOff), true, 'and the ladder still sees a wall rather than a finish');
 
   const tiers = [];
   const r = await escalate({

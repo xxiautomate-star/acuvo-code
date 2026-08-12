@@ -1042,7 +1042,16 @@ async function main() {
    * exit code exists to prevent, and nobody types a flag they have not read
    * about. `CI` is the one variable every runner sets.
    */
-  const verdictOptions = { strict: opts.strict === true || Boolean(process.env.CI) };
+  /**
+   * ⚠️ `Boolean(process.env.CI)` IS TRUE FOR THE STRING "false". Several CI
+   * setups export `CI=false` deliberately, and Create React App made
+   * `CI=false npm run build` a widely-copied incantation — so the naive check
+   * would arm strict for people explicitly saying they are NOT in CI, and hand
+   * them a false exit 1. That is the check-that-fails-correct-work failure,
+   * inside the flag added to prevent its opposite.
+   */
+  const inCI = !['', '0', 'false', 'no', 'off'].includes(String(process.env.CI ?? '').trim().toLowerCase());
+  const verdictOptions = { strict: opts.strict === true || inCI };
 
   const jsonDoc = (result, { task = null, fields = null } = {}) => {
     const failed = sessionFailed(result, verdictOptions) || leaseLost !== null;
