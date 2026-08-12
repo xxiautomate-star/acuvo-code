@@ -846,6 +846,11 @@ async function main() {
        */
       budgetUsd: over.budgetUsd ?? opts.budgetUsd,
       /**
+       * ⚠️ A ceiling the user never chose has to say so when it stops, and name
+       * the flag that raises it. See DEFAULT_BUDGET_USD in budget.mjs.
+       */
+      budgetIsDefault: opts.budgetExplicit !== true,
+      /**
        * ⚠️ THE RUNG'S MODEL WINS, and `over.model` is undefined unless
        * `ACUVO_MODEL_TIERS` is configured — so a run without tiers is
        * byte-identical to one from before this existed. See `model-tier.mjs`
@@ -1313,7 +1318,7 @@ async function main() {
     const ladder = await escalate({
       root,
       task,
-      budget: createBudget({ limitUsd: opts.budgetUsd }),
+      budget: createBudget({ limitUsd: opts.budgetUsd, limitIsDefault: opts.budgetExplicit !== true }),
       // ⭐ Tier 0, and the only tier unless ACUVO_MODEL_TIERS is configured.
       baseModel: config.model,
       /**

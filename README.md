@@ -155,7 +155,7 @@ Every flag below is real; run `acuvo --help` for the authoritative list.
 | `--dir <path>` | Workspace root. Default: the current directory. |
 | `--model <id>` | OpenRouter model id. Default: `$OPENROUTER_CODEGEN_MODEL`, else `deepseek/deepseek-v4-flash-0731` (`DEFAULT_MODEL`, `lib/model.mjs`). |
 | `--max-rounds <n>` | Write → run → fix rounds, 1–16. Default **5** (`DEFAULT_MAX_ROUNDS`, `lib/cli-args.mjs`). `1` means one completion and nothing executed. |
-| `--budget <usd>` | Stop when the **next** round would cross this much spend. `--budget 0.50`, `--budget 25c`, `--budget $2` all parse. Refuses to start at all if it cannot afford one round. |
+| `--budget <usd>` | Stop when the **next** round would cross this much spend. `--budget 0.50`, `--budget 25c`, `--budget $2` all parse. Refuses to start at all if it cannot afford one round. **A $0.02 ceiling is on by default** — a measured task costs $0.0008–$0.003, so it never fires on ordinary work, and a runaway costs two cents to discover. `--budget none` removes it. |
 | `--until-done` | Keep going while the criterion you declared is unmet, the budget allows, and the loop is not going in circles. **Requires `--budget`.** It also **escalates** rather than merely retrying — see [Escalation](#escalation-trying-harder-costs-money-so-it-is-budgeted). |
 | `--max-tier <tier>` | How hard `--until-done` may try: `solo` \| `fresh` \| `best-of`. Default `best-of`. `solo` turns escalation off without turning the run off. |
 | `--best-of <n>` | Do the task n times (2–5) in isolated workspace copies and keep whichever one **verifies**. On its own it is a single parallel round; combined with `--until-done` it sets how wide the ladder's top rung is. |

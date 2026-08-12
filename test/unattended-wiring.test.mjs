@@ -28,6 +28,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { parseArgv, USAGE, UNTIL_DONE_MAX_ROUNDS, DEFAULT_MAX_ROUNDS } from '../lib/cli-args.mjs';
+import { DEFAULT_BUDGET_USD } from '../lib/budget.mjs';
 import { runSession, formatSummary, renderEvent } from '../lib/turn.mjs';
 import { createLocalExecutor } from '../lib/workspace.mjs';
 import { declareAcceptance } from '../lib/acceptance.mjs';
@@ -120,13 +121,33 @@ test('--budget refuses what cannot be a budget, with a sentence not a stack trac
   assert.equal(missing.ok, false, '--budget with no value must be refused');
 });
 
-test('no --budget means no ceiling — the default is untouched', () => {
+test('⭐ no --budget now means the DEFAULT ceiling — everything else is still untouched', () => {
+  /**
+   * ⚠️ THIS TEST USED TO ASSERT `budgetUsd === null`, and it was right to. The
+   * rule it enforced — a new flag must be inert until someone types it — is the
+   * only way to add options to a tool people already script against.
+   *
+   * ⭐ IT WAS CHANGED ON PURPOSE, 2026-08-12, and the reason is the opposite of
+   * a new flag: the governor was ALREADY BUILT and unreachable, so "inert by
+   * default" was not protecting a user's expectations, it was hiding the one
+   * behaviour no competitor offers. See DEFAULT_BUDGET_USD in budget.mjs.
+   *
+   * ⭐ EVERY OTHER DEFAULT IN THIS ASSERTION IS DELIBERATELY UNCHANGED, and the
+   * point of keeping them here is that one considered exception must not become
+   * licence for the next one.
+   */
   const p = parseArgv(['just do it']);
   assert.ok(p.ok);
-  assert.equal(p.options.budgetUsd, null);
+  assert.equal(p.options.budgetUsd, DEFAULT_BUDGET_USD, 'the ceiling is on by default now');
+  assert.equal(p.options.budgetExplicit, false, 'and it knows nobody chose it');
   assert.equal(p.options.untilDone, false);
   assert.equal(p.options.maxRounds, DEFAULT_MAX_ROUNDS);
   assert.deepEqual(p.options.lease, []);
+
+  // ⚠️ And the way back to yesterday's behaviour must exist, exactly.
+  const off = parseArgv(['--budget', 'none', 'just do it']);
+  assert.ok(off.ok);
+  assert.equal(off.options.budgetUsd, null, '--budget none restores the unbounded default');
 });
 
 /* ══════════════════════════════════════════════════════════════════════════
