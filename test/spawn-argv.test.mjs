@@ -435,12 +435,23 @@ test('redirection-looking arguments are passed as data, never interpreted', asyn
  * `killProcessTree(child)` call in `spawnBounded` turns it red).
  */
 test('a timeout kills the child — proven by the work it never finished', async () => {
-  const CHILD_WORK_MS = 2_000;
+  /**
+   * ⚠️⚠️ THE TIMEOUT WAS 100ms AND IT WAS FLAKY. Under `node --test` all 65
+   * files run at once, and node's own interpreter startup can lose the race to
+   * a 100ms deadline — so the kill landed on a process that had barely begun,
+   * and the outcome depended on machine load rather than on the code.
+   *
+   * ⭐ THE PROPERTY IS "THE CHILD DIED BEFORE IT FINISHED ITS WORK", and that
+   * survives generous numbers perfectly: 1s deadline against 5s of work still
+   * proves the kill, and no plausible amount of load closes a 4-second gap.
+   * Tight numbers did not make this test stricter, only noisier.
+   */
+  const CHILD_WORK_MS = 5_000;
   const ws = makeWorkspace({
     'bin/slow.mjs': `import {writeFileSync} from 'node:fs';await new Promise(r=>setTimeout(r,${CHILD_WORK_MS}));writeFileSync('marker.txt','done');\n`,
   });
   try {
-    const r = await runProgram({ root: ws, program: 'node', args: ['bin/slow.mjs'], timeoutMs: 100 });
+    const r = await runProgram({ root: ws, program: 'node', args: ['bin/slow.mjs'], timeoutMs: 1_000 });
     assert.equal(r.ok, true);
     assert.equal(r.timedOut, true);
     assert.equal(r.passed, false);

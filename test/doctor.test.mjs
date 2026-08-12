@@ -661,19 +661,38 @@ test('⚠️⚠️ a fetch that never resolves cannot hang the doctor — probes
   assert.equal(report.ok, true);
 });
 
-test('⚠️ probes run CONCURRENTLY — seven sequential 200ms probes would be 1.4s', async () => {
-  const t0 = Date.now();
+test('⚠️ probes run CONCURRENTLY — measured by overlap, not by the clock', async () => {
+  /**
+   * ⚠️⚠️ THIS TEST USED TO ASSERT `elapsed < 900ms` AND IT WAS FLAKY. Under
+   * `node --test` the whole suite's files run in parallel, so a wall-clock
+   * budget measures how loaded the machine is at least as much as it measures
+   * this code. It failed on correct code roughly one run in three, and a check
+   * that fails correct work is worse than no check: it trains you to re-run
+   * until green, which is how a real regression gets waved through.
+   *
+   * ⭐ THE PROPERTY WAS NEVER "IT IS FAST", IT WAS "THEY OVERLAP". Counting how
+   * many probes are in flight at once measures exactly that, is immune to load,
+   * and fails for the right reason — a sequential implementation can never get
+   * `peak` above 1, however fast or slow the machine is.
+   */
+  let inFlight = 0;
+  let peak = 0;
   await runDoctor({
     ...BASE,
     timeoutMs: 3_000,
     env: FULL_ENV,
     fetchImpl: async (url, init) => {
-      await new Promise((r) => setTimeout(r, 200));
-      return makeFetch()(url, init);
+      inFlight += 1;
+      peak = Math.max(peak, inFlight);
+      try {
+        await new Promise((r) => setTimeout(r, 20));
+        return makeFetch()(url, init);
+      } finally {
+        inFlight -= 1;
+      }
     },
   });
-  const elapsed = Date.now() - t0;
-  assert.ok(elapsed < 900, `probes appear sequential: ${elapsed}ms`);
+  assert.ok(peak > 1, `probes ran one at a time — peak concurrency was ${peak}`);
 });
 
 test('⚠️ a fetchImpl that throws synchronously is data, not a crash', async () => {

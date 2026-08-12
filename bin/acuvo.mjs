@@ -33,7 +33,9 @@ import { createLocalExecutor } from '../lib/workspace.mjs';
 import { runSession, formatSummary, renderEvent, sessionFailed } from '../lib/turn.mjs';
 import { runPool, detectConflicts, formatParallelSummary, shortLabel } from '../lib/parallel.mjs';
 import { detectRepo, findToken, fetchIssue, branchNameFor, issueToTask, createBranch, nextSteps } from '../lib/github.mjs';
-import { describeChange, formatChanges, toJson } from '../lib/report.mjs';
+// ⚠️ `formatChanges` is deliberately NOT imported: rendering the change list is
+// `formatSummary`'s job, and importing it here is how the second copy came back.
+import { describeChange, shortenRoot, toJson } from '../lib/report.mjs';
 import { renderImage } from '../lib/terminal-graphics.mjs';
 import { saveSession, listSessions, resumeMessages, loadSession } from '../lib/session.mjs';
 import { recordRun } from '../lib/audit.mjs';
@@ -549,10 +551,20 @@ async function main() {
    */
   // Interactive mode needs no task; the loop supplies each one.
   const canRun = opts.allowRun && !opts.dryRun && opts.maxRounds > 1;
+  /**
+   * ⚠️⭐ `--shell` SAYS ITSELF BACK, EVERY RUN, IN THE FIRST LINE ON SCREEN.
+   * The default banner's "may run: node, npm test, …" is a promise; under
+   * `--shell` that promise is void, and a banner still reciting the old list
+   * would be actively misleading — the operator would read the safe sentence
+   * while the unsafe thing happened. A mode that removes a guarantee has to be
+   * impossible to have forgotten you enabled.
+   */
   const mode = opts.dryRun
     ? 'DRY RUN (nothing written, nothing run)'
     : canRun
-      ? `${opts.maxRounds} rounds · may run: node, npm test, npm run, npx vitest, tsc`
+      ? (opts.shell
+        ? `${opts.maxRounds} rounds · ⚠ SHELL MODE — may run ANY program, with your privileges`
+        : `${opts.maxRounds} rounds · may run: node, npm test, npm run, npx vitest, tsc`)
       : `${opts.maxRounds === 1 ? 'single round' : `${opts.maxRounds} rounds`} · will NOT run anything`;
   /**
    * ⚠️ THE BANNER GOES TO STDERR UNDER `--json` TOO, and forgetting it is what
@@ -560,7 +572,14 @@ async function main() {
    * whole document unparseable. "Everything human goes to stderr" has to mean
    * EVERYTHING — including the parts written before anyone thought about JSON.
    */
-  const banner = `acuvo · ${config.model} · ${executor.root}\n       · ${mode}\n`;
+  /**
+   * ⚠️ THE ROOT IS SHORTENED, NOT DROPPED. It printed as a 100+ character
+   * absolute path and wrapped the one line whose whole job is to orient you
+   * before anything happens — but WHICH directory this run will write to is
+   * exactly the fact a banner exists to state, so it stays, shortened and with
+   * any elision marked. See `shortenRoot`.
+   */
+  const banner = `acuvo · ${config.model} · ${shortenRoot(executor.root)}\n       · ${mode}\n`;
   if (opts.json) process.stderr.write(banner);
   else process.stdout.write(banner);
 
@@ -726,6 +745,7 @@ async function main() {
       timeoutMs: opts.timeoutMs,
       maxRounds: opts.maxRounds,
       allowRun: opts.allowRun && !opts.dryRun,
+      shell: opts.shell,
       commandTimeoutMs: opts.commandTimeoutMs,
       /**
        * ── ⭐⭐ THE TWO OPTIONS THAT MOVE THE WALL FROM A COUNTER TO MONEY ────
@@ -1008,6 +1028,7 @@ async function main() {
           timeoutMs: opts.timeoutMs,
           maxRounds: opts.maxRounds,
           allowRun: opts.allowRun && !opts.dryRun,
+          shell: opts.shell,
           commandTimeoutMs: opts.commandTimeoutMs,
           onEvent: () => {},
         });
@@ -1057,15 +1078,6 @@ async function main() {
 
   const outcome = await oneTurn(task, priorMessages);
 
-  /**
-   * ⭐ WHAT CHANGED, not just which files. "3 files written" is homework, not a
-   * report — it makes the user open three files to find out whether the agent
-   * quietly dropped something while making an unrelated change, which is
-   * precisely the failure `edit_file` exists to prevent and a file list cannot
-   * show.
-   */
-  const changes = changesOf(outcome);
-
   if (opts.json) {
     /**
      * ⚠️ ONE OBJECT ON STDOUT AND NOTHING ELSE. Every human line already went
@@ -1081,10 +1093,19 @@ async function main() {
     return doc.exitCode;
   }
 
+  /**
+   * ⚠️ THE CHANGE LIST IS **NOT** PRINTED AGAIN HERE, and that absence is the
+   * fix. `formatSummary` already emits it under its "N files written:" header
+   * (lib/turn.mjs) — this file printed a second, unlabelled copy below the cost
+   * line, so every run that touched a file listed it twice.
+   *
+   * ⭐ WHEN A FACT APPEARS TWICE, DELETE THE COPY WITHOUT THE CONTEXT. The
+   * summary's copy has a header explaining what the list is; this one was bare
+   * paths after a price. Deleting the other one would have been "fixing" the
+   * duplicate by keeping the worse half.
+   */
   const lines = formatSummary(outcome);
   process.stdout.write(`${lines.join('\n')}\n`);
-  const changeLines = formatChanges(changes);
-  if (changeLines.length > 0) process.stdout.write(`${changeLines.join('\n')}\n`);
 
   /**
    * ── ⭐ SHOW THE PICTURE, DO NOT DESCRIBE IT ────────────────────────────────
@@ -1098,6 +1119,20 @@ async function main() {
    * a TTY, so `acuvo --json | jq` is untouched. The path line above stays either
    * way — the image is an addition to the report, never a replacement for it.
    */
+  /**
+   * ⚠️⚠️ THIS BINDING CRASHED THE CLI FOR ONE COMMIT, and the way it got past
+   * me is the part worth keeping. Removing the duplicate change-list PRINT also
+   * removed `const changes`, and I checked for other uses with
+   * `awk '/\bchanges\b/'` — which matched nothing, so I concluded there were
+   * none. **In POSIX awk `\b` is a BACKSPACE, not a word boundary.** The check
+   * could not have matched anything, ever.
+   *
+   * ⭐ A CHECK THAT CANNOT FAIL IS WORSE THAN NO CHECK. It reads as evidence.
+   * And 1,413 green tests said nothing, because this line runs only AFTER a
+   * real completion — the crash surfaced on the first live run, on the report
+   * path, after the work had already succeeded.
+   */
+  const changes = changesOf(outcome);
   for (const c of changes) {
     if (!/\.png$/i.test(c.path ?? '')) continue;
     const shot = renderImage(resolve(root, c.path));

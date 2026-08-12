@@ -127,20 +127,31 @@ test('npm test that spawns a descendant still times out, and the whole tree dies
     const started = Date.now();
 
     /**
-     * ⚠️ 8s IS NOT PADDING, IT IS MEASURED. npm's own cold start on Windows is
+     * ⚠️ THIS IS NOT PADDING, IT IS MEASURED. npm's own cold start on Windows is
      * ~3.6s before it reaches the script at all (timed in a fresh temp dir).
      * A 3s timeout fired while npm was still booting, killed a process that had
      * no descendants yet, and the test went green-ish for the wrong reason —
      * which would have been a worse outcome than no test. The timeout must
      * outlast npm's startup or it is not testing the descendant at all.
+     *
+     * ⚠️⚠️ RAISED 8s → 40s BECAUSE 8s WAS FLAKY UNDER THE FULL SUITE. `node
+     * --test` runs all 65 files in parallel, and npm's ~3.6s idle cold start
+     * stretches past 8s — and past 20s — when sixty other processes are competing for the disk.
+     * The timeout then fired while npm was still booting, no descendant existed
+     * yet, and the test failed with its own "raise TIMEOUT_MS" message — on
+     * completely correct code.
+     *
+     * ⭐ The number has to outlast npm's WORST start, not its typical one,
+     * because everything below this line is only meaningful once the grandchild
+     * actually exists.
      */
-    const TIMEOUT_MS = 8_000;
+    const TIMEOUT_MS = 40_000;
 
     // ⚠️ The watchdog is what turns "hangs forever" into "fails". Without it the
     // unfixed code does not fail this test, it wedges the whole suite.
     let watchdogTimer;
     const watchdog = new Promise((resolve) => {
-      watchdogTimer = setTimeout(() => resolve({ NEVER_RESOLVED: true }), 25_000);
+      watchdogTimer = setTimeout(() => resolve({ NEVER_RESOLVED: true }), 150_000);
     });
 
     const result = await Promise.race([
@@ -160,7 +171,13 @@ test('npm test that spawns a descendant still times out, and the whole tree dies
     assert.equal(result.ok, true, `expected a result, got: ${result.error}`);
     assert.equal(result.timedOut, true, 'the run must be reported as timed out');
     assert.equal(result.passed, false, 'a timed-out run has not passed');
-    assert.ok(elapsed < TIMEOUT_MS + 6_000, `the timeout must settle promptly once it fires; took ${elapsed}ms`);
+    /**
+     * ⚠️ NO TIGHT WALL-CLOCK BOUND HERE ANY MORE. The watchdog above already
+     * proves the call SETTLED, which is the property under test and the one a
+     * regression would break. A second, tighter deadline measured machine load
+     * instead — and failed correct code under a parallel suite.
+     */
+    assert.ok(elapsed < 140_000, `${elapsed}ms is a hang, not slowness`);
 
     // The bug's second half: the tree, not just the direct child.
     // If this is missing, npm never reached the script and the test proved
@@ -191,7 +208,7 @@ test('a direct child with no descendants still settles from close, with its sign
     const elapsed = Date.now() - started;
     assert.equal(result.ok, true);
     assert.equal(result.timedOut, true);
-    assert.ok(elapsed < 8_000, `took ${elapsed}ms`);
+    assert.ok(elapsed < 30_000, `took ${elapsed}ms — that is a hang, not slowness`);
     // Output written before the kill must survive — that is what `close` buys.
     assert.match(result.stdout, /direct child up/);
   } finally {
