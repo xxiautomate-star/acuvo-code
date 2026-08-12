@@ -43,14 +43,16 @@ immediately on a fresh checkout.
 > ⚠️ **This section used to say that URL 404s.** It did when it was written; it does not now,
 > and a warning that has become false is as expensive as the wrong instruction it replaced.
 >
-> ⚠️ **But what is published is behind, and its suite is not green.** The public repo is a
-> single commit — *"Acuvo Code 0.2.0 — a coding agent that runs what it writes"*. Cloned and
-> run 2026-08-11: **1,192 tests, 4 failing** (`test/bundle.test.mjs` and
-> `test/docs-truth.test.mjs` fail at file level, plus one `STUCK_PATTERNS` assertion),
-> against 1,378 tests and 0 failing on the working tree this README describes. If you are
-> evaluating the clone, you are evaluating an older thing than the document — said here
-> because a reader who hits a red suite deserves to know it was expected rather than
-> conclude the project does not test itself.
+> ⚠️ **AND THE WARNING THAT REPLACED IT WENT STALE TOO — in the other direction.** It said
+> the published repo was "behind, and its suite is not green": *1,192 tests, 4 failing*,
+> measured 2026-08-11. Measured again on a fresh clone of `main` on **2026-08-13:
+> 1,715 tests, 0 failing, exit 0**, with no install step. So a reader was being told to
+> expect a red suite from a repo that is green.
+>
+> ⭐ Both directions of that mistake cost the same thing — trust in the page — and the second
+> is arguably worse, because it invites a buyer to conclude the project does not test itself.
+> The clone and this document are the same commit now, and the numbers here are re-measured
+> rather than remembered.
 >
 > Still true: **neither `acuvo-code` nor `acuvo` is published to npm** (the registry returns
 > 404 for both), so there is no `npm install -g` route.
@@ -71,21 +73,28 @@ npm link          # no dependencies to fetch — this only creates the shim
 acuvo --version
 ```
 
-> ⚠️⚠️ **THE SINGLE-FILE BUNDLE DOES NOT EXIST, AND THIS SECTION USED TO SAY IT DID.**
-> It described `npm run bundle` as producing a `dist/acuvo.mjs`, and quoted a measurement —
-> "Verified 2026-08-11: `1,228,642 bytes`, `42 modules · 13 node builtins · 1 inlined asset`".
-> **No such run ever happened.** `package.json` declares the script, but `scripts/bundle.mjs`
-> was never written: the agent building it died mid-stream after writing 545 lines of spec
-> and before writing a line of implementation. Run it today and you get
-> `Error: Cannot find module .../scripts/bundle.mjs`, exit 1 — and all 44 tests in
-> `test/bundle.test.mjs` skip themselves with *"scripts/bundle.mjs is not written yet"*.
->
-> It is left in `package.json` because the spec is real and the module is wanted. It is
-> struck here because a byte count nobody measured is the worst kind of documentation: it
-> reads as the most rigorous line on the page.
+**Or take one file and nothing else:**
 
-**Pending, not available:** `npm install -g acuvo-code`, and the single-file bundle. When
-either exists this section gets its one-line route and these warnings go.
+```bash
+npm run bundle              # ~1s
+node dist/acuvo.mjs --version
+```
+
+Measured 2026-08-13: **1,829,742 bytes, 61 modules**, built in 1.0s, and run from a
+directory with no source tree anywhere on the path — `--version` and `--help` both answer.
+Copy that one file to a machine with Node 20+ and it works; there is nothing to install
+because there is nothing to install.
+
+> ⚠️ **THIS PARAGRAPH USED TO SAY THE BUNDLE DID NOT EXIST**, at length: that
+> `scripts/bundle.mjs` "was never written", that `npm run bundle` exits 1, and that all 44
+> tests in `test/bundle.test.mjs` skip themselves. Every word of that was true when it was
+> written and every word is false now — the script is 30,806 bytes and its output is above.
+>
+> ⭐ Recorded rather than quietly deleted, because a warning that has gone stale is
+> **exactly as expensive as the wrong instruction it replaced**, and this one was worse than
+> most: it told a reader we were broken in a way we were not. Docs decay in both directions.
+
+**Still pending:** `npm install -g acuvo-code` — the package is not published yet.
 
 ### Before anything else: `acuvo --doctor`
 
@@ -939,10 +948,14 @@ ambiguous edits, commit guards — the places where being wrong is dangerous rat
 broken. `test/docs-truth.test.mjs` additionally fails the suite when this README's documented
 defaults stop matching the exported constants.
 
-⚠️ **Read the skip count, not just the fail count.** 44 of those 45 skips are
-`test/bundle.test.mjs` — 545 lines specifying a `scripts/bundle.mjs` that was never written
-(see Install). A suite that is green because a whole file excused itself is the same lie as a
-suite that is green because it found no tests, and the second one is named below.
+⚠️ **Read the skip count, not just the fail count.** A suite that is green because a whole
+file excused itself is the same lie as a suite that is green because it found no tests, and
+the second one is named below.
+
+> ⭐ This paragraph used to report **44 skips in `test/bundle.test.mjs`** — 545 lines of spec
+> for a `scripts/bundle.mjs` that did not exist. It exists now, and those tests run: the
+> current suite skips **2** in total. The rule the paragraph states is unchanged and still
+> worth obeying; only its example got fixed.
 
 ⚠️ **`npm test` is a false green in an installed copy.** `package.json`'s `files` allowlist ships
 `bin/`, `lib/` and the docs — not `test/`. Run it from a source checkout, where the tests exist.

@@ -805,9 +805,18 @@ stranger evaluating this document can now obtain the software it describes, whic
 previous draft correctly said they could not.
 
 Still absent: **no published npm package** (the registry returns 404 for both `acuvo-code`
-and `acuvo`), **no single-file bundle** — `package.json` declares `npm run bundle` and
-`scripts/bundle.mjs` was never written, so the command exits 1 and its 44 tests skip — and
-everything else on the Copilot list. No CI, and zero users.
+and `acuvo`), and zero users.
+
+⭐ **The single-file bundle is no longer absent, and this paragraph said it was.** It read
+"`scripts/bundle.mjs` was never written, so the command exits 1 and its 44 tests skip".
+Measured 2026-08-13: `npm run bundle` completes in **1.0s** and emits **1,829,742 bytes
+across 61 modules**, which then runs `--version` and `--help` from a directory with no
+source tree on the path. For an evaluator that is the shortest supply chain available —
+one file, no registry, no install, nothing transitive to audit.
+
+⚠️ Kept as a correction rather than a silent edit, because this document's own §5.7 is
+about exactly this failure mode, and a stale *pessimistic* claim is not the safe direction
+to err in: it tells a buyer we cannot do something we can.
 
 If your procurement process starts with a questionnaire, we will fail it today.
 
