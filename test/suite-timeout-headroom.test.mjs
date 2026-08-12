@@ -40,15 +40,24 @@ test('⭐⭐ the suite still has a finite timeout — a hang must never be able 
 
 test('⚠️ …and enough headroom that a slow-but-healthy file is not failed', () => {
   /**
-   * The measured worst case is the whole suite at 90.4s wall-clock, with
-   * tsserver.test.mjs the long pole. A timeout below that is a false-failure
-   * generator on a busy machine — which is how this rule got written.
+   * ⚠️ THE BUDGET IS PER *TEST*, SO THE NUMBER THAT MATTERS IS THE SLOWEST FILE,
+   * NOT THE SUITE. An earlier version of this test asserted against a 90.4s
+   * suite wall-clock, which was one measurement on a quiet machine dressed up as
+   * a constant: across a single evening the same suite ran 90s, 113s, 143s and
+   * 193s purely on background load. Anchoring a guard to the lucky end of a 2x
+   * spread is how it starts failing correct work again.
+   *
+   * The stable figure is the long pole measured in isolation, three consecutive
+   * runs: test/tsserver.test.mjs at 28.5s, spawning real tsserver processes. It
+   * exceeded a 60s budget under 8-way parallelism, which is the observation that
+   * produced this rule — so the multiplier has to absorb contention, not just
+   * jitter.
    */
-  const observedSuiteWallClockMs = 90_400;
+  const slowestFileIdleMs = 28_500;
   const ms = Number(/--test-timeout=(\d+)/.exec(pkg.scripts.test)[1]);
   assert.ok(
-    ms >= observedSuiteWallClockMs * 1.5,
-    `${ms}ms leaves too little headroom over the measured ${observedSuiteWallClockMs}ms suite — `
-    + 'a slow machine will fail correct work, which is worse than no timeout at all',
+    ms >= slowestFileIdleMs * 4,
+    `${ms}ms is under 4x the slowest file's idle time (${slowestFileIdleMs}ms). That file already blew a 60s `
+    + 'budget under parallel load, so anything tighter fails correct work — which is worse than no timeout.',
   );
 });
