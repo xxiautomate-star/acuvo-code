@@ -182,6 +182,7 @@ Every flag below is real; run `acuvo --help` for the authoritative list.
 | `--dry-run` | Print what *would* be written. Touches nothing, runs nothing. |
 | `--strict` | Exit 1 when the run wrote nothing **and** ran nothing. Off by default — a question can be answered correctly without touching anything — but **on automatically when `CI` is set**, because a build step that reports success for doing nothing is the failure the exit code exists to prevent. |
 | `--offline` | With `--doctor`: make no network request at all. Your key is not sent anywhere and every endpoint line reads "not probed". Without it, `--doctor` verifies your key against openrouter.ai — which is how it can tell you a key is *present but revoked*. |
+| `--since <period>` | With `acuvo spend`: how far back to total. `7d`, `24h`, `2w`, or a date like `2026-08-01`. Omit it for everything the log still holds. An unparseable period is refused rather than silently meaning "all time". |
 | `--version`, `-v` | Print the version. |
 | `--help`, `-h` | Usage. |
 
@@ -348,6 +349,27 @@ started**, discovered from that process's own output.
 ⚠️ **Everything started this way is killed when the run ends** — on normal exit and on
 Ctrl-C, with the whole process tree, not just the direct child. Four at a time, and the
 refusal names the ones already running.
+
+### What has it cost me?
+
+```
+acuvo spend                      # everything the log still holds
+acuvo spend --since 7d           # or 24h, 2w, or 2026-08-01
+acuvo spend --json               # one object, for a script
+```
+
+Every run already appends one redacted line to `.acuvo/audit/<date>.jsonl` including its
+cost; this reads them back. No API key, no completion, no network.
+
+> ⚠️ **A run that never recorded a cost is shown separately and is NEVER counted as zero.**
+> A run that died on a 401 did not bill anything and genuinely does not know what it cost —
+> folding that in as `$0.00` would produce a total that is confidently too low, in the one
+> report you open *because* you don't trust your memory of it. A real `$0.00` run (refused
+> before any call) is a **known** zero and does count.
+>
+> The report also says how far back the log reaches, because `audit.mjs` prunes whole days —
+> "all time" means "as far back as this still goes", and a total that silently starts
+> mid-history is the same kind of lie.
 
 ### Several terminals, one checkout
 

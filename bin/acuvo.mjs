@@ -48,6 +48,7 @@ import {
   USER_POLICY_FILE, USER_POLICY_ENV, WORKSPACE_POLICY_FILE,
 } from '../lib/policy.mjs';
 import { createBudget, remainingForTurn } from '../lib/budget.mjs';
+import { summariseSpend, readAuditFiles, formatSpend, parseSince } from '../lib/spend.mjs';
 
 /**
  * ── ⭐⭐ THE FIVE CAPABILITIES THAT WERE BUILT AND REACHED BY NOTHING ────────
@@ -462,6 +463,30 @@ async function main() {
    * a diagnostic that quietly breaks other people's locks would be the worst
    * possible reading of "show me what is going on".
    */
+  /**
+   * ── ⭐ `acuvo spend` — READING BACK WHAT EVERY RUN ALREADY WROTE DOWN ──────
+   *
+   * `parseAuditLog` shipped finished, exported and tested with ZERO runtime
+   * callers, so the tool recorded `costUsd` on every run and nobody could ask
+   * for it. For a product sold on telling you the price before it runs, being
+   * unable to answer "what have I spent" afterwards is the pitch with its last
+   * sentence removed.
+   *
+   * ⚠️ Reads only. No key, no completion, no network — same class as `--doctor
+   * --offline` and `leases`.
+   */
+  if (opts.command === 'spend') {
+    const since = parseSince(opts.since);
+    if (since && since.error) die(since.error, EXIT_USAGE);
+    const summary = summariseSpend(readAuditFiles(root), { since });
+    if (opts.json) {
+      process.stdout.write(`${JSON.stringify(summary, null, 2)}\n`);
+      return EXIT_OK;
+    }
+    process.stdout.write(`\n${formatSpend(summary, { since }).map((l) => `  ${l}`).join('\n')}\n\n`);
+    return EXIT_OK;
+  }
+
   if (opts.command === 'leases') {
     const view = inspect(root);
     if (opts.json) {
