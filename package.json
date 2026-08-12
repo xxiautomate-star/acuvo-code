@@ -11,9 +11,11 @@
     "node": ">=20"
   },
   "scripts": {
-    "test": "node --test test/*.test.mjs",
+    "test": "node --test --test-timeout=60000 test/*.test.mjs",
     "bundle": "node scripts/bundle.mjs --out dist/acuvo.mjs",
-    "bundle:mcp": "node scripts/bundle.mjs --entry bin/acuvo-mcp.mjs --out dist/acuvo-mcp.mjs"
+    "bundle:mcp": "node scripts/bundle.mjs --entry bin/acuvo-mcp.mjs --out dist/acuvo-mcp.mjs",
+    "machine": "node scripts/machine.mjs status",
+    "machine:stop": "node scripts/machine.mjs stop"
   },
   "dependencies": {},
   "devDependencies": {},

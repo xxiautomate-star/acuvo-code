@@ -133,9 +133,16 @@ test('the banner is capped, marks blocked steps, and reports an all-done plan ho
   const root = ws();
   planStart(root, { task: 't', steps: ['a', 'b', 'c', 'd', 'e'] });
   planStep(root, { id: 's2', state: 'blocked', note: 'no network' });
+  /**
+   * ⚠️ THE NUDGE IS PART OF THIS LINE NOW, and it belongs here. Measured on a
+   * real run: the model called `plan_start`, worked for eight rounds, and never
+   * called `plan_step` once — so the countdown printed "0/3 done" every round
+   * and counted nothing. A status line that names no action produces no action.
+   */
   assert.equal(
     formatBanner(loadPlan(root).plan),
-    'plan: 0/5 done · 5 remaining: a, b (blocked), c, +2 more',
+    'plan: 0/5 done · 5 remaining: a, b (blocked), c, +2 more'
+      + ' — mark one finished as you go: plan_step {"id":"s1","state":"done"}',
   );
 
   for (const id of ['s1', 's2', 's3', 's4', 's5']) planStep(root, { id, state: 'done' });
@@ -333,4 +340,47 @@ test('savePlan reports a failure as data rather than throwing', () => {
   const bad = savePlan('C:/definitely/not/a/real/workspace/xyzzy', { version: 1, task: 't', steps: [] });
   assert.equal(bad.ok, false);
   assert.equal(typeof bad.error, 'string');
+});
+
+/**
+ * ── ⚠️⚠️ A STATUS LINE THAT NAMES NO ACTION PRODUCES NO ACTION ──────────────
+ *
+ * MEASURED on a real 8-round run building a landing page: the model called
+ * `plan_start`, did the work, and printed `plan: 0/3 done · 3 remaining` on
+ * EVERY SINGLE ROUND. It never called `plan_step` once — eight rounds of a
+ * countdown that never counted, costing tokens per round and telling the model
+ * nothing it could act on.
+ *
+ * ⭐ Same fix as a good refusal: name the verb. A refusal that says only "not
+ * allowed" costs a round because there is nothing to do differently; "0/3 done"
+ * is that mistake wearing a friendlier face.
+ */
+test('⚠️⚠️ while NOTHING is marked, the banner names the verb and the real arguments', () => {
+  const plan = { steps: [
+    { id: 's1', text: 'Generate a hero image', state: 'todo' },
+    { id: 's2', text: 'Write the HTML', state: 'todo' },
+  ] };
+  const line = formatBanner(plan, { round: 2, maxRounds: 8 });
+  assert.match(line, /plan_step/, 'the model has to be told WHICH tool advances the plan');
+  /**
+   * ⚠️ THE ARGUMENT NAMES ARE ASSERTED AGAINST THE SCHEMA, not typed out. My
+   * first draft suggested `{"step":1,...}` when the tool requires `{"id":"s1"}`
+   * — an instruction that would have been REFUSED, which is worse than silence:
+   * it spends a round AND teaches a shape that cannot work.
+   */
+  const schema = planToolSchemas().find((t) => t.function.name === 'plan_step');
+  for (const required of schema.function.parameters.required) {
+    assert.match(line, new RegExp(`"${required}"`), `the nudge omits the required argument "${required}"`);
+  }
+  assert.match(line, /"s1"/, 'quoting a REAL id beats a placeholder the model has to translate');
+});
+
+test('⭐ the nudge disappears the moment one step is marked', () => {
+  const plan = { steps: [
+    { id: 's1', text: 'Generate a hero image', state: 'done' },
+    { id: 's2', text: 'Write the HTML', state: 'todo' },
+  ] };
+  const line = formatBanner(plan, { round: 3, maxRounds: 8 });
+  assert.equal(/plan_step/.test(line), false, 'a reminder that keeps nagging after it was understood is noise');
+  assert.match(line, /1\/2 done/);
 });

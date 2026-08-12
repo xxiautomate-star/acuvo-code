@@ -606,12 +606,21 @@ test('⭐ gh auth is reused before demanding a new token', async () => {
   const { findToken } = await import('../lib/github.mjs');
   // Asking someone to configure what they have already configured is how a
   // feature goes unused.
-  const viaGh = findToken({ env: {}, runImpl: () => ({ status: 0, stdout: 'gho_abc\n' }) });
+  /**
+   * ⚠️ `resolveImpl` IS INJECTED because `gh` is now resolved to an ABSOLUTE
+   * PATH before it is spawned (ENTERPRISE §3.3 — a `gh.exe` in the current
+   * directory used to beat the real one on Windows). With `env: {}` there is no
+   * PATH, so nothing resolves and nothing is spawned, which is the correct new
+   * behaviour. Stubbing the resolver keeps this test about the thing it is
+   * named after, and keeps it passing on a machine with no gh installed.
+   */
+  const gh = () => ({ ok: true, file: '/usr/bin/gh' });
+  const viaGh = findToken({ env: {}, resolveImpl: gh, runImpl: () => ({ status: 0, stdout: 'gho_abc\n' }) });
   assert.deepStrictEqual([viaGh.ok, viaGh.source], [true, 'gh auth token']);
   // An explicit env var still wins — it is the more deliberate signal.
-  const viaEnv = findToken({ env: { GITHUB_TOKEN: 'ghp_x' }, runImpl: () => ({ status: 0, stdout: 'gho_abc' }) });
+  const viaEnv = findToken({ env: { GITHUB_TOKEN: 'ghp_x' }, resolveImpl: gh, runImpl: () => ({ status: 0, stdout: 'gho_abc' }) });
   assert.strictEqual(viaEnv.token, 'ghp_x');
-  const none = findToken({ env: {}, runImpl: () => ({ status: 1, stdout: '' }) });
+  const none = findToken({ env: {}, resolveImpl: gh, runImpl: () => ({ status: 1, stdout: '' }) });
   assert.strictEqual(none.ok, false);
   assert.match(none.error, /gh auth login/);
 });

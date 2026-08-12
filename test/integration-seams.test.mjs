@@ -161,7 +161,21 @@ test('⭐ the plan tools return the BANNER, which is the only part worth sending
   assert.strictEqual(started.result.ok, true);
   const text = toolResultText(started);
   assert.match(text, /plan: 0\/2 done/);
-  assert.ok(!text.includes('{'), 'a banner rendered as JSON is a banner nobody reads');
+  /**
+   * ⚠️ NARROWED FROM `!text.includes('{')`, DELIBERATELY. What this assertion
+   * protects is "the banner is a readable line, not the plan dumped as JSON" —
+   * and a blanket ban on `{` also forbids QUOTING THE CALL the model is supposed
+   * to make. Measured on a real 8-round run: the model called `plan_start`, then
+   * never called `plan_step` once, so the countdown printed "0/3 done" every
+   * round and counted nothing. The banner now names the verb and its real
+   * arguments, and the plan advanced 0/3 → 1/3 → 2/3 on the very next run.
+   *
+   * ⭐ A check that forbids the fix for the bug it lives next to is a check that
+   * has outlived its reasoning. What must still never appear is the SERIALISED
+   * PLAN, which is what the original was aimed at.
+   */
+  assert.ok(!text.includes('"steps"'), 'a banner rendered as the plan-as-JSON is a banner nobody reads');
+  assert.ok(text.split('\n').length <= 2, 'the banner is ONE line the model reads without parsing');
 });
 
 /* ────────────────────────────────────────────────────────────────────────────

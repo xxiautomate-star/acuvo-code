@@ -24,7 +24,14 @@
 > and are corrected throughout; the README's unscoped credential clause (§3.7) is fixed.
 > **§3.2 was never open by the time this document claimed it was** — the guard had already
 > landed and the audit read the wrong line; corrected in place at §3.2 with the re-measurement.
-> **Not fixed:** the §3.1 spawn itself on an ordinary run.
+>
+> **Closed 2026-08-12, each pinned by a test in `test/enterprise-gaps.test.mjs`:** §3.1
+> (the ordinary-run MCP spawn — consent per config fingerprint, trust store outside the
+> workspace, fails closed with no terminal), §3.3 (`gh` now resolved to an absolute path
+> and the child no longer inherits the API key), §3.4 (the write guard checks every path
+> segment, so a nested `node_modules` is refused), §3.5 (a provider outage is a failed
+> run in the exit code, not only in the audit line), and the model-attribution half of
+> §3.6. **Still open:** the smaller media defects in §3.6, which were not re-audited.
 >
 > If you are a security reviewer, start at §2 and §3. §3 is the list you would have
 > produced yourself; we would rather hand it to you than have you find it.
@@ -639,16 +646,16 @@ default moves, the suite goes red instead of the documentation going quietly wro
 
 | # | gap | class | fix size | state |
 |---|---|---|---|---|
-| 3.1 | `.mcp.json` auto-spawn on an ordinary run, unscrubbed env, no consent | RCE from a cloned repo | 2 h | ⚠️ **open** (`--dry-run`/`--no-run` half ✅ fixed) |
+| 3.1 | `.mcp.json` auto-spawn on an ordinary run, unscrubbed env, no consent | RCE from a cloned repo | done | ✅ **fixed 2026-08-12** — one-time consent per config fingerprint (`lib/mcp-consent.mjs`), trust store under `$HOME` and **never** in the workspace, fails closed with no terminal, and the binary is announced BEFORE the spawn. The audit's own repro (`evil.cjs` + committed `.mcp.json`, `--max-rounds 2`) no longer writes `PWNED.txt`. |
 | 3.2 | Pre-load ships `.env`/`*.pem`/`id_rsa` to the provider | credential disclosure | done | ✅ **fixed, and it was fixed before this document said otherwise** — `gatherWorkspaceContext` runs every candidate through `refusedCommitPath`; re-measured and pinned by a test |
-| 3.3 | `gh` resolved from cwd on Windows | binary hijack | 30 min | ⚠️ **open** — `findToken` still calls `runImpl('gh', …)` with no absolute path |
-| 3.4 | Write guard checks `segments[0]` only; `.github/` unlisted | supply chain | 15 min | ⚠️ **open** — `WRITE_FORBIDDEN_ROOTS.has(segments[0])` unchanged |
-| 3.5 | Outage exits 0 / `ok: true` (and can print `✔ VERIFIED`) | CI correctness | 30 min | ⚠️ **open** — now *recorded* in the audit line, still not in the exit code |
-| 3.6 | Reported model ≠ answering model; media caps and `--dry-run` gates; `audioB64` key bug | audit + correctness | 1 h | ⚠️ **open** — audit log has the field and it is always `null` |
+| 3.3 | `gh` resolved from cwd on Windows | binary hijack | done | ✅ **fixed 2026-08-12** — resolved through `resolveOnPath` to an absolute path (measured: `C:\Program Files\GitHub CLI\gh.EXE`), and the child now gets `scrubEnvironment(env)` instead of the API key |
+| 3.4 | Write guard checks `segments[0]` only; `.github/` unlisted | supply chain | done | ✅ **fixed 2026-08-12** — every segment is checked, so `packages/web/node_modules/…` is refused. ⚠️ `.github/` `.husky/` `.vscode/` deliberately **left writable**: they are tracked and appear in every diff, "add a CI workflow" is an ordinary request, and refusing correct work is the more expensive mistake. Reasoning in `workspace.mjs`; revisit as a policy setting, not by extending the set. |
+| 3.5 | Outage exits 0 / `ok: true` (and can print `✔ VERIFIED`) | CI correctness | done | ✅ **fixed 2026-08-12** — `sessionFailed` now reads `stoppedBecause === 'model-error'`, the summary names the provider instead of blaming the model, and the parallel path uses the same verdict function (it had the identical hole) |
+| 3.6 | Reported model ≠ answering model; media caps and `--dry-run` gates; `audioB64` key bug | audit + correctness | mostly | ✅ **model attribution FIXED** (re-measured: the audit record carries `"answered":…,"chain":[…]`). ✅ **`audioB64` FIXED** — it sends `audio_b64` now. ✅ **`transcribe` FIXED** — it took no `dryRun` at all and had no size or type check, so an unbounded upload of any workspace file was one wrong argument away; now capped at 25MB, restricted to audio/video extensions, and refused under `--dry-run`. ⚠️ **DELIBERATELY NOT CHANGED:** `seePage` / `speak` / `makeDocument` still POST under `--dry-run`. They have always used `dryRun` to mean "do not WRITE", `designPass` passes it straight through to render-and-critique, and 15+ tests encode that meaning — **redefining the flag underneath a shipped feature is a product decision, not a bug fix.** Roman's call; forcing it broke 13 tests protecting the design loop. |
 | 3.7 | README credential clause unscoped | documentation | 5 min | ✅ **fixed** |
 | 3.8 | Documented `--max-rounds`/`--max-tokens` defaults wrong in both docs | documentation | 15 min | ✅ **fixed**, and now guarded by a test |
 
-Total for what remains: **under a day of work.**
+Total for what remains: **one deliberate open question — whether `--dry-run` should stop a render POST (§3.6) — and nothing else in this table.** Every other row is closed and pinned by a test in `test/enterprise-gaps.test.mjs` — a gap closed without a test is a gap that reopens on the next refactor, which is how three of these stayed open for weeks after being written down.
 
 ⚠️ **One gap has been closed since the first draft that is not in this table, because it
 was never a defect — it was missing product:** there is now an audit log (§2.2/4).
@@ -826,11 +833,11 @@ For completeness, the properties none of them offers:
   (`lib/media.mjs`), and generates imagery with no configuration and no account
   (`lib/imagegen.mjs`) — critiqued before it is accepted, and reported as unreviewed when
   no critic is available.
-- ⭐ **Zero dependencies.** The entire auditable surface is 53 files and 32,398 lines,
-  and there is no `node_modules` behind it. (Counted 2026-08-11 from
+- ⭐ **Zero dependencies.** The entire auditable surface is 65 files and 38,300 lines,
+  and there is no `node_modules` behind it. (Counted 2026-08-12 from
   `lib/*.mjs` + `bin/*.mjs`; `test/docs-truth.test.mjs` fails the build if this number
-  drifts, which is why it went 18 → 41 → 46 → 52 → 53 as modules landed. ⭐ A count that
-  fails the build is the only kind that stays true — this one has now caught its own
+  drifts, which is why it went 18 → 41 → 46 → 52 → 53 → 57 → 60 → 61 → 62 → 65 as modules landed. ⭐ A
+  count that fails the build is the only kind that stays true — this one has now caught its own
   staleness five times in a day, most recently the moment `mcp-defaults.mjs` shipped.
   ⚠️ **And the check is weaker than it reads:** it asserts the document *contains the
   digits*, so a coincidental "53" anywhere passes it. Verified by mutation — replacing

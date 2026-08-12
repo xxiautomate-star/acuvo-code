@@ -306,3 +306,69 @@ test('the audit log is documented as shipped, and its real directory is named', 
     'ENTERPRISE.md still lists "No audit log" as a gap, but lib/audit.mjs ships and writes one.',
   );
 });
+
+// ── ⭐⭐ A FLAG THAT NOBODY DOCUMENTED IS A FLAG NOBODY CAN USE ─────────────
+
+test('every flag the parser accepts has a row in the README options table', () => {
+  /**
+   * ⚠️ MEASURED 2026-08-12: three of twenty-one flags — `--best-of`, `--shell`
+   * and `--max-tier` — appeared NOWHERE in README.md. Two of them had shipped
+   * days earlier. `--shell` in particular changes what the tool is allowed to
+   * execute, so the undocumented one was also the most consequential.
+   *
+   * The tests above check that documented DEFAULTS are true. Nothing checked
+   * that a flag was documented at all, so the drift was silent and permanent —
+   * `acuvo --help` knew, and the file people actually read did not.
+   *
+   * ⭐ DERIVED FROM THE PARSER, never a typed-out list, so a flag added tomorrow
+   * fails this test until somebody writes the row.
+   */
+  const source = read('lib/cli-args.mjs');
+  const flags = [...new Set([...source.matchAll(/arg === '(--[a-z-]+)'/g)].map((m) => m[1]))];
+
+  assert.ok(flags.length >= 15, `only found ${flags.length} flags — the regex has rotted`);
+
+  const undocumented = flags.filter((f) => !README.includes(`| \`${f}`));
+  assert.deepEqual(
+    undocumented,
+    [],
+    `these flags have no README options-table row: ${undocumented.join(', ')}. `
+      + 'Add a row, or remove the flag — a flag only --help knows about is one nobody finds.',
+  );
+});
+
+test('the README does not promise flags the parser has never heard of', () => {
+  /**
+   * ⚠️ The other direction, and the more embarrassing one: documentation for a
+   * flag that does not exist sends the reader to an error message.
+   *
+   * ⚠️ BOTH SOURCES, AND FINDING OUT WHY WAS THE POINT. This first checked only
+   * `cli-args.mjs` and flagged six REAL flags as invented — `--sessions`,
+   * `--resume`, `--continue`, `--no-session`, `--no-audit`, `--replay` — because
+   * they are parsed in `bin/acuvo.mjs` instead. The CLI's surface is defined in
+   * two files, which is worth knowing and is exactly the sort of thing a
+   * documentation test discovers.
+   */
+  const sources = read('lib/cli-args.mjs') + read('bin/acuvo.mjs');
+  const rows = [...README.matchAll(/^\| `(--[a-z-]+)/gm)].map((m) => m[1]);
+  const invented = [...new Set(rows)].filter((f) => !sources.includes(`'${f}'`));
+  assert.deepEqual(invented, [], `the README documents flags the parser does not accept: ${invented.join(', ')}`);
+});
+
+test('the README states the real size of the tool registry', async () => {
+  /**
+   * ⚠️ It said 36 while shipping 45 — and the sentence around it invites the
+   * reader to "count it yourself", which is the worst place to be wrong. Same
+   * reasoning as the ENTERPRISE.md file-count test: a number quoted at a
+   * sceptical reader has to survive them checking it.
+   *
+   * ⚠️ It also named `TOOL_NAMES`, which is not what holds them. A citation that
+   * does not resolve is a second wrong fact in the same sentence.
+   */
+  const { TOOL_SCHEMAS } = await import('../lib/tools.mjs');
+  assert.ok(
+    README.includes(`**${TOOL_SCHEMAS.length} tools**`),
+    `README does not state the real registry size (${TOOL_SCHEMAS.length}).`,
+  );
+  assert.ok(README.includes('`TOOL_SCHEMAS`'), 'and it must cite the export that actually holds them');
+});

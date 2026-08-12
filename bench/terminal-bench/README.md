@@ -72,3 +72,85 @@ Nineteen checks, no Docker, no spend — including that `AgentContext` still has
 `cost_usd`. An adapter that sets `context.cost` on a model whose field is
 `cost_usd` reports **every run as free**, and free is the most flattering
 possible way to be wrong.
+
+## ⚠️⚠️ IT DOES NOT PRODUCE A NUMBER ON THIS MACHINE YET (2026-08-12)
+
+Two real runs, both zero signal. Recorded here because the next person will
+otherwise spend the same afternoon.
+
+**Run 1 — `-n 20`, 89 trials, 19 completed / 19 errored.** ⚠️ `-n` is
+`--n-concurrent`, **not** the task count; `-l/--n-tasks` is the limit. Twenty
+containers each apt-installing curl+git and pulling a **52MB node tarball** is
+~1GB of concurrent download, and every trial died on `AgentSetupTimeoutError`.
+
+**Run 2 — `-l 12 -n 2 --timeout-multiplier 2.5`, 6 completed / 6 errored.** The
+concurrency was not the whole story. The exception text says it exactly:
+
+```
+Command failed (exit 2): ... curl -fsSL "https://nodejs.org/dist/..."
+stdout: bash: line 1: curl: command not found
+gzip: stdin: unexpected end of file
+```
+
+⭐ **`ensure_system_dependencies(("curl","git"))` did not actually leave curl in
+the container.** So `install` cannot download node, and the trial dies before the
+model is called once. It is not our agent failing tasks — the agent never ran.
+
+### The fix, specified
+
+**Stop needing the network inside the container.** Both of the things `install`
+fetches can be handed to it instead:
+
+- `dist/acuvo.mjs` is a **single 1.4MB bundle** (`node scripts/bundle.mjs`) and is
+  the whole agent — no clone, no git.
+- node itself is the only real dependency, and the tarball can be cached once on
+  the host rather than pulled per container.
+
+Harbor's installed-agent base exposes file upload; using it for both removes curl,
+git and every network round trip from setup. That is also the honest version of the
+claim this README already makes — "the install is one clone, and that is the
+point" becomes "the install is one file".
+
+⚠️ Until that lands, quoting any Terminal-Bench number for Acuvo Code would be
+quoting an empty set.
+
+## ⚠️⚠️ THIS RUNS ON SOMEBODY'S PERSONAL LAPTOP — RULES, NOT SUGGESTIONS
+
+2026-08-12: a run here made the owner's machine unusable. *"I cannot even watch
+Netflix, I can't even change tabs."* Twenty containers on 8 cores, and — the real
+cause — **no `~/.wslconfig` at all**, so WSL2 (which is what Docker Desktop runs
+on) helped itself to every logical processor and most of the 15.6GB of RAM.
+
+⭐ The instruction was explicitly **not** "do less work". It was *"we need to be
+able to control my laptop"*. So: a ceiling and a kill switch, never a smaller
+ambition.
+
+**Before any run:**
+
+```bash
+node scripts/machine.mjs status     # is a ceiling in place, and are we already running?
+```
+
+It refuses to start heavy work when `~/.wslconfig` sets no `processors=` and
+`memory=` — a warning at the top of a two-hour unattended run is a warning nobody
+is present to read.
+
+**Run it quietly, and never above `-n 1` on this machine:**
+
+```bash
+node scripts/machine.mjs run -- .venv/Scripts/harbor.exe run ... -l 12 -n 1
+```
+
+`-n` is CONCURRENCY. `-n 20` is twenty containers, and it is what caused this.
+
+**After any run — always:**
+
+```bash
+node scripts/machine.mjs stop       # containers, orphaned docker.exe, then the VM
+```
+
+⚠️ **Killing harbor does NOT clean up.** Measured: after `pkill harbor`, **21
+orphaned `docker.exe` / `docker-compose.exe` processes** were still resident. The
+containers were gone and the machine was still being hammered. `stop` kills
+containers first, then the processes, then shuts the VM down so its RAM is
+returned immediately rather than held until reboot.

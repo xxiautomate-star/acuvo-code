@@ -225,3 +225,42 @@ test('⚠️ when our engine is DARK the chain moves on without blaming it', asy
     );
   } finally { ws.cleanup(); }
 });
+
+/* ── ⚠️ the per-run ceiling ──────────────────────────────────────────────── */
+
+test('⚠️⚠️ image generation is capped per run, and the refusal names what to do instead', async () => {
+  /**
+   * ⚠️ MEASURED, NOT IMAGINED. On a real landing-page task the model called
+   * `generate_image` FOUR TIMES in the first five rounds — not retrying, but
+   * asking for a different subject each time. Defensible taste, indefensible
+   * economics: every call is GPU seconds plus a whole round, and each makes up
+   * to TWO renders internally, so that was up to eight renders before a line of
+   * HTML existed.
+   *
+   * ⭐ Every other expensive verb already had a ceiling — web_search 12,
+   * read_image 12, fetch_url 10. Image generation was the only unbounded one
+   * and the most expensive. An omission, not a decision.
+   */
+  const { generateImage, resetImageState, MAX_IMAGES_PER_PROCESS } = await import('../lib/imagegen.mjs');
+  const ws = workspace();
+  resetImageState();
+  try {
+    const args = {
+      prompt: 'a cup of coffee',
+      executor: ws,
+      env: { ...ENV, OPENROUTER_API_KEY: '' },
+      fetchImpl: async () => jsonRes({ ok: true, image_b64: b64 }),
+    };
+    for (let i = 0; i < MAX_IMAGES_PER_PROCESS; i += 1) {
+      const r = await generateImage(args);
+      assert.equal(r.ok, true, `image ${i + 1} should have been allowed: ${r.error}`);
+    }
+    const over = await generateImage(args);
+    assert.equal(over.ok, false);
+    assert.match(over.error, /already generated \d+ images/);
+    assert.match(over.error, /Use one you already made/, 'a cap with no alternative just stops the run');
+  } finally {
+    resetImageState();
+    ws.cleanup();
+  }
+});

@@ -18,12 +18,40 @@
  *      never hangs.
  */
 
-import { test } from 'node:test';
+import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+/** Temp dirs made by the credential-finder tests below. */
+const made = [];
+after(() => { for (const d of made) { try { rmSync(d, { recursive: true, force: true }); } catch { /* best effort */ } } });
+
+/**
+ * A workspace with NOTHING beside it, so advice that depends on neighbouring
+ * projects is deterministic. `clearCredentialCache` because the lookup is
+ * memoised per root and a stale answer from another test would leak in.
+ */
+function isolatedRoot() {
+  /**
+   * ⚠️⚠️ NESTED, AND A FLAT TEMP DIR WAS NOT ENOUGH. The lookup scans the
+   * workspace's PARENT and its children — and the parent of a bare `mkdtemp` is
+   * `%TEMP%`, which on this machine is full of `.env.local` files written by
+   * other tests in this very suite. So "isolated" was quietly scanning several
+   * hundred neighbours and finding whatever the last test left behind.
+   *
+   * A workspace inside its own private parent has exactly one sibling: itself.
+   */
+  const parent = mkdtempSync(join(tmpdir(), 'acuvo-bare-'));
+  made.push(parent);
+  const root = join(parent, 'workspace');
+  mkdirSync(root, { recursive: true });
+  clearCredentialCache();
+  return root;
+}
+
+import { mediaConfig } from '../lib/media.mjs';
 import {
   runDoctor,
   formatDoctor,
@@ -34,6 +62,7 @@ import {
   gitignoreCoversAcuvo,
   scrubSecrets,
   toolOffer,
+  clearCredentialCache,
   summarise,
   withTimeout,
   DOCTOR_STATES,
@@ -292,13 +321,32 @@ test('⭐ toolOffer reports what WOULD be offered here, and every withheld tool 
   }
 });
 
-test('⭐⭐ a withheld MEDIA tool names the EXACT env var — "TTS: unavailable" ends no investigation', () => {
-  const o = toolOffer({ root: REPO, env: {}, allowRun: true, maxRounds: 8 });
+test('⭐⭐ a withheld MEDIA tool names the EXACT variable — "TTS: unavailable" ends no investigation', () => {
+  /**
+   * ⚠️ THE PRINCIPLE IS UNCHANGED AND THE VARIABLE IT NAMES CHANGED, 2026-08-12.
+   * This asserted `MODAL_TTS_URL` for the four services whose URL `media.mjs`
+   * BAKES IN — so the advice sent the reader to find an endpoint they do not
+   * have, when the only real blocker is one credential. Naming a specific
+   * variable is still the rule; naming the WRONG one was the bug.
+   *
+   * `see_page` keeps its URL, because the renderer genuinely has no default.
+   */
+  /**
+   * ⚠️⚠️ AN ISOLATED ROOT, BECAUSE THE ADVICE IS NOW CONTEXT-SENSITIVE. The
+   * doctor looks for the credential in neighbouring projects, so run against the
+   * real REPO this asserted one sentence on a machine where nothing is nearby
+   * and a different one on this laptop, where `MODAL_VIDEO_SECRET` sits in a
+   * sibling. A test whose result depends on what happens to be next to the
+   * checkout is a test that gets deleted the first week it fires in CI.
+   */
+  const bare = isolatedRoot();
+  const o = toolOffer({ root: bare, env: {}, allowRun: true, maxRounds: 8 });
   const byName = Object.fromEntries(o.withheld.map((w) => [w.name, w]));
-  assert.match(byName.speak.why, /MODAL_TTS_URL/);
+  for (const name of ['speak', 'transcribe', 'make_document']) {
+    assert.match(byName[name].fix, /ACUVO_MEDIA_SECRET/, `${name} must name the credential that actually unblocks it`);
+    assert.doesNotMatch(byName[name].why, /unavailable/i);
+  }
   assert.match(byName.see_page.why, /RENDER_AUDIT_URL/);
-  assert.match(byName.transcribe.why, /MODAL_TRANSCRIBE_URL/);
-  assert.match(byName.make_document.why, /MODAL_PRESS_URL/);
 });
 
 test('--no-run is named by name for every tool it withholds', () => {
@@ -477,13 +525,44 @@ test('⭐ but when the FALLBACK variable is the one carrying the value, the repo
   assert.equal(find(broken, 'media.see_page').state, 'broken');
 });
 
-test('an unset endpoint is DARK and the line ends the investigation', async () => {
+test('an endpoint with NO SECRET is DARK and the line ends the investigation', async () => {
+  /**
+   * ⚠️⚠️ WHAT "DARK" MEANS CHANGED, AND THIS TEST HAD TO FOLLOW. It used to
+   * delete `MODAL_TTS_URL` and expect dark — but the URLs are baked in now
+   * (measured: all eight media endpoints are LIVE, and a fresh install could
+   * not reach a single one because nobody had told it the addresses). With a
+   * secret present, an unset URL is no longer dark; it falls back to ours.
+   *
+   * ⭐ So the dark path is the one that still matters on a PAID GPU: no
+   * credential, no capability. Fail shut.
+   */
   const env = { ...FULL_ENV };
   delete env.MODAL_TTS_URL;
+  delete env.MODAL_VIDEO_SECRET;
+  delete env.ACUVO_MEDIA_SECRET;
   const report = await runDoctor({ ...BASE, env, fetchImpl: makeFetch() });
   const c = find(report, 'media.speak');
   assert.equal(c.state, 'dark');
-  assert.match(c.detail + ' ' + c.fix, /MODAL_TTS_URL/);
+  /**
+   * ⚠️ IT NAMES THE CREDENTIAL, NOT THE URL — corrected 2026-08-12. This asserted
+   * `MODAL_TTS_URL`, which sent the reader to find an endpoint `media.mjs`
+   * already knows. The rule was always "name the thing that unblocks it"; the
+   * thing that unblocks it is the secret.
+   */
+  assert.match(c.detail + ' ' + c.fix, /ACUVO_MEDIA_SECRET/);
+  assert.doesNotMatch(c.fix, /endpoint URL/);
+});
+
+test('⚠️ an EXPLICITLY EMPTY endpoint stays dark even with a secret', () => {
+  /**
+   * ⚠️ Somebody who writes `MODAL_TTS_URL=` on an air-gapped machine, or under
+   * a policy that forbids the call, has made a DECISION. Treating that the same
+   * as "unset" would silently reinstate our endpoint and turn an opt-out into a
+   * surprise network call — the exact distinction `IMAGE_URL_ENV` already draws.
+   */
+  const cfg = mediaConfig({ MODAL_VIDEO_SECRET: 'shh', MODAL_TTS_URL: '' });
+  assert.equal(cfg.speak, null);
+  assert.ok(cfg.transcribe, 'switching one capability off must not switch off the others');
 });
 
 test('⚠️⚠️ NO KEY AND NO NETWORK: honest, complete, ok, and it does not throw', async () => {
@@ -616,13 +695,23 @@ test('formatDoctor emits no ANSI unless a painter is handed in', async () => {
 });
 
 test('formatDoctor states the three words and the totals, and never says "unavailable"', async () => {
+  /**
+   * ⚠️ THE SECRET IS DELETED TOO. With one present, an unset MODAL_TTS_URL now
+   * falls back to our baked-in endpoint and the line is LIVE — so removing the
+   * URL alone no longer produces a dark line to assert on. The media URLs became
+   * defaults because all eight endpoints were measured LIVE while a fresh
+   * install could not reach a single one.
+   */
   const env = { ...FULL_ENV };
   delete env.MODAL_TTS_URL;
+  delete env.MODAL_VIDEO_SECRET;
+  delete env.ACUVO_MEDIA_SECRET;
   const report = await runDoctor({ ...BASE, env, fetchImpl: makeFetch() });
   const out = formatDoctor(report);
   assert.match(out, /\blive\b/);
   assert.match(out, /\bdark\b/);
-  assert.match(out, /MODAL_TTS_URL/, 'the dark line must name the variable, not say "unavailable"');
+  // ⚠️ The variable that ACTUALLY unblocks it — see the media.speak test above.
+  assert.match(out, /ACUVO_MEDIA_SECRET/, 'the dark line must name the variable, not say "unavailable"');
   assert.ok(!/\bunavailable\b/i.test(out), 'a diagnostic that says "unavailable" has done nothing');
 });
 
@@ -1098,4 +1187,168 @@ test('the two new sections obey every rule the old ones do', async () => {
     assert.ok(!/\bunavailable\b/i.test(out), 'the banned word is back');
     for (const c of mine.filter((x) => x.state !== 'live')) assert.ok(out.includes(c.fix), `the rendering dropped the fix for ${c.id}`);
   } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+// ── ⭐⭐ THE DOCTOR'S ADVICE HAS TO BE ADVICE SOMEBODY CAN FOLLOW ───────────
+
+test('a built-in media URL is never presented as something the user must find', async () => {
+  /**
+   * ⚠️ MEASURED ON A BARE MACHINE, 2026-08-12: the doctor printed five lines
+   * telling the reader to "set MODAL_TTS_URL to your endpoint URL" — and all
+   * five of those URLs are already baked into `media.mjs`. Nobody needs to set
+   * them; the single real blocker is one credential. The reader was being sent
+   * to find five endpoints they do not have and cannot guess.
+   *
+   * ⭐ Wrong advice in a diagnostic is worse than none, because it is followed.
+   */
+  const { toolOffer } = await import('../lib/doctor.mjs');
+  const { mediaConfig } = await import('../lib/media.mjs');
+  const bare = { PATH: process.env.PATH };
+
+  // ⚠️ Isolated for the same reason as above: the advice names a nearby
+  // credential when there is one, and this asserts the no-credential wording.
+  const withheld = new Map(toolOffer({ root: isolatedRoot(), env: bare, allowRun: true }).withheld.map((w) => [w.name, w]));
+
+  for (const name of ['speak', 'transcribe', 'make_document', 'read_document', 'read_table']) {
+    const w = withheld.get(name);
+    assert.ok(w, `${name} should be withheld on a bare machine`);
+    assert.match(w.fix, /ACUVO_MEDIA_SECRET/, `${name} must point at the credential, not a URL`);
+    assert.doesNotMatch(w.fix, /endpoint URL/, `${name} must not ask for a URL that is built in`);
+  }
+
+  // ⚠️ And the claim must be TRUE: one secret really does light all five.
+  const lit = mediaConfig({ ...bare, ACUVO_MEDIA_SECRET: 's' });
+  for (const key of ['speak', 'transcribe', 'document', 'docRead', 'tableRead']) {
+    assert.ok(lit[key], `${key} should be configured by the secret alone — the advice promises it`);
+  }
+});
+
+test('see_page keeps the URL advice, because it genuinely has no default', async () => {
+  const { toolOffer } = await import('../lib/doctor.mjs');
+  const { mediaConfig } = await import('../lib/media.mjs');
+
+  // The asymmetry is the point: a secret alone does NOT light the renderer.
+  assert.equal(mediaConfig({ ACUVO_MEDIA_SECRET: 's' }).render, null);
+
+  const withheld = new Map(toolOffer({ root: process.cwd(), env: { PATH: process.env.PATH }, allowRun: true }).withheld.map((w) => [w.name, w]));
+  assert.match(withheld.get('see_page').fix, /RENDER_AUDIT_URL/);
+});
+
+test('⚠️⚠️ every tool --no-run withholds can be EXPLAINED by the doctor', async () => {
+  /**
+   * THE DRIFT GUARD. `RUN_GATED` is a hand-written list in `doctor.mjs` naming
+   * tools whose gate lives in `tools.mjs`. It was already missing the three
+   * background tools the hour they shipped — so the doctor listed them as dark
+   * with no reason, which is the one thing it exists not to do.
+   *
+   * Derived from the real gating function rather than typed out, so the two
+   * cannot drift again.
+   */
+  const { toolNamesForRounds } = await import('../lib/tools.mjs');
+  const { toolOffer } = await import('../lib/doctor.mjs');
+  const env = { PATH: process.env.PATH };
+  const root = process.cwd();
+
+  const withRun = toolNamesForRounds(8, { allowRun: true, root, env });
+  const withoutRun = toolNamesForRounds(8, { allowRun: false, root, env });
+  const lostToNoRun = withRun.filter((n) => !withoutRun.includes(n));
+  assert.ok(lostToNoRun.length >= 6, `expected --no-run to withhold several tools, got ${lostToNoRun.length}`);
+
+  const withheld = new Map(toolOffer({ root, env, allowRun: false }).withheld.map((w) => [w.name, w]));
+  for (const name of lostToNoRun) {
+    const w = withheld.get(name);
+    assert.ok(w, `${name} is withheld by --no-run but the doctor never mentions it`);
+    assert.match(w.why, /--no-run/, `${name} is reported dark for the wrong reason: ${w.why}`);
+    assert.ok(w.fix, `${name} has no fix line`);
+  }
+});
+
+test('no withheld tool is ever left without a reason and a fix', async () => {
+  // The doctor's whole product is the REASON. A bare "withheld" is a bug.
+  const { toolOffer } = await import('../lib/doctor.mjs');
+  for (const allowRun of [true, false]) {
+    const { withheld } = toolOffer({ root: process.cwd(), env: { PATH: process.env.PATH }, allowRun });
+    for (const w of withheld) {
+      assert.ok(typeof w.why === 'string' && w.why.length > 10, `${w.name} has no usable reason`);
+      assert.ok(typeof w.fix === 'string' && w.fix.length > 5, `${w.name} has no usable fix`);
+    }
+  }
+});
+
+// ── ⭐⭐ "IT IS DARK" IS HALF AN ANSWER WHEN THE CREDENTIAL IS NEXT DOOR ────
+
+test('the doctor finds a missing credential in a neighbouring project', async () => {
+  /**
+   * Measured 2026-08-12: all six media capabilities were dark, and every one
+   * WORKED the moment the secret was loaded — `see_page` rendered a page and
+   * caught a real 1.15:1 contrast failure in 5 seconds. The credential was in a
+   * SIBLING project's `.env.local` the whole time.
+   *
+   * The env walk stops at the repository root on purpose and must keep doing so;
+   * silently crossing into another checkout to find credentials is exactly what
+   * a security reviewer would object to. So the doctor LOOKS AND ONLY TELLS.
+   */
+  const { findCredentialNearby } = await import('../lib/doctor.mjs');
+  const root = mkdtempSync(join(tmpdir(), 'acuvo-cred-'));
+  made.push(root);
+  mkdirSync(join(root, 'app'), { recursive: true });
+  mkdirSync(join(root, 'other'), { recursive: true });
+  writeFileSync(join(root, 'other', '.env.local'), 'UNRELATED=1\nMODAL_VIDEO_SECRET=shh\n');
+
+  const found = findCredentialNearby(['ACUVO_MEDIA_SECRET', 'MODAL_VIDEO_SECRET'], { root: join(root, 'app') });
+  assert.ok(found, 'the sibling holding the credential should be found');
+  assert.match(found.file, /other/);
+  /**
+   * ⚠️ IT NAMES THE VARIABLE IT ACTUALLY FOUND. The first version always said
+   * "ACUVO_MEDIA_SECRET is already in <file>" about a file containing
+   * `MODAL_VIDEO_SECRET` — advice that sends somebody looking for a line that is
+   * not there. Both names are accepted by `mediaConfig`, so both are searched.
+   */
+  assert.equal(found.name, 'MODAL_VIDEO_SECRET');
+});
+
+test('⚠️ it never reports a value, and an empty assignment is not a credential', async () => {
+  const { findCredentialNearby } = await import('../lib/doctor.mjs');
+  const root = mkdtempSync(join(tmpdir(), 'acuvo-cred2-'));
+  made.push(root);
+  mkdirSync(join(root, 'app'), { recursive: true });
+  writeFileSync(join(root, '.env.local'), 'MODAL_VIDEO_SECRET=\n');
+
+  // An explicitly empty value is a deliberate OFF, not something to go copy.
+  assert.equal(findCredentialNearby(['MODAL_VIDEO_SECRET'], { root: join(root, 'app') }), null);
+
+  writeFileSync(join(root, '.env.local'), 'MODAL_VIDEO_SECRET=super-secret-value\n');
+  /**
+   * ⚠️ THE ANSWER IS MEMOISED PER ROOT — deliberately, because re-walking sixty
+   * sibling projects once per withheld tool cost **36 seconds** and tripped the
+   * end-to-end assertion that the doctor must not WAIT on anything. A test that
+   * changes the filesystem underneath the lookup has to say so.
+   */
+  clearCredentialCache();
+  const found = findCredentialNearby(['MODAL_VIDEO_SECRET'], { root: join(root, 'app') });
+  assert.ok(found);
+  // ⚠️ A doctor that prints a secret is a worse problem than the one it was
+  // diagnosing. Only the path and the NAME may leave this function.
+  assert.equal(JSON.stringify(found).includes('super-secret-value'), false);
+});
+
+test('a variable that exists nowhere is reported as absent, not guessed at', async () => {
+  const { findCredentialNearby } = await import('../lib/doctor.mjs');
+  const root = mkdtempSync(join(tmpdir(), 'acuvo-cred3-'));
+  made.push(root);
+  assert.equal(findCredentialNearby(['NOT_A_REAL_VARIABLE_XYZ'], { root }), null);
+});
+
+test('the accepted secret names come from media.mjs, never a local copy', async () => {
+  /**
+   * ⚠️ FOURTH TIME IN ONE DAY that naming another module's strings was a guess.
+   * This searched only `ACUVO_MEDIA_SECRET` and reported "not found anywhere"
+   * about a file it had just read that held `MODAL_VIDEO_SECRET`.
+   */
+  const { MEDIA_SECRET_ENV_NAMES, mediaConfig } = await import('../lib/media.mjs');
+  assert.ok(MEDIA_SECRET_ENV_NAMES.length >= 2);
+  for (const name of MEDIA_SECRET_ENV_NAMES) {
+    const cfg = mediaConfig({ [name]: 'x' });
+    assert.ok(cfg.secret, `${name} must actually be accepted by mediaConfig, or the doctor searches for a name nothing reads`);
+  }
 });

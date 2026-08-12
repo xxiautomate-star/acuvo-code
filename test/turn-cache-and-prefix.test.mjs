@@ -87,7 +87,7 @@ const usageWith = (prompt, cached, cost = 0.0005) => ({
  * Drives a real session with an injected model and CAPTURES every request the
  * loop made — a deep copy, because `messages` is mutated in place by design.
  */
-async function driveSession({ dir, script, maxRounds = 8, onEvent = () => {} }) {
+async function driveSession({ dir, script, maxRounds = 8, onEvent = () => {}, priorMessages = null }) {
   const requests = [];
   let n = 0;
   const outcome = await runSession({
@@ -95,6 +95,7 @@ async function driveSession({ dir, script, maxRounds = 8, onEvent = () => {} }) 
     executor: createLocalExecutor(dir),
     config,
     maxRounds,
+    ...(priorMessages ? { priorMessages } : {}),
     onEvent,
     callModelImpl: async (opts) => {
       requests.push(JSON.parse(JSON.stringify(opts.messages)));
@@ -376,12 +377,54 @@ test('round N is a STRICT PREFIX of round N+1, and the plan countdown does not b
 
 test('COMPACTION voids the prefix — and the run says so instead of hiding it', async (t) => {
   const dir = workspace(t);
+  /**
+   * ⚠️ WAS `.repeat(300)`, SIZED FOR A 24,000-TOKEN CEILING. That ceiling is now
+   * 96,000: compacting at 2.3% of a 1,048,576-token window traded 8% fewer
+   * tokens for 87% of them going from a cache HIT to a MISS, and a miss costs
+   * ~50x a hit.
+   *
+   * ⭐ SIZED FROM ARITHMETIC, NOT GUESSED. 16 rounds read one file each; at ~68
+   * chars a line, `.repeat(700)` is ~47.6k chars per file, ~762k chars total,
+   * ~190k estimated tokens — comfortably past 96,000. The old 300 gave ~82k,
+   * which is UNDER the new ceiling, so the probe stopped compacting and the
+   * test correctly refused to pass while proving nothing.
+   *
+   * ⚠️ ENLARGED, NOT WEAKENED. The assertion below still requires compaction to
+   * actually happen; loosening that instead would have deleted the only test
+   * that watches this behaviour.
+   */
   for (let i = 0; i < 24; i += 1) {
-    writeFileSync(join(dir, `f${i}.txt`), (`line ${i} ${'y'.repeat(60)}\n`).repeat(300), 'utf8');
+    writeFileSync(join(dir, `f${i}.txt`), (`line ${i} ${'y'.repeat(60)}\n`).repeat(700), 'utf8');
+  }
+  /**
+   * ⚠️ THE TRANSCRIPT IS SEEDED, NOT GROWN, AND THAT IS THE FIX. Growing it by
+   * reading files cannot reach the new 96,000-token ceiling: `read_file` refuses
+   * anything over MAX_READ_BYTES (200,000), so 16 rounds cap out around 82k
+   * estimated tokens whatever the fixture does. The old ceiling was 24,000, so
+   * growth used to be enough; it is not any more, and enlarging the files
+   * further just hits the read limit.
+   *
+   * ⭐ Seeding a large prior conversation exercises the SAME compaction path
+   * this test was always about — it asserts the REPORTING, not how the tokens
+   * got there.
+   */
+  const bulk = 'z'.repeat(40_000);
+  const seeded = [
+    { role: 'system', content: 'you are acuvo' },
+    { role: 'user', content: 'do the work' },
+  ];
+  for (let i = 0; i < 12; i += 1) {
+    seeded.push({
+      role: 'assistant',
+      content: '',
+      tool_calls: [{ id: `s${i}`, type: 'function', function: { name: 'read_file', arguments: JSON.stringify({ path: `f${i}.txt` }) } }],
+    });
+    seeded.push({ role: 'tool', tool_call_id: `s${i}`, name: 'read_file', content: `f${i}.txt:\n${bulk}` });
   }
   const compactions = [];
   const { outcome, requests } = await driveSession({
     dir,
+    priorMessages: seeded,
     maxRounds: 16,
     onEvent: (e) => { if (e.type === 'compact') compactions.push(e); },
     script: (n) => (n < 16

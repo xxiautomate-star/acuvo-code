@@ -176,6 +176,40 @@ test('⚠️ the change list appears EXACTLY ONCE in the output', async () => {
   }
 });
 
+test('⭐⭐ --best-of runs N attempts through the REAL binary and keeps one', async () => {
+  /**
+   * ⚠️ BUILT IS NOT WIRED, four times in this package. best-of.mjs has 15 unit
+   * tests and every one of them injects `runOne` — so all fifteen would still
+   * pass with the flag unreachable from the command line. This is the only test
+   * that proves a user typing `--best-of 2` gets anything at all.
+   *
+   * ⭐ AND IT ALREADY EARNED ITSELF: both `say()` helpers in bin are declared
+   * inside other branches, so the first draft of the wiring referenced one that
+   * was not in scope — the identical ReferenceError that shipped this morning.
+   */
+  const dir = mkdtempSync(join(tmpdir(), 'acuvo-bestof-cli-'));
+  const stub = await stubModel([
+    { role: 'assistant', content: 'Writing.', tool_calls: [call('write_file', { path: 'out.txt', content: 'ok\n' })] },
+    { role: 'assistant', content: 'Done.' },
+  ]);
+  try {
+    const r = await runCli(['--dir', dir, '--best-of', '2', '--max-rounds', '3', 'create out.txt'], { ACUVO_API_URL: stub.url });
+
+    assert.equal(
+      /ReferenceError|TypeError|acuvo crashed/.test(`${r.stdout}${r.stderr}`),
+      false,
+      `--best-of crashed:\n${r.stdout}\n${r.stderr}`,
+    );
+    assert.match(r.stdout, /best of 2/, `no best-of report was printed:\n${r.stdout}`);
+    assert.match(r.stdout, /total spend across all attempts/);
+    assert.ok(existsSync(join(dir, 'out.txt')), 'the winning attempt\'s file was never applied back to the real workspace');
+    assert.equal(readFileSync(join(dir, 'out.txt'), 'utf8'), 'ok\n');
+  } finally {
+    await stub.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('⭐ the banner names the workspace without printing an absolute path', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'acuvo-banner-'));
   const stub = await stubModel([{ role: 'assistant', content: 'Nothing to do.' }]);

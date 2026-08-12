@@ -119,11 +119,18 @@ export OPENROUTER_API_KEY=sk-or-v1-...        # bash
 $env:OPENROUTER_API_KEY = "sk-or-v1-..."      # PowerShell
 ```
 
-Or point Node at a file that already has it:
+Or just put it in a file, which is what most projects already do:
 
 ```bash
-node --env-file=.env acuvo-code/bin/acuvo.mjs "<prompt>"
+# .env.local  (or .env) — in the workspace, or any parent up to the repo root
+OPENROUTER_API_KEY=sk-or-v1-...
 ```
+
+`acuvo` reads **`.env.local` then `.env`**, walking up from the workspace and stopping at
+the repository root, so a monorepo can keep one file at the top. A real environment
+variable always beats a file, and `.env.example` is deliberately never read — it is
+committed documentation full of placeholders, and loading it would set a fake key and
+produce a 401 that blamed yours.
 
 `--version` and `--help` work without a key — they are how you check the install worked.
 
@@ -139,7 +146,10 @@ Every flag below is real; run `acuvo --help` for the authoritative list.
 | `--model <id>` | OpenRouter model id. Default: `$OPENROUTER_CODEGEN_MODEL`, else `deepseek/deepseek-v4-flash-0731` (`DEFAULT_MODEL`, `lib/model.mjs`). |
 | `--max-rounds <n>` | Write → run → fix rounds, 1–16. Default **5** (`DEFAULT_MAX_ROUNDS`, `lib/cli-args.mjs`). `1` means one completion and nothing executed. |
 | `--budget <usd>` | Stop when the **next** round would cross this much spend. `--budget 0.50`, `--budget 25c`, `--budget $2` all parse. Refuses to start at all if it cannot afford one round. |
-| `--until-done` | Keep going while the criterion you declared is unmet, the budget allows, and the loop is not going in circles. **Requires `--budget`.** |
+| `--until-done` | Keep going while the criterion you declared is unmet, the budget allows, and the loop is not going in circles. **Requires `--budget`.** It also **escalates** rather than merely retrying — see [Escalation](#escalation-trying-harder-costs-money-so-it-is-budgeted). |
+| `--max-tier <tier>` | How hard `--until-done` may try: `solo` \| `fresh` \| `best-of`. Default `best-of`. `solo` turns escalation off without turning the run off. |
+| `--best-of <n>` | Do the task n times (2–5) in isolated workspace copies and keep whichever one **verifies**. On its own it is a single parallel round; combined with `--until-done` it sets how wide the ladder's top rung is. |
+| `--shell` | Run commands through a real shell — pipes, `&&`, redirection, and any program on the machine. Off by default; read [What it can execute](#what-it-can-execute--read-this-before-trusting-it) first. |
 | `--lease <path>` | Claim a file before starting, so several terminals can share one checkout. Repeatable. Released when the process exits, however it exits. |
 | `--holder <name>` | Who to record as holding those leases. Default: the pid. |
 | `--no-run` | Never execute anything. It can still read, write and edit. |
@@ -196,6 +206,127 @@ circular pattern twice.
 
 ⚠️ `--budget` and `--parallel` together are refused rather than silently multiplied: a
 ceiling for one conversation applied to three tasks is three times the number you typed.
+
+### Escalation: trying harder costs money, so it is budgeted
+
+`--until-done --budget 2.00` does not just retry. It **climbs**, and each rung is entered
+only if the remaining budget covers it:
+
+| rung | what it does |
+|---|---|
+| `solo` | one attempt. What every run does. Cheapest. |
+| `fresh` | the same task in a **new context**, carrying the failure and *not* the transcript. The context that produced a loop is the one least able to escape it. |
+| `best-of` | several independent attempts in isolated copies of the workspace; whichever **verifies** is the one applied. |
+
+```
+$ acuvo --until-done --budget 2.00 "make the suite pass"
+  ↑ solo did not verify — escalating to fresh (~0.0019 projected, 0.0081 left)
+  ...
+  the ladder (each rung ran on its own slice of --budget):
+  ✖ solo     $0.0016  would-exceed
+  ✔ fresh    $0.0019  verified
+  → verified at the fresh rung for $0.0035.
+```
+
+Why this exists: a task costs on the order of **$0.0007**, so three attempts here cost less
+than one attempt on frontier pricing. "One attempt, be smart" is a constraint of the price,
+not of the problem.
+
+Four things it will not do:
+
+- **Start a rung it cannot finish.** Half a best-of spends real money and applies nothing,
+  because the winner is chosen by comparison.
+- **Guess what a rung costs.** `best-of n` is projected at n times what the last attempt
+  actually cost, because it is literally n of them.
+- **Hide a rung it skipped.** "It failed" and "it failed and I could not afford to try
+  harder" are different facts, and only one of them means *raise the budget*. The report
+  says which.
+- **Buy the same failure three times.** A missing API key, an exhausted balance or a model
+  id that does not exist will fail identically on every rung, so it stops and says so
+  instead of paying to prove it twice more.
+
+Each rung runs on its **own slice** of `--budget` (weighted 1 : 1.4 : 3), so the first
+attempt cannot spend the whole ceiling and leave nothing to escalate with. The budget is a
+ceiling, not a target — when the first rung verifies, the rest is never spent.
+
+#### Escalating the model too
+
+By default every rung uses the model you are already on. Set `ACUVO_MODEL_TIERS` —
+cheapest first — and each rung steps up:
+
+```bash
+ACUVO_MODEL_TIERS="deepseek/deepseek-v4-flash-0731,deepseek/deepseek-chat,z-ai/glm-4.6"
+```
+
+⚠️ **It is off unless you configure it, and that default is arithmetic rather than
+caution.** The budget projects each rung from what the *previous* one measurably cost,
+which is sound while the model is constant and wrong the moment it is not — a rung on a
+model costing 20× per token would be projected at 3× a cheap attempt and waved through.
+There is no price table in this package and a wrong one is worse than none, so
+configuring tiers is you saying you know what they cost. When a rung does switch model,
+the run says so out loud and the cost projection falls back to its floor rather than
+trusting a number derived from a different model.
+
+### A REPL that remembers — and nothing else in this category has one
+
+`evaluate` writes a snippet to a file and runs it in a fresh process. So does every
+other terminal coding agent: Claude Code, Cursor, Codex and Aider all execute
+statelessly, and none of them can hold a value between two thoughts.
+
+That is not how anybody debugs. A human loads the module, looks at a real value,
+pokes the object, tries the fix on the live thing:
+
+```
+repl   const m = await import("./lib/budget.mjs")
+repl   m.parseBudgetUsd("25c")        → { ok: true, usd: 0.25 }
+repl   m.formatUsd(0.0025)            → $0.0025
+```
+
+Three lines, one process, and line 2 can see line 1. Statelessly that is three
+scripts that each re-read and re-parse the file — which is why models rewrite a
+whole script to answer a question a single expression would settle, and why each
+rewrite is another paid round.
+
+- **Top-level `await` works**, so `await import("./thing.mjs")` reaches your project.
+- **It runs in the workspace**, with the real global — `process`, `fetch` and timers
+  behave exactly as they do in the code under test.
+- **It tells you what it is holding.** Every reply lists the names in scope, so the
+  model never has to guess its own state.
+- **`repl_reset`** throws the session away. ⚠️ Imports are cached, so reset after
+  editing a file you already imported — that is the one real trap.
+
+⚠️ A hanging expression **stops the session** rather than blocking every later call:
+the driver is single-threaded, and a REPL that answers nothing is worse than none.
+Withheld by `--no-run` and in single-shot runs, like everything else that executes.
+
+### Long-running processes: it can start a server
+
+`run_command` waits for a command to finish and kills it at a timeout, which is right for
+`npm test` and makes a dev server impossible rather than slow. Three verbs cover the rest:
+
+| tool | what it does |
+|---|---|
+| `start_process` | Start something that keeps running — a dev server, a watcher, a build in watch mode. Same allowlist as `run_command`. |
+| `check_process` | Read what it has printed, whether it is still running, and — if it announced a port — whether it is **actually answering HTTP on localhost**. |
+| `stop_process` | Stop it and everything it started. |
+
+So the model can write a server, run it, and confirm it serves before telling you it works:
+
+```
+round 3  start_process    $ node server.mjs
+round 4  check_process    → HTTP 200 on http://localhost:4479/
+round 5  stop_process
+✔ VERIFIED — `GET http://localhost:4479/` exited 0.
+```
+
+⚠️ **The localhost probe is not a hole in the fetch guard.** `fetch_url` still refuses
+loopback and private addresses, because a page the model was told to read must not be able
+to talk it into fetching an internal address. This connects only to a port **this tool
+started**, discovered from that process's own output.
+
+⚠️ **Everything started this way is killed when the run ends** — on normal exit and on
+Ctrl-C, with the whole process tree, not just the direct child. Four at a time, and the
+refusal names the ones already running.
 
 ### Several terminals, one checkout
 
@@ -449,9 +580,9 @@ workspace containing a hostile `.mcp.json` under each flag.
 
 ## The rest of the verbs
 
-The registry holds **36 tools** (`TOOL_NAMES`, `lib/tools.mjs` — count it yourself, and
+The registry holds **47 tools** (`TOOL_SCHEMAS`, `lib/tools.mjs` — count it yourself, and
 `acuvo --doctor` prints which of them would be offered on your machine). The obvious ones
-are above; **eighteen more** reach the model in any multi-round run (`--max-rounds` above 1,
+are above; **the rest** reach the model in any multi-round run (`--max-rounds` above 1,
 which is the default). You never name them — the model picks. They are listed because a
 capability only the changelog knows about is unreachable in the way that matters.
 

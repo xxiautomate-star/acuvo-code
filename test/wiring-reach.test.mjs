@@ -303,7 +303,7 @@ function bloatedPriorMessages() {
     { role: 'system', content: 'you are acuvo' },
     { role: 'user', content: 'read everything' },
   ];
-  for (let i = 0; i < 6; i += 1) {
+  for (let i = 0; i < 26; i += 1) {
     out.push({
       role: 'assistant',
       content: '',
@@ -338,8 +338,11 @@ test('⭐⭐ the loop COMPACTS an over-budget history BEFORE it pays for the cal
     });
     assert.strictEqual(outcome.ok, true, `session failed: ${outcome.error}`);
     assert.strictEqual(seen.length, 1);
-    // 6 x 40,000 chars went in; the budget is 24,000 tokens ≈ 96,000 chars.
-    assert.ok(seen[0] < 240_000, `the transport still received ${seen[0]} characters — compaction did not run before the call`);
+    // 26 x 40,000 chars went in. ⚠️ WAS 6 — the ceiling moved from 24,000 to
+    // 96,000 estimated tokens (a cache-hit is ~50x a miss, and compacting at 2.3%
+    // of a 1M window was a six-fold loss), so a fixture sized for the old budget
+    // no longer triggers compaction at all and proved nothing.
+    assert.ok(seen[0] < 1_040_000, `the transport still received ${seen[0]} characters — compaction did not run before the call`);
 
     const compact = events.find((e) => e.type === 'compact');
     assert.ok(compact, 'no `compact` event was emitted — silent compaction is indistinguishable from amnesia');
@@ -514,4 +517,85 @@ test('⭐ `npm run bundle` exists and points at the real script', async () => {
   assert.ok(pkg.scripts.bundle, 'package.json has no "bundle" script — the bundler is a file nobody can run');
   assert.match(pkg.scripts.bundle, /scripts\/bundle\.mjs/);
   assert.ok(pkg.scripts['bundle:mcp'], 'the MCP entry point has no bundle script');
+});
+
+// ── ⭐⭐ THE IMPORT GRAPH ITSELF ────────────────────────────────────────────
+
+test('every module is reachable from a real entry point, or is named here', async () => {
+  /**
+   * ⚠️⚠️ THIS PACKAGE'S SIGNATURE FAILURE IS NOT BAD CODE, IT IS GOOD CODE
+   * NOBODY CONNECTED. 7,397 lines (39%) once sat finished, documented and
+   * unit-tested while imported by nothing; `budget.mjs`, `lease.mjs`,
+   * `repo-map.mjs`, `stuck.mjs` and `best-of.mjs` all lived there. Measured
+   * again 2026-08-12 and `policy.mjs` — 736 lines of admin control, the
+   * enterprise checklist item most likely to be asked about — was reachable
+   * from nothing but its own test.
+   *
+   * ⭐ Every previous guard tested a MODULE. This one tests the GRAPH: it walks
+   * imports from the two binaries and fails on anything it cannot reach. A
+   * module that unit-tests perfectly and is imported by nobody now has
+   * somewhere to fail.
+   *
+   * ⚠️ THE ALLOWLIST IS THE HONEST PART. Two modules are genuinely not wired
+   * yet; naming them here makes that a recorded decision instead of a silent
+   * fact, and adding a third requires someone to type its name.
+   */
+  const { readdirSync, readFileSync } = await import('node:fs');
+  const path = await import('node:path');
+  const root = new URL('..', import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1');
+
+  const files = [
+    ...readdirSync(path.join(root, 'lib')).filter((f) => f.endsWith('.mjs')).map((f) => `lib/${f}`),
+    ...readdirSync(path.join(root, 'bin')).filter((f) => f.endsWith('.mjs')).map((f) => `bin/${f}`),
+  ];
+
+  const imports = {};
+  for (const f of files) {
+    const src = readFileSync(path.join(root, f), 'utf8');
+    /**
+     * ⚠️ TWO KINDS OF EDGE, AND THE SECOND ONE IS REAL. `import … from './x.mjs'`
+     * is the obvious one. But a file can also be referenced as a SUBPROCESS
+     * ENTRY POINT — `new URL('./repl-driver.mjs', import.meta.url)` handed to
+     * `spawn` — which is every bit as wired as an import and invisible to a
+     * naive walk. Caught by this guard flagging `repl-driver.mjs` the hour it
+     * shipped: the honest fix is to see the edge, not to add an excuse for it.
+     */
+    const rel = (spec) => path.posix.normalize(path.posix.join(path.posix.dirname(f), spec));
+    imports[f] = [...new Set([
+      ...[...src.matchAll(/from '(\.[^']+)'/g)].map((m) => rel(m[1])),
+      ...[...src.matchAll(/new URL\('(\.[^']+)',\s*import\.meta\.url\)/g)].map((m) => rel(m[1])),
+    ])];
+  }
+
+  const seen = new Set();
+  const stack = ['bin/acuvo.mjs', 'bin/acuvo-mcp.mjs'];
+  while (stack.length) {
+    const f = stack.pop();
+    if (seen.has(f)) continue;
+    seen.add(f);
+    for (const d of imports[f] ?? []) if (!seen.has(d)) stack.push(d);
+  }
+
+  /** Known-unwired, deliberately. Shrink this list; never grow it silently. */
+  const KNOWN_UNWIRED = new Set([
+    // A curated MCP server catalogue with no surface that offers it yet.
+    'lib/mcp-defaults.mjs',
+    // The in-memory executor: built for "one loop, two clients", and the second
+    // client is the console, which does not run this binary.
+    'lib/memory-workspace.mjs',
+  ]);
+
+  const orphans = files.filter((f) => !seen.has(f) && !KNOWN_UNWIRED.has(f));
+  assert.deepEqual(
+    orphans,
+    [],
+    `these modules are reachable from no entry point: ${orphans.join(', ')}. `
+      + 'Wire them, delete them, or add them to KNOWN_UNWIRED with a reason — a capability nobody can reach has not shipped.',
+  );
+
+  // ⚠️ And the allowlist must not rot: a name here that IS now wired is a stale
+  // excuse, and the next person reads it as still-unwired.
+  for (const f of KNOWN_UNWIRED) {
+    assert.equal(seen.has(f), false, `${f} is in KNOWN_UNWIRED but is now reachable — remove it from the list`);
+  }
 });

@@ -39,6 +39,15 @@ import { describeChange, shortenRoot, toJson } from '../lib/report.mjs';
 import { renderImage } from '../lib/terminal-graphics.mjs';
 import { saveSession, listSessions, resumeMessages, loadSession } from '../lib/session.mjs';
 import { recordRun } from '../lib/audit.mjs';
+import { runBestOf, formatBestOf } from '../lib/best-of.mjs';
+import { escalate, formatEscalation, outOfRoad } from '../lib/escalate.mjs';
+import { homedir } from 'node:os';
+import { loadEnvFiles as envLoad } from '../lib/env-file.mjs';
+import {
+  loadPolicy, invocationDecision, roundBudget, filterToolNames, mcpDecision,
+  USER_POLICY_FILE, USER_POLICY_ENV, WORKSPACE_POLICY_FILE,
+} from '../lib/policy.mjs';
+import { createBudget } from '../lib/budget.mjs';
 
 /**
  * ── ⭐⭐ THE FIVE CAPABILITIES THAT WERE BUILT AND REACHED BY NOTHING ────────
@@ -331,12 +340,74 @@ async function main() {
    * ⚠️ And it is best-effort by design. No `.env` is the normal case, and a
    * malformed one must not stop a coding session that never needed it.
    */
-  if (typeof process.loadEnvFile === 'function') {
-    for (const candidate of [join(root, '.env'), join(process.cwd(), '.env')]) {
-      if (!existsSync(candidate)) continue;
-      try { process.loadEnvFile(candidate); } catch { /* unreadable or malformed — not fatal */ }
-    }
+  /**
+   * ⚠️⚠️ THIS LOOKED FOR `.env` AND THERE IS NO PLAIN `.env` ON THIS MACHINE —
+   * every file is `.env.local`, the name Next.js/Vite/CRA use for the one that
+   * holds secrets and is git-ignored. So the loader above never fired once and
+   * the media half it was written to rescue stayed dark. It now walks up for
+   * `.env.local` then `.env`, and lives in `lib/env-file.mjs` where a test can
+   * read the filename list — being inline here is why nobody caught it.
+   */
+  envLoad([root, process.cwd()]);
+
+  /**
+   * ── ⚠️⚠️ POLICY: 736 LINES OF ADMIN CONTROL THAT NOTHING EVER CALLED ───────
+   *
+   * `lib/policy.mjs` lets an organisation forbid verbs, cap rounds, cap dollars,
+   * force `--dry-run`, restrict models and ban MCP — and its design is the good
+   * kind: every merge takes the STRICTER value, so the merge is a meet on a
+   * lattice and a policy file the agent itself rewrites can only ever restrict
+   * it further. There is no value it can write that grants it anything.
+   *
+   * Measured 2026-08-12 by walking the import graph from both entry points:
+   * **it was reachable from nothing but its own test.** 736 lines, fully
+   * documented, fully tested, and every `--doctor` and every run behaved as if
+   * an admin had never been able to say no to anything. That is this package's
+   * signature failure — not writing bad code, writing good code and never
+   * connecting it — and the enterprise checklist item most likely to be asked
+   * about was the one sitting dark.
+   *
+   * ⚠️ TWO LAYERS, AND THE USER'S IS THE TRUSTED ONE. `~/.acuvo/policy.json` is
+   * the admin layer (outside the workspace, so the agent cannot reach it); the
+   * workspace file can only narrow it further.
+   */
+  const readIfPresent = (file) => {
+    try { return existsSync(file) ? readFileSync(file, 'utf8') : null; } catch { return null; }
+  };
+  const adminPolicyFile = process.env[USER_POLICY_ENV]?.trim() || join(homedir(), USER_POLICY_FILE);
+  const policyLoad = loadPolicy({
+    adminText: readIfPresent(adminPolicyFile),
+    adminLabel: adminPolicyFile,
+    workspaceText: readIfPresent(join(root, WORKSPACE_POLICY_FILE)),
+  });
+  if (!policyLoad.ok) {
+    /**
+     * ⚠️ A MALFORMED POLICY STOPS THE RUN. `command.mjs` already makes this call
+     * for `.acuvo/commands.json`: absent means "no policy", but present-and-
+     * broken is a broken CONTROL, and quietly falling back to permissive is how
+     * an org discovers its restrictions never applied.
+     */
+    die(`policy: ${policyLoad.error}`, EXIT_USAGE);
   }
+  const policy = policyLoad.policy;
+
+  const verdict = invocationDecision(policy, {
+    dryRun: opts.dryRun, model: opts.model ?? undefined, maxRounds: opts.maxRounds, allowRun: opts.allowRun,
+  });
+  if (!verdict.ok) {
+    // ⚠️ Before the key check and before any spend: a run policy forbids must
+    // cost nothing to discover.
+    die(`refused by policy:\n  ${verdict.violations.join('\n  ')}`, EXIT_USAGE);
+  }
+  for (const note of verdict.notes) process.stderr.write(`  · ${note}\n`);
+
+  /**
+   * ⚠️ THE ROUND CEILING IS APPLIED, NOT JUST REPORTED. `invocationDecision`
+   * returns the cap as a NOTE; if nothing then lowers `maxRounds`, the note is
+   * an announcement of a limit that is not enforced.
+   */
+  const capped = roundBudget(policy, opts.maxRounds);
+  if (capped.capped) opts.maxRounds = capped.rounds;
 
   /**
    * ── ⭐ `--sessions` — WHAT IS SAVED, AND ABOVE THE KEY CHECK ON PURPOSE ────
@@ -735,11 +806,20 @@ async function main() {
    * by construction rather than by remembering to repeat two calls at four
    * return sites — which is exactly how one of them would end up unlogged.
    */
-  const oneTurn = async (turnTask, priorTurnMessages) => {
+  /**
+   * ⚠️ `over` EXISTS SO THE ESCALATION LADDER CAN REUSE THIS FUNNEL RATHER THAN
+   * GROW A SECOND ONE. Every durable record — the session, the audit log, the
+   * spoken verdict — hangs off `oneTurn`, and the `--best-of` branch above
+   * already proves what a parallel call site costs: it re-implements the
+   * `runSession` arguments and is the one path that persists nothing. A rung of
+   * the ladder needs a different workspace and a smaller budget, and nothing
+   * else, so those are the only two things overridable.
+   */
+  const oneTurn = async (turnTask, priorTurnMessages, over = {}) => {
     const result = await runSession({
       task: turnTask,
       priorMessages: priorTurnMessages,
-      executor,
+      executor: over.executor ?? executor,
       config,
       maxTokens: opts.maxTokens,
       timeoutMs: opts.timeoutMs,
@@ -752,8 +832,23 @@ async function main() {
        * `null` / `false` are what a caller who typed neither flag gets, and both
        * are no-ops inside the loop — see the option docs in `runSession`.
        */
-      budgetUsd: opts.budgetUsd,
+      /**
+       * ⚠️ THE RUNG'S SLICE WINS OVER THE WHOLE `--budget`, and that override is
+       * the entire reason the ladder can escalate at all: handed the full
+       * ceiling, rung one is entitled to spend it and there is nothing left to
+       * try harder with. `escalate.allocate()` computes the slice.
+       */
+      budgetUsd: over.budgetUsd ?? opts.budgetUsd,
+      /**
+       * ⚠️ THE RUNG'S MODEL WINS, and `over.model` is undefined unless
+       * `ACUVO_MODEL_TIERS` is configured — so a run without tiers is
+       * byte-identical to one from before this existed. See `model-tier.mjs`
+       * for why a feature that can multiply a bill has to default to inert.
+       */
+      ...(over.model && over.model !== config.model ? { config: { ...config, model: over.model } } : {}),
       untilDone: opts.untilDone,
+      // ⭐ The admin layer reaches the loop. OPEN_POLICY when no file exists.
+      policy,
       // ⚠️ STREAMED, NOT BUFFERED. A bounded loop that prints only at the end is
       // indistinguishable from a hang for however long it takes, and the whole
       // value of watching a fix land is watching it land.
@@ -763,6 +858,14 @@ async function main() {
        * into stdout makes the flag useless while appearing to work.
        */
       onEvent: (event) => {
+        /**
+         * ⚠️ SILENT WHEN THE CALLER ASKS. Three best-of attempts share one
+         * terminal, and the `--best-of` branch below learned this first:
+         * "three interleaved round-by-round streams are unreadable". The
+         * escalation ladder reuses this funnel, so the same rule has to be
+         * reachable from here or its top rung reprints that mess.
+         */
+        if (over.quiet) return;
         /**
          * ── ⭐ THE HEARTBEAT, DRIVEN OFF THE ROUND BOUNDARY ─────────────────
          *
@@ -1056,7 +1159,14 @@ async function main() {
      * to notice that one task's output was overwritten by another — reporting
      * success there would be the same silent-success failure the verifier had.
      */
-    return analysis.conflicts.length > 0 || results.some((r) => !r?.ok || r.outcome?.ok === false)
+    /**
+     * ⚠️ `sessionFailed`, NOT `outcome.ok === false` — the parallel path had the
+     * SAME hole as the single one (ENTERPRISE §3.5): a session killed by a
+     * provider outage is never `ok:false`, so a fan-out where three of four
+     * tasks died on a 429 reported success. One verdict function, used
+     * everywhere, is the only way these cannot drift apart again.
+     */
+    return analysis.conflicts.length > 0 || results.some((r) => !r?.ok || sessionFailed(r.outcome))
       ? EXIT_FAILED
       : EXIT_OK;
   }
@@ -1074,6 +1184,201 @@ async function main() {
       render: (result, out) => out.write(formatSummary(result).join(String.fromCharCode(10)) + String.fromCharCode(10)),
     });
     return EXIT_OK;
+  }
+
+  /**
+   * ── ⭐⭐ BEST-OF-N — THE CAPABILITY OUR PRICE BUYS ────────────────────────
+   *
+   * Do the task several times in isolated copies, keep the one that actually
+   * PASSED. At ~$0.001 a run, three attempts cost a third of a cent; an agent
+   * billing a hundred times that cannot offer this at all — not for lack of the
+   * idea, but because the arithmetic forbids it.
+   *
+   * ⚠️ IT SITS AFTER THE RESUME BRANCH ON PURPOSE. Resuming rebuilds ONE
+   * conversation; forking it into three divergent continuations and keeping one
+   * would silently discard two histories the user believed they were carrying.
+   */
+  /**
+   * ⚠️ `!opts.untilDone` — THE TWO FEATURES COLLIDED ON THE SAME FLAG. Both use
+   * `--best-of n`, and this branch sits first, so `--until-done --budget 2
+   * --best-of 4` would have run ONE round of parallel attempts and exited,
+   * silently discarding the escalation the user asked for. Under `--until-done`
+   * the flag means "how wide the ladder's top rung is" and the ladder owns it.
+   */
+  if (opts.bestOf >= 2 && !opts.untilDone) {
+    if (resumeRequested) {
+      die('--best-of starts several independent attempts; --resume carries one conversation forward. Pick one.', EXIT_USAGE);
+    }
+    const best = await runBestOf({
+      root,
+      attempts: opts.bestOf,
+      /**
+       * ⚠️ AN ADAPTER, NOT `runPool` DIRECTLY — and passing it directly is
+       * exactly what failed first. `runPool(tasks, runOne, opts)` takes THREE
+       * arguments and wraps each result as `{ok, index, task, outcome}`, so
+       * handing it `(jobs, {concurrency})` bound the options object to `runOne`
+       * and then double-wrapped every attempt. The symptom was quiet: the
+       * best-of report printed perfectly and the winning file was never applied,
+       * because `winner.outcome.executed` was `undefined` two levels down.
+       *
+       * ⭐ A shape mismatch between two of our own modules produced a plausible
+       * report and no work — which is worse than a crash, and is why the
+       * end-to-end test that caught it exists.
+       */
+      pool: async (jobs, { concurrency }) => {
+        const results = await runPool(jobs, (job) => job(), { concurrency });
+        return results.map((r) => (r.ok ? r.outcome : { error: r.error }));
+      },
+      concurrency: Math.min(2, opts.bestOf),
+      failed: sessionFailed,
+      runOne: async ({ root: attemptRoot, label }) => {
+        /**
+         * ⚠️ NOT `say()`. Both `say` helpers in this file are declared INSIDE
+         * other branches, so neither is in scope here — using one would be a
+         * ReferenceError at the moment the feature is first exercised, which is
+         * precisely the `changes is not defined` bug that shipped this morning
+         * on a path no test entered. Checked rather than assumed this time.
+         */
+        (opts.json ? process.stderr : process.stdout).write(`  ${label} …\n`);
+        return runSession({
+          task,
+          executor: createLocalExecutor(attemptRoot, { dryRun: opts.dryRun }),
+          config,
+          maxTokens: opts.maxTokens,
+          timeoutMs: opts.timeoutMs,
+          maxRounds: opts.maxRounds,
+          allowRun: opts.allowRun && !opts.dryRun,
+          shell: opts.shell,
+          commandTimeoutMs: opts.commandTimeoutMs,
+          // ⚠️ Silent per attempt. Three interleaved round-by-round streams are
+          // unreadable, and the report below is what the user acts on.
+          onEvent: () => {},
+        });
+      },
+    });
+    process.stdout.write(`${formatBestOf(best)}\n`);
+    if (!best.ok) return EXIT_FAILED;
+    /**
+     * ⚠️ THE EXIT CODE FOLLOWS THE WINNER, not the fact that a run happened. If
+     * nothing verified, `acuvo --best-of 3 … && git push` must NOT push.
+     */
+    return best.winner ? verdictExit(best.winner) : EXIT_FAILED;
+  }
+
+  /**
+   * ── ⭐⭐ THE UNATTENDED RUN CLIMBS THE LADDER ──────────────────────────────
+   *
+   * `--until-done --budget X` is the only mode that runs for hours with nobody
+   * watching, and until now it was also the only mode that could not use the
+   * one capability nobody can copy us on. `runBestOf` had a single caller — the
+   * `--best-of` branch above — which refuses to combine with `--resume` and
+   * runs exactly once. So the mode that most needed "try harder" was the mode
+   * structurally forbidden from it.
+   *
+   * ⚠️ GATED ON `--budget`, NOT ON `--until-done` ALONE. Escalation spends real
+   * money on someone's behalf while they are asleep; doing that without a
+   * ceiling is the single most dangerous thing in this package, which is why
+   * `cli-args.mjs:483` already refuses `--until-done` without one. This branch
+   * inherits that refusal rather than restating it.
+   *
+   * ⚠️ AND NOT WITH `--resume`. Same reason the `--best-of` branch refuses it:
+   * the fresh rung deliberately DISCARDS the conversation, so carrying one
+   * forward and then throwing it away would silently do the opposite of what
+   * `--resume` promises.
+   */
+  if (opts.untilDone && opts.budgetUsd !== null && !resumeRequested) {
+    const say = (line) => (opts.json ? process.stderr : process.stdout).write(line);
+    const ladder = await escalate({
+      root,
+      task,
+      budget: createBudget({ limitUsd: opts.budgetUsd }),
+      // ⭐ Tier 0, and the only tier unless ACUVO_MODEL_TIERS is configured.
+      baseModel: config.model,
+      /**
+       * ⭐ `--best-of n` DOUBLES AS THE LADDER'S TOP-RUNG WIDTH. One flag, one
+       * meaning — "how many independent attempts" — rather than a second
+       * `--attempts` that would differ from it by nothing.
+       */
+      attempts: opts.bestOf >= 2 ? opts.bestOf : undefined,
+      maxTier: opts.maxTier,
+      /**
+       * ⚠️ THE EXIT-CODE VERDICT **PLUS** "WAS IT CUT OFF" — and the second half
+       * is not optional. `sessionFailed` alone was the first wiring here and it
+       * silently disabled the whole feature: it does not fail a run that
+       * verified nothing, so a session that ran out of budget mid-task read as
+       * a success and the ladder never climbed once. Measured, not reasoned —
+       * see `outOfRoad`'s header for the run that caught it.
+       */
+      verified: (o) => !sessionFailed(o) && !outOfRoad(o),
+      pool: async (jobs, { concurrency }) => {
+        const results = await runPool(jobs, (job) => job(), { concurrency });
+        return results.map((r) => (r.ok ? r.outcome : { error: r.error }));
+      },
+      onEvent: (ev) => {
+        /**
+         * ⚠️ ONLY THE CLIMB IS ANNOUNCED LIVE, and the omission is deliberate.
+         * `escalate-up` is worth interrupting for — a long unattended run should
+         * say out loud that it is now spending more. `escalate-skipped` fires
+         * immediately before the ladder returns, so printing it here AND in the
+         * report below is the same sentence twice, which `formatSummary` already
+         * has a comment about: a repeat reads as a malfunction, not a report.
+         */
+        /**
+         * ⚠️ A MODEL SWITCH IS SAID OUT LOUD, ALWAYS. A run that quietly moves to
+         * a pricier model has changed what it costs without telling the person
+         * paying, and "why was this bill different" must never be unanswerable.
+         */
+        if (ev.type === 'escalate-model') {
+          say(`
+  ↑ ${ev.note}
+`);
+        } else if (ev.type === 'escalate-up') {
+          say(`\n  ↑ ${ev.from} did not verify — escalating to ${ev.to} (~${ev.projectedUsd.toFixed(4)} projected, ${ev.remainingUsd.toFixed(4)} left)\n`);
+        }
+      },
+      runOne: async ({ root: dir, task: rungTask, tier, budgetUsd, model }) => {
+        if (tier === 'best-of') {
+          say(`  · attempt running in ${shortenRoot(dir)}\n`);
+          return oneTurn(rungTask, null, {
+            executor: createLocalExecutor(dir, { dryRun: opts.dryRun }),
+            budgetUsd,
+            quiet: true,
+            model,
+          });
+        }
+        return oneTurn(rungTask, null, { budgetUsd, model });
+      },
+    });
+
+    const final = ladder.outcome;
+    if (opts.json) {
+      process.stdout.write(`${JSON.stringify(jsonDoc(final, { task, fields: { escalation: { stopped: ladder.stopped, tier: ladder.tier, rungs: ladder.rungs, skipped: ladder.skipped, spentUsd: ladder.spentUsd } } }), null, 2)}\n`);
+      return final ? verdictExit(final) : EXIT_FAILED;
+    }
+
+    for (const line of formatSummary(final ?? { ok: false, error: ladder.error ?? 'nothing ran' })) {
+      process.stdout.write(`${line}\n`);
+    }
+
+    /**
+     * ── ⚠️⚠️ THE LADDER'S TOTAL IS PRINTED **LAST**, AND THAT IS A HONESTY FIX
+     *
+     * MEASURED, real run: the report was printed BEFORE the summary, so the
+     * final line on screen was the last rung's own ledger — `$0.0012` — while
+     * the run had actually spent `$0.0083`. Every number was individually true
+     * and the one a human reads last understated the bill by 7x. `formatSummary`
+     * describes ONE session and cannot know about the other four; the only
+     * place that knows the total is here, so the total goes last.
+     *
+     * ⚠️ AND ONLY WHEN THE LADDER WAS ACTUALLY USED. A run that verified on the
+     * first rung is byte-identical to yesterday's output — a new flag that
+     * changes the look of every existing run is a regression dressed as a
+     * feature.
+     */
+    const climbed = (ladder.rungs?.length ?? 0) > 1 || (ladder.skipped?.length ?? 0) > 0;
+    if (climbed) process.stdout.write(`\n${formatEscalation(ladder)}\n`);
+
+    return final ? verdictExit(final) : EXIT_FAILED;
   }
 
   const outcome = await oneTurn(task, priorMessages);

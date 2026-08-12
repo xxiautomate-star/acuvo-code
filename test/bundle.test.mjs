@@ -564,9 +564,23 @@ test('the bundler never reads .env or the process environment', () => {
   assert.ok(!/readFileSync\s*\(\s*[^)]*\.env/.test(masked), 'the bundler reads a .env path');
 });
 
-test('the real bundle inlines exactly one asset, and it is the manifest', () => {
+test('the real bundle inlines only the assets it deliberately ships', () => {
+  /**
+   * ⚠️ THIS ASSERTED EXACTLY ONE ASSET, AND THAT WAS RIGHT UNTIL A SECOND ENTRY
+   * POINT EXISTED. `lib/repl-driver.mjs` is not imported — it is SPAWNED, via
+   * `new URL('./repl-driver.mjs', import.meta.url)` — so the bundler inlines it
+   * as an asset and materialises it to a temp directory on first use. That is
+   * the bundler working correctly, not a leak: verified by driving the REPL from
+   * a copy of `dist/acuvo.mjs` in a temp workspace, where
+   * `await import('./thing.mjs')` then `m.twice(21)` returned 42.
+   *
+   * ⭐ THE INVARIANT IS STILL THE POINT: assets are a way for something that is
+   * NOT code-in-the-graph to end up inside the single file, so the list must be
+   * short, deliberate, and typed out here. A `.env` or a key appearing in this
+   * assertion is the failure it exists to catch.
+   */
   const { assets } = bundle({ entry: 'bin/acuvo.mjs', readFile: readReal });
-  assert.deepEqual(assets, ['package.json']);
+  assert.deepEqual([...assets].sort(), ['lib/repl-driver.mjs', 'package.json']);
 });
 
 test('the real bundle preserves lib/session.mjs REGISTRATION_SNIPPET byte for byte', () => {
