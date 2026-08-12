@@ -1,4 +1,4 @@
-# Acuvo Code — the enterprise evaluation document
+﻿# Acuvo Code — the enterprise evaluation document
 
 > Written 2026-08-10, re-audited against the source 2026-08-11, `acuvo-code@0.2.0`.
 > Nothing here is aspirational: if a claim has no citation it is not in this document.
@@ -833,10 +833,10 @@ For completeness, the properties none of them offers:
   (`lib/media.mjs`), and generates imagery with no configuration and no account
   (`lib/imagegen.mjs`) — critiqued before it is accepted, and reported as unreviewed when
   no critic is available.
-- ⭐ **Zero dependencies.** The entire auditable surface is 65 files and 38,300 lines,
+- ⭐ **Zero dependencies.** The entire auditable surface is 66 files and 36,200 lines,
   and there is no `node_modules` behind it. (Counted 2026-08-12 from
   `lib/*.mjs` + `bin/*.mjs`; `test/docs-truth.test.mjs` fails the build if this number
-  drifts, which is why it went 18 → 41 → 46 → 52 → 53 → 57 → 60 → 61 → 62 → 65 as modules landed. ⭐ A
+  drifts, which is why it went 18 → 41 → 46 → 52 → 53 → 57 → 60 → 61 → 62 → 65 → 66 as modules landed. ⭐ A
   count that fails the build is the only kind that stays true — this one has now caught its own
   staleness five times in a day, most recently the moment `mcp-defaults.mjs` shipped.
   ⚠️ **And the check is weaker than it reads:** it asserts the document *contains the
