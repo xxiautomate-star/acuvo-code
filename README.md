@@ -93,11 +93,21 @@ either exists this section gets its one-line route and these warnings go.
 acuvo --doctor
 ```
 
-It needs **no API key and no network** and spends nothing. It says, line by line, what is
+It **spends nothing** — no completion is ever requested. It says, line by line, what is
 actually working on this machine — the key, the four models in the fallback chain, every
 media endpoint, which tools the model would be offered, and git — and every dark or broken
 line names the exact variable that fixes it. Exit 0 when nothing is broken, 1 otherwise, so
 it works in CI. `--doctor --json` gives the machine form.
+
+> ⚠️ **It uses the network, and it sends your key.** This paragraph used to claim "no API
+> key and no network", and that was false: `--doctor` sends `Authorization: Bearer <your
+> key>` to `openrouter.ai/api/v1/key` and `/credits`, and pings every configured endpoint.
+> It does that because *"present, but it does NOT authenticate"* is the single most useful
+> thing it can tell you, and no offline check can produce it.
+>
+> ⭐ **`acuvo --doctor --offline` makes the old promise true** — no request is made, no key
+> leaves the machine, and every network line reads "not probed". Use it on an air-gapped
+> box, or when you would rather read the code before it talks to anything.
 
 ```
 MODEL CHAIN (4 DEEP · DEFAULT DEEPSEEK/DEEPSEEK-V4-FLASH-0731)
@@ -161,6 +171,8 @@ Every flag below is real; run `acuvo --help` for the authoritative list.
 | `--concurrency <n>` | How many at a time, 1–4. Default 2. |
 | `--json` | One JSON object on stdout, nothing else. Human output goes to stderr. |
 | `--dry-run` | Print what *would* be written. Touches nothing, runs nothing. |
+| `--strict` | Exit 1 when the run wrote nothing **and** ran nothing. Off by default — a question can be answered correctly without touching anything — but **on automatically when `CI` is set**, because a build step that reports success for doing nothing is the failure the exit code exists to prevent. |
+| `--offline` | With `--doctor`: make no network request at all. Your key is not sent anywhere and every endpoint line reads "not probed". Without it, `--doctor` verifies your key against openrouter.ai — which is how it can tell you a key is *present but revoked*. |
 | `--version`, `-v` | Print the version. |
 | `--help`, `-h` | Usage. |
 

@@ -143,6 +143,18 @@ test('backoff never applies before the FIRST attempt', async () => {
 });
 
 test('isRetryable still classifies the transport and 5xx cases it always did', () => {
+  /**
+   * ⚠️ THESE ARE HAND-WRITTEN LITERALS AND THAT IS THE LIMIT OF THIS TEST.
+   * `'timed out'` is a string `describeTransportError` has never once produced —
+   * the real timeout sentence is "No response from OpenRouter within 180s…",
+   * which matched none of these rules, so the four-model chain never failed over
+   * on a timeout while this test sat green. A test that invents its own input
+   * cannot discover that two modules have drifted apart.
+   *
+   * ⭐ The real-output assertions live in `test/timeout-is-retryable.test.mjs`,
+   * which calls `describeTransportError` and feeds it straight in. Keep this one
+   * for the classification rules; keep that one for the contract.
+   */
   for (const e of ['timed out', 'ECONNRESET', 'fetch failed', 'HTTP 503', 'HTTP 429', 'empty reply']) {
     assert.equal(isRetryable(e), true, `${e} should be retryable`);
   }

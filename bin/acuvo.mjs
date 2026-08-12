@@ -126,6 +126,9 @@ const LIFECYCLE_USAGE = [
   '                        replayed — no file is rewritten and no command is re-run.',
   '                        Add a new instruction to steer it: --resume <id> "now add tests".',
   '  --continue            Same, on the most recent resumable run.',
+  '  --strict              Exit 1 when the run wrote nothing and ran nothing. Off by',
+  '                        default, because a question can be answered correctly without',
+  '                        touching anything. ON AUTOMATICALLY when CI is set.',
   '  --no-session          Do not save this run.',
   '  --no-audit            Do not append this run to the audit log.',
   '',
@@ -136,8 +139,11 @@ const LIFECYCLE_USAGE = [
   'Look at what happened, and at what is working (none of these spend a completion):',
   '  --doctor              Say what is actually working here: key, model chain, media',
   '                        endpoints, which tools would be offered, git. Every dark or',
-  '                        broken line names the exact variable that fixes it. Needs no',
-  '                        API key and no network. Exits 0 when nothing is broken.',
+  '                        broken line names the exact variable that fixes it. Exits 0',
+  '                        when nothing is broken. ⚠️ It VERIFIES over the network: your',
+  '                        key is sent to openrouter.ai to check it authenticates, and',
+  '                        each configured endpoint is pinged. Add --offline to skip all',
+  '                        of it — nothing leaves the machine, and no key is sent.',
   '  --replay <id>         Step through a saved run: every round, call, result and refusal.',
   '                        Runs NOTHING and writes NOTHING. Add --json for the raw steps.',
   '  --replay <id> --only <what>',
@@ -482,7 +488,7 @@ async function main() {
    * wrong about your next run.
    */
   if (life.doctor) {
-    const report = await runDoctor({ root, allowRun: opts.allowRun, maxRounds: opts.maxRounds });
+    const report = await runDoctor({ root, allowRun: opts.allowRun, maxRounds: opts.maxRounds, skipNetwork: opts.offline === true });
     if (opts.json) process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
     else process.stdout.write(`${formatDoctor(report, { paint: createPainter(colourEnabled()) })}\n`);
     return report.ok ? EXIT_OK : EXIT_FAILED;
@@ -1017,8 +1023,24 @@ async function main() {
    * zero — when no `--budget` was given, so the shape only grows for a caller
    * who asked for it.
    */
+  /**
+   * ── ⚠️ STRICT: A RUN THAT DID NOTHING IS NOT A SUCCESS ──────────────────────
+   *
+   * Measured from a real bench artifact: two rounds, nothing written, nothing
+   * run, `exitCode: 0`. Every other clause of `sessionFailed` describes
+   * something that happened, so none of them fire when nothing did.
+   *
+   * ⚠️ OPT-IN, because "what does this file do?" correctly writes nothing and a
+   * check that fails correct work is worse than no check. ⭐ BUT ARMED
+   * AUTOMATICALLY UNDER CI, because there the default is backwards: a build
+   * step that reports success for doing nothing is the whole failure mode the
+   * exit code exists to prevent, and nobody types a flag they have not read
+   * about. `CI` is the one variable every runner sets.
+   */
+  const verdictOptions = { strict: opts.strict === true || Boolean(process.env.CI) };
+
   const jsonDoc = (result, { task = null, fields = null } = {}) => {
-    const failed = sessionFailed(result) || leaseLost !== null;
+    const failed = sessionFailed(result, verdictOptions) || leaseLost !== null;
     return {
       ...toJson(result, { changes: changesOf(result), task }),
       failed,
@@ -1034,7 +1056,7 @@ async function main() {
    * The process verdict. One helper so the four return sites cannot drift —
    * which is exactly how one of them would end up ignoring a lost lease.
    */
-  const verdictExit = (outcome) => ((sessionFailed(outcome) || leaseLost !== null) ? EXIT_FAILED : EXIT_OK);
+  const verdictExit = (outcome) => ((sessionFailed(outcome, verdictOptions) || leaseLost !== null) ? EXIT_FAILED : EXIT_OK);
 
   /**
    * ── ⭐ NO TASK ⇒ INTERACTIVE SESSION ──────────────────────────────────────
