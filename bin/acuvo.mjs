@@ -50,6 +50,7 @@ import {
 import { createBudget, remainingForTurn } from '../lib/budget.mjs';
 import { createFleetGate } from '../lib/fleet-budget.mjs';
 import { FLEET_STOP_REASONS } from '../lib/budget.mjs';
+import { refuteClaim, formatRefutation } from '../lib/refute.mjs';
 import { createAsker } from '../lib/prompt.mjs';
 import { summariseSpend, readAuditFiles, formatSpend, parseSince } from '../lib/spend.mjs';
 
@@ -1332,6 +1333,51 @@ ${formatBoard(listed)}
    * The process verdict. One helper so the four return sites cannot drift —
    * which is exactly how one of them would end up ignoring a lost lease.
    */
+  /**
+   * ── ⭐⭐ THE SECOND OPINION, AND WHY IT RUNS ONLY ON A CLAIMED SUCCESS ──────
+   *
+   * Refuting a run that already failed buys nothing — the first verdict is
+   * already the honest one, and a second paid run to agree with it is money for
+   * a sentence nobody needed. The claim worth testing is `✔ VERIFIED`, because
+   * that is the one somebody is about to act on.
+   *
+   * ⚠️ ONLY A CONCRETE REFUTATION FLIPS THE EXIT CODE. An opinion, an
+   * uncertainty, or a refuter that crashed leaves the verdict exactly as it was:
+   * failing correct work is the worse error, and an adversarial reviewer is
+   * precisely the mechanism most likely to commit it.
+   */
+  const secondOpinion = async (outcome, alreadyFailed) => {
+    if (!opts.refute || alreadyFailed) return null;
+    /**
+     * ⚠️ THE SECOND OPINION SPENDS WHAT IS LEFT OF THE NUMBER YOU TYPED, not a
+     * fresh copy of it. A refuter with its own full ceiling would quietly turn
+     * `--budget 0.02` into four cents — the exact "a limit that is really a
+     * rate" defect fixed for schedules an hour ago, reintroduced by the feature
+     * meant to increase trust.
+     *
+     * `null` (a `--budget none` run) passes through unbounded, as that run asked.
+     */
+    const spent = Number.isFinite(outcome?.usage?.cost) ? outcome.usage.cost : 0;
+    const left = opts.budgetUsd === null ? null : Math.max(0, opts.budgetUsd - spent);
+    if (left !== null && left <= 0) {
+      (opts.json ? process.stderr : process.stdout).write(
+        '\n  · no second opinion: the run used its whole budget, and refuting costs a run. Raise --budget to check it.\n',
+      );
+      return null;
+    }
+    const r = await refuteClaim({
+      task,
+      claim: outcome?.note ?? outcome?.content ?? '',
+      executor,
+      config,
+      budgetUsd: left,
+      fleetGate: createFleetGate(root, { fleetLimitUsd: opts.fleetBudgetUsd, since: opts.budgetWindow }),
+      commandTimeoutMs: opts.commandTimeoutMs,
+    });
+    (opts.json ? process.stderr : process.stdout).write(`${['', `  ${formatRefutation(r)}`, ''].join(String.fromCharCode(10))}`);
+    return r;
+  };
+
   const verdictExit = (outcome) => {
     const failed = sessionFailed(outcome, verdictOptions) || leaseLost !== null;
 
@@ -1804,6 +1850,25 @@ ${formatBoard(listed)}
     const shot = renderImage(resolve(root, c.path));
     if (shot.text) process.stdout.write(shot.text);
   }
+
+  /**
+   * ── ⭐⭐ THE SECOND OPINION, ON THE ONE PATH THAT MATTERS ──────────────────
+   *
+   * Wired here — the ordinary single-run exit — and deliberately not onto
+   * `--parallel`, `--best-of` or the escalation ladder. Each of those already
+   * spends several runs and has its own verdict machinery; bolting a refuter
+   * onto all five call sites would multiply cost in exactly the modes that are
+   * already expensive, for a claim that is already cross-checked.
+   *
+   * ⚠️ AND THE VERDICT ONLY MOVES ONE WAY. A concrete refutation turns a pass
+   * into a failure; nothing here can turn a failure into a pass. An adversarial
+   * reviewer that could clear a red run would be a way to launder a bad result,
+   * which is the opposite of the reason it exists.
+   */
+  const alreadyFailed = sessionFailed(outcome, verdictOptions) || leaseLost !== null;
+  const opinion = await secondOpinion(outcome, alreadyFailed);
+  if (opinion?.ok && opinion.refuted) return EXIT_FAILED;
+
   return verdictExit(outcome);
 }
 
