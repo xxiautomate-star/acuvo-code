@@ -24,7 +24,15 @@ Measured 2026-08-10 against a live Playwright MCP server on one page: the screen
 
 Be clear about what that claim is worth: it is a software edge a competent developer could reproduce in a weekend. It buys a head start, not a moat — and it survives a customer typing `claude mcp add playwright`, which is the whole reason it is the claim we make.
 
-It also speaks, transcribes, and turns HTML into PDF/PNG/PPTX — see [Media tools](#media-tools). Those are optional and only appear when their service is configured.
+It also speaks, transcribes, and turns HTML into PDF/PNG/PPTX — see [Media tools](#media-tools).
+
+> ⚠️ **BE CLEAR ABOUT WHAT YOU GET ON INSTALL: these eight tools are DARK by default and we do not host a service you can point at.** `see_page`, `speak`, `transcribe`, `make_document`, `read_document`, `read_table`, `edit_image` and `expand_image` each need an HTTP endpoint named by an environment variable. They are not trial-limited or coming soon — **there is no public endpoint to enable them with**, and this README should not read as though there is.
+>
+> Measured on a bare machine, 2026-08-13: **34 of 47 tools are offered.** Of the 13 that are not, four (`find_definition`, `find_references`, `check_types`, `list_symbols`) light up by themselves in any TypeScript project, taking it to **38**, and one needs a skills directory. The other eight are the media half.
+>
+> ⭐ The endpoints are plain env vars, so if you run a compatible service you can point at your own. The interface is documented under [Media tools](#media-tools). What we are not doing is implying a hosted one exists.
+>
+> ⭐ **Everything above this box works with nothing but Node and a model key** — the write→run→fix loop, the language presets, git, search, LSP, MCP, the budget governor, `acuvo spend`. The senses are an extra, not the product.
 
 ---
 
