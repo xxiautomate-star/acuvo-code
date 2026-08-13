@@ -130,12 +130,46 @@ test('⚠️ the same path spelled differently is the SAME lease', () => {
   const clock = fakeClock();
   assert.equal(acquire(root, { path: 'src/app.ts', holder: 't1', pid: 111, clock }).ok, true);
 
-  for (const alias of ['./src/app.ts', 'src\\app.ts', 'src/./app.ts']) {
+  /**
+   * ⚠️ THE BACKSLASH IS NOT AN ALIAS EVERYWHERE, AND CI IS WHERE THAT SURFACED.
+   *
+   * This ran green on Windows for weeks and failed the moment it first executed
+   * on Linux, asserting that `src\app.ts` bypasses the lease on `src/app.ts`.
+   * It does — correctly. On POSIX a backslash is a LEGAL FILENAME CHARACTER, so
+   * `src\app.ts` is a single file named `src\app.ts`, a genuinely different file
+   * that a second worker is entitled to hold. `normalizePath` splits on
+   * `path.sep`, which is exactly right on both platforms; the TEST was the thing
+   * encoding a Windows habit as a universal rule.
+   *
+   * ⭐ So the backslash case is not skipped on Linux — it is asserted the other
+   * way round, below. A platform-conditional test that only ever asserts on one
+   * platform is coverage you have quietly deleted.
+   */
+  const alwaysAliases = ['./src/app.ts', 'src/./app.ts'];
+  const aliases = process.platform === 'win32' ? [...alwaysAliases, 'src\\app.ts'] : alwaysAliases;
+
+  for (const alias of aliases) {
     const denied = acquire(root, { path: alias, holder: 't2', pid: 222, clock });
     assert.equal(denied.ok, false, `"${alias}" bypassed the lease on src/app.ts`);
     assert.equal(denied.heldBy, 't1');
   }
   assert.equal(leaseFiles(root).length, 1);
+  rmSync(root, { recursive: true, force: true });
+});
+
+test('⚠️ on POSIX a backslash is a FILENAME, so it is a different file and a separate lease', { skip: process.platform === 'win32' ? 'backslash is a separator here' : false }, () => {
+  /**
+   * The other half of the test above. Over-locking is a refusal you can read,
+   * but refusing a file a worker legitimately owns idles a terminal for a reason
+   * nobody can explain — and on Linux `src\app.ts` really is its own file.
+   */
+  const root = workspace();
+  const clock = fakeClock();
+  assert.equal(acquire(root, { path: 'src/app.ts', holder: 't1', pid: 111, clock }).ok, true);
+
+  const other = acquire(root, { path: 'src\\app.ts', holder: 't2', pid: 222, clock });
+  assert.equal(other.ok, true, 'a file whose NAME contains a backslash is not the file at src/app.ts');
+  assert.equal(leaseFiles(root).length, 2);
   rmSync(root, { recursive: true, force: true });
 });
 

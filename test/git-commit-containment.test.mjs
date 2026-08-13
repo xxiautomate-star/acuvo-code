@@ -216,7 +216,31 @@ test('git_commit still commits through a link that points INSIDE the workspace',
   // link is not an escape and refusing it would be the guard being too literal.
   const r = await gitCommit(repo, { message: 'commit through an inner link', paths: ['pkg/lib/index.ts'] });
 
-  assert.equal(r.ok, true, `a link that stays inside the workspace must be allowed: ${r.ok === false ? r.error : ''}`);
+  /**
+   * ⚠️ WHOSE REFUSAL IS IT? THAT IS THE ENTIRE ASSERTION.
+   *
+   * On Windows this commits and `r.ok` is true. On POSIX it does not, and the
+   * error is git's own: `fatal: pathspec 'pkg/lib/index.ts' is beyond a
+   * symbolic link` — git refuses EVERY pathspec that traverses a symlink,
+   * including one pointing back inside the repo. That is git's policy, applied
+   * before we get a say, and there is nothing here to fix.
+   *
+   * ⭐ The thing this test defends is that OUR guard does not refuse it. So it
+   * asserts on the source of the refusal rather than on success: a containment
+   * refusal fails the test on every platform, and only git's own wording is
+   * tolerated. If `resolveInWorkspace` ever started rejecting inner links, this
+   * goes red on Linux too — which a bare `skip` on POSIX would not have done.
+   */
+  if (r.ok !== true) {
+    assert.ok(
+      /beyond a symbolic link/i.test(r.error),
+      `only git itself may refuse an inner link — this refusal came from us: ${r.error}`,
+    );
+    assert.ok(
+      !/cannot be committed/.test(r.error),
+      `the containment guard refused a link that stays inside the workspace: ${r.error}`,
+    );
+  }
 });
 
 test('git_commit still stages a DELETION, whose path no longer exists on disk', async (t) => {
