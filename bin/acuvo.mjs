@@ -29,6 +29,7 @@ import { createInterface } from 'node:readline';
 import { parseArgv, USAGE } from '../lib/cli-args.mjs';
 import { runChat } from '../lib/chat.mjs';
 import { readModelConfig, MISSING_KEY_MESSAGE } from '../lib/model.mjs';
+import { executeRunCommand } from '../lib/command.mjs';
 import { createLocalExecutor } from '../lib/workspace.mjs';
 import { runSession, formatSummary, renderEvent, sessionFailed } from '../lib/turn.mjs';
 import { runPool, detectConflicts, formatParallelSummary, shortLabel } from '../lib/parallel.mjs';
@@ -106,6 +107,7 @@ import { createPainter, colourEnabled } from '../lib/colour.mjs';
 import { acquireAll, renewAll, releaseAll, inspect, formatLeaseSummary, DEFAULT_TTL_MS } from '../lib/lease.mjs';
 import { createPathClaimer } from '../lib/auto-lease.mjs';
 import { boardAdd, boardList, boardClaim, boardDone, formatBoard } from '../lib/board.mjs';
+import { loadRuns, pickRun, recheckClaim, formatRecheck } from '../lib/verify-claim.mjs';
 
 const EXIT_OK = 0;
 const EXIT_FAILED = 1;
@@ -537,6 +539,45 @@ async function main() {
    * ⚠️ READ-ONLY BY DEFAULT and above the key check, like `leases` and `spend`:
    * looking at the board must work on a machine with no credentials at all.
    */
+  /**
+   * ── ⭐⭐ `acuvo verify` — RE-CHECKING A PAST CLAIM FOR NOTHING ─────────────
+   *
+   * Every run already writes the exact command this process observed exiting 0.
+   * So a claim made yesterday can be tested today by RUNNING it again — no model
+   * call, no cost. Above the key check with the other read-only commands,
+   * because it needs no credentials at all: there is nothing to ask a model.
+   */
+  if (opts.command === 'verify') {
+    const loaded = loadRuns(root);
+    if (!loaded.ok) die(loaded.error, EXIT_FAILED);
+    const picked = pickRun(loaded.runs, opts.verifyId);
+    if (!picked.ok) die(picked.error, EXIT_USAGE);
+
+    const outcome = await recheckClaim(picked.run, {
+      runner: (command, o) => executeRunCommand({
+        command,
+        executor: createLocalExecutor(root),
+        timeoutMs: o?.timeoutMs ?? opts.commandTimeoutMs,
+        shell: opts.shell,
+      }),
+    });
+    if (opts.json) {
+      process.stdout.write(`${JSON.stringify(outcome, null, 2)}
+`);
+    } else {
+      process.stdout.write(['', `  ${formatRecheck(outcome).split(String.fromCharCode(10)).join(String.fromCharCode(10) + '  ')}`, ''].join(String.fromCharCode(10)));
+    }
+    /**
+     * ⚠️ THREE OUTCOMES, THREE CODES. `holds` is 0. `broken` is 1 — that is the
+     * one a deploy gate cares about. "No checkable claim" is EXIT_SKIPPED, not
+     * 0: a run that executed nothing proved nothing, and reporting that as
+     * success is the quiet dishonesty every verdict here exists to prevent.
+     */
+    if (outcome.status === 'holds') return EXIT_OK;
+    if (outcome.status === 'unclaimed') return EXIT_SKIPPED;
+    return EXIT_FAILED;
+  }
+
   if (opts.command === 'board') {
     const [verb, ...rest] = opts.boardArgs ?? [];
     if (!verb) {

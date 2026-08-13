@@ -842,7 +842,7 @@ For completeness, the properties none of them offers:
   (`lib/media.mjs`), and generates imagery with no configuration and no account
   (`lib/imagegen.mjs`) — critiqued before it is accepted, and reported as unreviewed when
   no critic is available.
-- ⭐ **Zero dependencies.** The entire auditable surface is 78 files and 41,621 lines,
+- ⭐ **Zero dependencies.** The entire auditable surface is 79 files and 41,621 lines,
   and there is no `node_modules` behind it. (Counted 2026-08-13 from
   `lib/*.mjs` + `bin/*.mjs`; `test/docs-truth.test.mjs` fails the build if this number
   drifts, which is why it went 18 → 41 → 46 → 52 → 53 → 57 → 60 → 61 → 62 → 65 → 66 → 69 → 70 → 71 → 72 → 73 as modules landed. ⭐ A
