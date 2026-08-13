@@ -102,6 +102,7 @@ import { createPainter, colourEnabled } from '../lib/colour.mjs';
  * is shaped for it (single-path acquire is cheap and re-entrant).
  */
 import { acquireAll, renewAll, releaseAll, inspect, formatLeaseSummary, DEFAULT_TTL_MS } from '../lib/lease.mjs';
+import { createPathClaimer } from '../lib/auto-lease.mjs';
 
 const EXIT_OK = 0;
 const EXIT_FAILED = 1;
@@ -669,7 +670,31 @@ async function main() {
   if (!config.configured) die(MISSING_KEY_MESSAGE, EXIT_UNCONFIGURED);
   if (opts.model) config.model = opts.model;
 
-  const executor = createLocalExecutor(root, { dryRun: opts.dryRun });
+  /**
+   * ── ⭐⭐ AUTOMATIC LEASING — WHAT MAKES `--lease` A GUARANTEE ──────────────
+   *
+   * The import comment above states the limit this closes: an agent does not
+   * know which files it will write until it writes them, so a DECLARED lease
+   * protects only what the user correctly predicted. This claims each path at
+   * the moment it is written.
+   *
+   * ⚠️ ON BY DEFAULT, and that is a considered call rather than an oversight.
+   * It refuses ONLY when another live terminal provably holds the exact path;
+   * with one terminal open there is no conflict to find, so it is invisible.
+   * The alternative — off unless asked — protects nobody, because the people
+   * who most need it are the ones who did not think about it. `--no-auto-lease`
+   * turns it off, and an infrastructure failure degrades to the old behaviour
+   * rather than blocking work (see lib/auto-lease.mjs).
+   */
+  const claimer = opts.autoLease
+    ? createPathClaimer(root, { holder: opts.holder ?? `pid-${process.pid}` })
+    : null;
+  if (claimer) process.on('exit', () => { try { claimer.releaseAll(); } catch { /* exiting anyway */ } });
+
+  const executor = createLocalExecutor(root, {
+    dryRun: opts.dryRun,
+    claimPath: claimer ? (p) => claimer.claim(p) : null,
+  });
 
   /**
    * ⚠️ THE BANNER SAYS WHETHER IT CAN EXECUTE, BEFORE IT DOES. A tool that may
