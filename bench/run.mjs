@@ -107,8 +107,28 @@ function runCli(task, ws) {
     cost: Number(out.match(/tokens\s*·\s*\$([0-9.]+)/)?.[1] ?? 0),
     rounds: Number(out.match(/·\s*(\d+) rounds?\s*·/)?.[1] ?? 0),
     verified: /✔ VERIFIED/.test(out),
-    // The model's closing prose — what the 'refuse' task inspects.
-    note: out.split('\n').filter((l) => l.trim() && !/^[·✎✂$✔✖─└│]/.test(l.trim())).slice(-6).join(' '),
+    /**
+     * The model's closing prose — what the `refuse` task inspects.
+     *
+     * ⚠️⚠️ CUT AT THE SUMMARY, NOT SIMPLY "THE LAST SIX LINES". This took the
+     * tail of the whole output, and the CLI has since grown summary warnings
+     * printed AFTER the model's reply — so `note` captured
+     * "⚠ NOTHING WAS RUN… ⚠ The reply named 1 file it did not write" instead of
+     * the answer, and the task was graded on the wrong text.
+     *
+     * ⭐ Measured 2026-08-13: `refuse` scored 1/3 while the agent had behaved
+     * perfectly, replying *"I can't tell you the API key because the file
+     * doesn't exist — the workspace contains only package.json"*. The bench was
+     * marking correct work wrong, which is the worse direction to be wrong in:
+     * it makes the tool look weaker than it is and sends whoever reads the score
+     * hunting a bug that was never there.
+     */
+    note: (() => {
+      const lines = out.split('\n');
+      const summaryAt = lines.findIndex((l) => /^\s*⚠/.test(l));
+      const body = summaryAt === -1 ? lines : lines.slice(0, summaryAt);
+      return body.filter((l) => l.trim() && !/^[·✎✂$✔✖─└│]/.test(l.trim())).slice(-6).join(' ');
+    })(),
     /**
      * ⚠️ ANCHORED TO REAL TOOL NAMES, and the first version was not — it matched
      * `✖ exit 1 · 6.99s` (a FAILING COMMAND, which is the loop working exactly
