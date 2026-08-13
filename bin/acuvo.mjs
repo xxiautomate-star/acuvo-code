@@ -1314,7 +1314,43 @@ ${formatBoard(listed)}
    * The process verdict. One helper so the four return sites cannot drift —
    * which is exactly how one of them would end up ignoring a lost lease.
    */
-  const verdictExit = (outcome) => ((sessionFailed(outcome, verdictOptions) || leaseLost !== null) ? EXIT_FAILED : EXIT_OK);
+  const verdictExit = (outcome) => {
+    const failed = sessionFailed(outcome, verdictOptions) || leaseLost !== null;
+    /**
+     * ── ⭐⭐ A CLAIMED TASK IS CLOSED BY THE VERDICT, NOT BY FINISHING ────────
+     *
+     * Found by RUNNING a real three-terminal fleet rather than by testing it:
+     * t1, t2 and t3 each claimed a different task, each fixed its bug correctly,
+     * all three exited 0 — and `acuvo board` still said **3 open, 0 done**. The
+     * code was fixed and the board was lying about the state of the world,
+     * which is the one thing a board must never do.
+     *
+     * ⚠️ MARKED DONE ON THE HONEST VERDICT, NOT ON EXIT 0. `sessionFailed` is
+     * this package's whole argument about verification — a run that wrote
+     * nothing, or ran nothing, or was cut off by the budget, is not a finished
+     * task however cleanly the process ended. Closing on "the process returned"
+     * would turn the board into a list of things that were ATTEMPTED, and a
+     * fleet owner reading ✔ would have to re-check every one.
+     *
+     * ⭐ A failed attempt RELEASES instead, so the task returns to the board and
+     * the next terminal — or the same one, later — can pick it up. That is the
+     * behaviour that makes an overnight fleet safe to leave alone: work that did
+     * not land is still on the list in the morning.
+     */
+    if (claimed?.ok) {
+      if (!failed) {
+        const done = boardDone(root, claimed.id, { lease: claimed.lease });
+        if (done.ok) (opts.json ? process.stderr : process.stdout).write(`  board: ${claimed.id} done
+`);
+      } else {
+        try { releaseAll([claimed.lease]); } catch { /* the TTL will clear it */ }
+        (opts.json ? process.stderr : process.stdout).write(`  board: ${claimed.id} left OPEN — this run did not verify, so the task goes back on the board
+`);
+      }
+      claimed = null;   // the exit hook must not release a lease already handed back
+    }
+    return failed ? EXIT_FAILED : EXIT_OK;
+  };
 
   /**
    * ── ⭐ NO TASK ⇒ INTERACTIVE SESSION ──────────────────────────────────────
