@@ -28,7 +28,7 @@ It also speaks, transcribes, and turns HTML into PDF/PNG/PPTX — see [Media too
 
 > ⚠️ **BE CLEAR ABOUT WHAT YOU GET ON INSTALL: these eight tools are DARK by default and we do not host a service you can point at.** `see_page`, `speak`, `transcribe`, `make_document`, `read_document`, `read_table`, `edit_image` and `expand_image` each need an HTTP endpoint named by an environment variable. They are not trial-limited or coming soon — **there is no public endpoint to enable them with**, and this README should not read as though there is.
 >
-> Measured on a bare machine, 2026-08-13: **34 of 48 tools are offered.** Of the 14 that are not, four (`find_definition`, `find_references`, `check_types`, `list_symbols`) light up by themselves in any TypeScript project, taking it to **38**, one needs a skills directory, and `ask_user` appears only when stdin and stdout are both terminals. The other eight are the media half.
+> Measured on a bare machine, 2026-08-13: **35 of 49 tools are offered.** Of the 14 that are not, four (`find_definition`, `find_references`, `check_types`, `list_symbols`) light up by themselves in any TypeScript project, taking it to **38**, one needs a skills directory, and `ask_user` appears only when stdin and stdout are both terminals. The other eight are the media half.
 >
 > ⭐ The endpoints are plain env vars, so if you run a compatible service you can point at your own. The interface is documented under [Media tools](#media-tools). What we are not doing is implying a hosted one exists.
 >
@@ -636,7 +636,7 @@ workspace containing a hostile `.mcp.json` under each flag.
 
 ## The rest of the verbs
 
-The registry holds **48 tools** (`TOOL_SCHEMAS`, `lib/tools.mjs` — count it yourself, and
+The registry holds **49 tools** (`TOOL_SCHEMAS`, `lib/tools.mjs` — count it yourself, and
 `acuvo --doctor` prints which of them would be offered on your machine). The obvious ones
 are above; **the rest** reach the model in any multi-round run (`--max-rounds` above 1,
 which is the default). You never name them — the model picks. They are listed because a

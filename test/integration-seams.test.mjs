@@ -31,7 +31,7 @@ import {
 } from '../lib/turn.mjs';
 import { createLocalExecutor } from '../lib/workspace.mjs';
 import { trustAuthoredCriteria } from '../lib/acceptance-consent.mjs';
-import { toolNamesForRounds, lspAvailable, languagesPresent } from '../lib/tools.mjs';
+import { toolNamesForRounds, lspAvailable, languagesPresent, SINGLE_SHOT_TOOL_NAMES } from '../lib/tools.mjs';
 import { toJson } from '../lib/report.mjs';
 
 function workspace(t, name = 'acuvo-seams-') {
@@ -523,9 +523,35 @@ test('⚠️ every executable this package ships is reachable by name after inst
   assert.ok(pkg.bin['acuvo-mcp'], 'bin/acuvo-mcp.mjs ships and must be invocable by name');
 });
 
-test('⚠️ a single-round turn is still exactly two tools', () => {
+test('⚠️ a single-round turn offers ONLY tools whose result lands on disk', () => {
   const root = mkdtempSync(join(tmpdir(), 'acuvo-oneshot-'));
-  assert.deepStrictEqual(toolNamesForRounds(1, { root }), ['write_file', 'generate_image']);
+  /**
+   * ⚠️ THE RULE, NOT THE COUNT. This asserted the literal list
+   * `['write_file', 'generate_image']`, and read as "exactly two tools" — but
+   * two was never the property being defended. The property is that a
+   * single-shot turn offers nothing whose result has nowhere to go, which is
+   * the dead button `tools.mjs` refuses to ship.
+   *
+   * ⭐ `write_files` joined the list on 2026-08-13 and satisfies that rule
+   * exactly as `write_file` does: its result lands on disk. Withholding it
+   * would push "create these five files" back into `evaluate`, where a bulk
+   * write is invisible to the leases and to the change count — the specific
+   * defect it was built to close.
+   *
+   * The assertion now reads the CONSTANT, so a future addition has to argue
+   * with the rule rather than with a number somebody has to update.
+   */
+  assert.deepStrictEqual(
+    toolNamesForRounds(1, { root }),
+    [...SINGLE_SHOT_TOOL_NAMES, 'generate_image'],
+    'something reached the single-shot offer that is not in SINGLE_SHOT_TOOL_NAMES',
+  );
+  for (const name of toolNamesForRounds(1, { root })) {
+    assert.ok(
+      ['write_file', 'write_files', 'generate_image'].includes(name),
+      `${name} is offered in a one-round turn — its result has nowhere to go`,
+    );
+  }
   rmSync(root, { recursive: true, force: true });
 });
 
