@@ -49,7 +49,17 @@ import {
 } from '../lib/policy.mjs';
 import { createBudget, remainingForTurn } from '../lib/budget.mjs';
 import { createFleetGate } from '../lib/fleet-budget.mjs';
+import { createAsker } from '../lib/prompt.mjs';
 import { summariseSpend, readAuditFiles, formatSpend, parseSince } from '../lib/spend.mjs';
+
+/**
+ * ⭐ Decided once, at the top, because it is a property of how this process was
+ * INVOKED and cannot change while it runs. `null` means stdin and stdout are
+ * not both terminals — a pipe, a CI job, a task runner — in which case there is
+ * nobody to ask and every consent gate must keep refusing exactly as it does
+ * today. `createAsker` only reads `isTTY`, so this costs nothing at load.
+ */
+const asker = createAsker();
 
 /**
  * ── ⭐⭐ THE FIVE CAPABILITIES THAT WERE BUILT AND REACHED BY NOTHING ────────
@@ -933,6 +943,26 @@ async function main() {
        * and `--dir` is exactly how a terminal ends up somewhere else.
        */
       fleetGate: createFleetGate(root, { fleetLimitUsd: opts.fleetBudgetUsd }),
+      /**
+       * ── ⚠️⚠️ THE CONSENT QUESTION NOBODY WAS EVER ASKED ────────────────────
+       *
+       * `turn.mjs` has taken `mcpAsk` and `mcpInteractive` since MCP consent
+       * shipped, and until now NOTHING in this package supplied either — three
+       * references in the whole codebase, all three inside `turn.mjs` itself.
+       *
+       * ⭐ It failed CLOSED, so nothing was ever silently approved. But
+       * `checkMcpConsent` refuses whenever it cannot ask, so a committed
+       * `.mcp.json` could not be approved from a terminal AT ALL: the only way
+       * through was `ACUVO_TRUST_MCP=1`. Being able to drive every MCP server
+       * is half the two-way story, and it was gated behind an environment
+       * variable on a question the user was standing right there to answer.
+       *
+       * ⚠️ `createAsker` returns null when stdin/stdout are not both TTYs, and
+       * that null is deliberate — see `lib/prompt.mjs`. A CI run keeps exactly
+       * the behaviour it has today: refused, with "there is no terminal here".
+       */
+      mcpAsk: asker,
+      mcpInteractive: asker !== null,
       /**
        * ⚠️ THE RUNG'S MODEL WINS, and `over.model` is undefined unless
        * `ACUVO_MODEL_TIERS` is configured — so a run without tiers is
