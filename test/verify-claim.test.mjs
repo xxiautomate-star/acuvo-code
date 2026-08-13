@@ -97,3 +97,72 @@ test('runs come back newest first', () => {
   assert.equal(r.ok, true);
   assert.deepEqual(r.runs.map((x) => x.id), ['12', '10']);
 });
+
+// ═══════════════════════════════════════════════════════════════════════════
+// EVERY CLAIM AT ONCE — the question a fleet actually leaves behind
+// ═══════════════════════════════════════════════════════════════════════════
+
+import { recheckAll, formatRecheckAll } from '../lib/verify-claim.mjs';
+
+test('⭐⭐ DEDUPLICATED BY COMMAND — twelve claims of `npm test` are ONE thing to run', async () => {
+  /**
+   * This is what makes it cheap rather than merely possible. Re-running an
+   * identical suite twelve times turns a free check into a coffee break, and a
+   * check people avoid is a check that does not exist.
+   */
+  const ran = [];
+  const runs = Array.from({ length: 12 }, (_, i) => rec(String(i)));
+  const r = await recheckAll(runs, { runner: async (c) => { ran.push(c); return { ok: true, exitCode: 0 }; } });
+
+  assert.equal(r.checked, 12, 'every claim is still reported');
+  assert.equal(r.commands, 1);
+  assert.equal(ran.length, 1, `the suite ran ${ran.length} times for one distinct command`);
+  assert.equal(r.ok, true);
+});
+
+test('⭐⭐ one broken command names EVERY claim that rested on it', async () => {
+  const runs = [rec('a'), rec('b'), rec('c')];
+  const r = await recheckAll(runs, { runner: async () => ({ ok: true, exitCode: 1 }) });
+
+  assert.equal(r.ok, false);
+  assert.equal(r.broken.length, 1);
+  assert.equal(r.broken[0].claims, 3);
+  const text = formatRecheckAll(r);
+  assert.match(text, /3 claims rested on it/,
+    '"these three runs all believed the suite passed, and it does not" beats three separate failures');
+  assert.match(text, /does not mean a run lied/);
+});
+
+test('⭐ mixed commands are reported separately', async () => {
+  const runs = [
+    rec('a'),
+    rec('b', { verification: { ran: true, passed: true, command: 'npm run lint', exitCode: 0 } }),
+  ];
+  const r = await recheckAll(runs, {
+    runner: async (c) => ({ ok: true, exitCode: c === 'npm test' ? 0 : 1 }),
+  });
+  assert.equal(r.commands, 2);
+  assert.equal(r.holds.length, 1);
+  assert.equal(r.broken.length, 1);
+});
+
+test('⚠️ runs that proved nothing are counted separately, never as passes', async () => {
+  const runs = [rec('a'), rec('b', { verification: { ran: false, command: null } })];
+  const r = await recheckAll(runs, { runner: async () => ({ ok: true, exitCode: 0 }) });
+  assert.equal(r.checked, 1);
+  assert.equal(r.unclaimed, 1);
+  assert.match(formatRecheckAll(r), /1 other run proved nothing/);
+});
+
+test('⚠️ nothing checkable at all is reported plainly, not as success', async () => {
+  const r = await recheckAll([rec('a', { verification: { ran: false, command: null } })], { runner: async () => ({ ok: true, exitCode: 0 }) });
+  assert.equal(r.checked, 0);
+  assert.match(formatRecheckAll(r), /none of them proved anything/);
+});
+
+test('⚠️ a command that cannot be re-run is an error, not a broken claim', async () => {
+  const r = await recheckAll([rec('a')], { runner: async () => ({ ok: false, error: 'binary not allowed' }) });
+  assert.equal(r.ok, false);
+  assert.equal(r.broken.length, 0, 'unable-to-check must never be reported as disproven');
+  assert.equal(r.errors.length, 1);
+});

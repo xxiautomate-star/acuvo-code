@@ -107,7 +107,7 @@ import { createPainter, colourEnabled } from '../lib/colour.mjs';
 import { acquireAll, renewAll, releaseAll, inspect, formatLeaseSummary, DEFAULT_TTL_MS } from '../lib/lease.mjs';
 import { createPathClaimer } from '../lib/auto-lease.mjs';
 import { boardAdd, boardList, boardClaim, boardDone, formatBoard } from '../lib/board.mjs';
-import { loadRuns, pickRun, recheckClaim, formatRecheck } from '../lib/verify-claim.mjs';
+import { loadRuns, pickRun, recheckClaim, formatRecheck, recheckAll, formatRecheckAll } from '../lib/verify-claim.mjs';
 
 const EXIT_OK = 0;
 const EXIT_FAILED = 1;
@@ -550,17 +550,31 @@ async function main() {
   if (opts.command === 'verify') {
     const loaded = loadRuns(root);
     if (!loaded.ok) die(loaded.error, EXIT_FAILED);
+    const runner = (command, o) => executeRunCommand({
+      command,
+      executor: createLocalExecutor(root),
+      timeoutMs: o?.timeoutMs ?? opts.commandTimeoutMs,
+      shell: opts.shell,
+    });
+
+    /**
+     * ⭐ `--all` answers the question a fleet actually leaves behind. Seven
+     * terminals working a board overnight produce fifty claims, and nobody wants
+     * to read fifty receipts — they want to know which are still true.
+     */
+    if (opts.verifyAll) {
+      const all = await recheckAll(loaded.runs, { runner });
+      if (opts.json) process.stdout.write(`${JSON.stringify(all, null, 2)}
+`);
+      else process.stdout.write(['', formatRecheckAll(all).split(String.fromCharCode(10)).map((l) => `  ${l}`).join(String.fromCharCode(10)), ''].join(String.fromCharCode(10)));
+      if (all.checked === 0) return EXIT_SKIPPED;
+      return all.ok ? EXIT_OK : EXIT_FAILED;
+    }
+
     const picked = pickRun(loaded.runs, opts.verifyId);
     if (!picked.ok) die(picked.error, EXIT_USAGE);
 
-    const outcome = await recheckClaim(picked.run, {
-      runner: (command, o) => executeRunCommand({
-        command,
-        executor: createLocalExecutor(root),
-        timeoutMs: o?.timeoutMs ?? opts.commandTimeoutMs,
-        shell: opts.shell,
-      }),
-    });
+    const outcome = await recheckClaim(picked.run, { runner });
     if (opts.json) {
       process.stdout.write(`${JSON.stringify(outcome, null, 2)}
 `);
