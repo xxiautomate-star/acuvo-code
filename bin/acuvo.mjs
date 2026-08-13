@@ -103,6 +103,7 @@ import { createPainter, colourEnabled } from '../lib/colour.mjs';
  */
 import { acquireAll, renewAll, releaseAll, inspect, formatLeaseSummary, DEFAULT_TTL_MS } from '../lib/lease.mjs';
 import { createPathClaimer } from '../lib/auto-lease.mjs';
+import { boardAdd, boardList, boardClaim, boardDone, formatBoard } from '../lib/board.mjs';
 
 const EXIT_OK = 0;
 const EXIT_FAILED = 1;
@@ -514,6 +515,51 @@ async function main() {
     return EXIT_OK;
   }
 
+  /**
+   * ── ⭐⭐ `acuvo board` — THE LAST PIECE OF "SEVEN TERMINALS, SEVEN WORKERS" ──
+   *
+   * Everything else was already measured working: seven terminals run, leases
+   * stop them writing one file, the fleet ceiling caps the day, the plan ledger
+   * is per worker. What was missing is that nothing said what the WORK was, so
+   * seven terminals meant a person typing seven prompts and nothing stopping
+   * two of them being the same.
+   *
+   * ⚠️ READ-ONLY BY DEFAULT and above the key check, like `leases` and `spend`:
+   * looking at the board must work on a machine with no credentials at all.
+   */
+  if (opts.command === 'board') {
+    const [verb, ...rest] = opts.boardArgs ?? [];
+    if (!verb) {
+      const listed = boardList(root);
+      if (opts.json) {
+        process.stdout.write(`${JSON.stringify(listed, null, 2)}
+`);
+        return listed.ok ? EXIT_OK : EXIT_FAILED;
+      }
+      process.stdout.write(`
+${formatBoard(listed)}
+
+`);
+      return listed.ok ? EXIT_OK : EXIT_FAILED;
+    }
+    if (verb === 'add') {
+      const text = rest.join(' ').trim();
+      const added = boardAdd(root, text);
+      if (!added.ok) die(added.error, EXIT_USAGE);
+      process.stdout.write(`  added ${added.id} — ${added.task}
+`);
+      return EXIT_OK;
+    }
+    if (verb === 'done') {
+      const done = boardDone(root, rest[0]);
+      if (!done.ok) die(done.error, EXIT_USAGE);
+      process.stdout.write(`  done ${done.id} — ${done.task}
+`);
+      return EXIT_OK;
+    }
+    die(`unknown board command "${verb}". Try: acuvo board · acuvo board add "…" · acuvo board done <id>`, EXIT_USAGE);
+  }
+
   if (opts.command === 'leases') {
     const view = inspect(root);
     if (opts.json) {
@@ -805,6 +851,41 @@ async function main() {
   }
 
   let task = voiceTask ?? opts.task;
+
+  /**
+   * ── ⭐⭐ `--claim` — SEVEN TERMINALS, ONE LIST, NOBODY DOING THE SAME JOB ────
+   *
+   * The instruction comes off the shared board instead of being typed. Seven
+   * windows each running `acuvo --holder tN --claim` split one list of work
+   * with nobody duplicating anyone — which is the whole "seven workers" idea,
+   * and the last piece of it that did not exist.
+   *
+   * ⚠️ THE CLAIM IS A LEASE, so it is released on exit exactly like every other
+   * lease — a worker that crashes returns its task to the board after the TTL
+   * rather than parking it forever.
+   *
+   * ⚠️ AN EMPTY BOARD IS EXIT 0, NOT AN ERROR. Seven terminals finishing a list
+   * means six of them find nothing left, and a fleet that reports six failures
+   * every time it completes its work would train its owner to ignore the exit
+   * code — which is the one signal this package asks people to gate on.
+   */
+  let claimed = null;
+  if (opts.claim) {
+    if (task) die('--claim takes the task from the board, so do not also type one. Use one or the other.', EXIT_USAGE);
+    if (!opts.holder) die('--claim needs --holder, so the board can say which terminal is doing what. Try: acuvo --holder t1 --claim', EXIT_USAGE);
+    claimed = boardClaim(root, { holder: opts.holder });
+    if (!claimed.ok) {
+      const out = claimed.empty ? process.stdout : process.stderr;
+      out.write(`  ${claimed.error}
+`);
+      return claimed.empty ? EXIT_OK : EXIT_FAILED;
+    }
+    task = claimed.task;
+    (opts.json ? process.stderr : process.stdout).write(`  claimed ${claimed.id} as ${opts.holder} — ${claimed.task}
+`);
+    process.on('exit', () => { try { if (claimed?.lease) releaseAll([claimed.lease]); } catch { /* exiting anyway */ } });
+  }
+
   let priorMessages = null;
   if (resumeRequested) {
     if (life.resume !== null && life.continueLatest) {
