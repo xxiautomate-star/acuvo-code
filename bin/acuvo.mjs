@@ -48,6 +48,7 @@ import {
   USER_POLICY_FILE, USER_POLICY_ENV, WORKSPACE_POLICY_FILE,
 } from '../lib/policy.mjs';
 import { createBudget, remainingForTurn } from '../lib/budget.mjs';
+import { createFleetGate } from '../lib/fleet-budget.mjs';
 import { summariseSpend, readAuditFiles, formatSpend, parseSince } from '../lib/spend.mjs';
 
 /**
@@ -923,6 +924,16 @@ async function main() {
        */
       budgetIsDefault: opts.budgetExplicit !== true,
       /**
+       * ⭐ THE FLEET CEILING. `null` unless `--fleet-budget` was given, and
+       * `createFleetGate` returns `null` for that case, so this is inert for
+       * everyone who has not asked for it — no gate, no disk read.
+       *
+       * ⚠️ Built from `root`, not the process cwd: the ledger being summed has
+       * to be the one every OTHER terminal on this workspace is appending to,
+       * and `--dir` is exactly how a terminal ends up somewhere else.
+       */
+      fleetGate: createFleetGate(root, { fleetLimitUsd: opts.fleetBudgetUsd }),
+      /**
        * ⚠️ THE RUNG'S MODEL WINS, and `over.model` is undefined unless
        * `ACUVO_MODEL_TIERS` is configured — so a run without tiers is
        * byte-identical to one from before this existed. See `model-tier.mjs`
@@ -1410,7 +1421,7 @@ async function main() {
     const ladder = await escalate({
       root,
       task,
-      budget: createBudget({ limitUsd: opts.budgetUsd, limitIsDefault: opts.budgetExplicit !== true }),
+      budget: createBudget({ limitUsd: opts.budgetUsd, limitIsDefault: opts.budgetExplicit !== true, fleetGate: createFleetGate(root, { fleetLimitUsd: opts.fleetBudgetUsd }) }),
       // ⭐ Tier 0, and the only tier unless ACUVO_MODEL_TIERS is configured.
       baseModel: config.model,
       /**

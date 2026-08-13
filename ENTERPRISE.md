@@ -842,12 +842,18 @@ For completeness, the properties none of them offers:
   (`lib/media.mjs`), and generates imagery with no configuration and no account
   (`lib/imagegen.mjs`) — critiqued before it is accepted, and reported as unreviewed when
   no critic is available.
-- ⭐ **Zero dependencies.** The entire auditable surface is 66 files and 36,200 lines,
-  and there is no `node_modules` behind it. (Counted 2026-08-12 from
+- ⭐ **Zero dependencies.** The entire auditable surface is 69 files and 40,183 lines,
+  and there is no `node_modules` behind it. (Counted 2026-08-13 from
   `lib/*.mjs` + `bin/*.mjs`; `test/docs-truth.test.mjs` fails the build if this number
-  drifts, which is why it went 18 → 41 → 46 → 52 → 53 → 57 → 60 → 61 → 62 → 65 → 66 as modules landed. ⭐ A
+  drifts, which is why it went 18 → 41 → 46 → 52 → 53 → 57 → 60 → 61 → 62 → 65 → 66 → 69 as modules landed. ⭐ A
   count that fails the build is the only kind that stays true — this one has now caught its own
-  staleness five times in a day, most recently the moment `mcp-defaults.mjs` shipped.
+  staleness six times, most recently the moment `fleet-budget.mjs` shipped.
+  ⚠️⚠️ AND IT WAS WRONG ANYWAY, BY TWO, FOR A DAY. The guard asserted only that the
+  correct number appeared *somewhere* in this file, and `68` did — inside the unrelated
+  citation `lib/command.mjs:68` on line 9. A build-failing count matched a line number
+  and passed while the sentence above it said 66. The check is now anchored to the
+  word it is counting, because a guard that can be satisfied by a coincidence is not a
+  guard, it is a decoration that everyone trusts.
   ⚠️ **And the check is weaker than it reads:** it asserts the document *contains the
   digits*, so a coincidental "53" anywhere passes it. Verified by mutation — replacing
   this figure with the historical 41 left the suite green. Treat it as a reminder, not a

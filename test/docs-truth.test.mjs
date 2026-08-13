@@ -240,9 +240,26 @@ test('ENTERPRISE.md states the real shipped-file count', () => {
   const shipped =
     readdirSync(join(ROOT, 'lib')).filter((f) => f.endsWith('.mjs')).length +
     readdirSync(join(ROOT, 'bin')).filter((f) => f.endsWith('.mjs')).length;
-  assert.ok(
-    ENTERPRISE.includes(String(shipped)),
-    `ENTERPRISE.md never states the real shipped-file count (${shipped}). It used to say 18 while shipping ${shipped}.`,
+  /**
+   * ⚠️⚠️ ANCHORED TO THE WORD "files", NOT A BARE `includes`.
+   *
+   * `ENTERPRISE.includes(String(shipped))` is what this used to be, and on
+   * 2026-08-13 it was caught passing on a document that said **66 files while
+   * 68 shipped** — because `68` appeared on line 9 inside the unrelated
+   * citation `lib/command.mjs:68`. The build-failing count was being satisfied
+   * by a LINE NUMBER.
+   *
+   * ⭐ The failure mode is worth naming because it is not rare: a substring
+   * test over a long document will eventually match something by coincidence,
+   * and the longer the document grows the likelier that is. Every digit in
+   * every file path, line number, dollar figure and date is a chance to pass
+   * for the wrong reason. Bind the number to the noun it counts.
+   */
+  assert.match(
+    ENTERPRISE,
+    new RegExp(`\\b${shipped}\\s+files\\b`),
+    `ENTERPRISE.md does not say "${shipped} files" — the real shipped count of lib/*.mjs + bin/*.mjs. `
+    + 'A bare substring match once let this pass on a line number while the sentence was wrong by two.',
   );
   /**
    * ⚠️ Same allowance as the struck-claim test, and it caught this file out on
