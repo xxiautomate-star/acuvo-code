@@ -49,6 +49,7 @@ import {
 } from '../lib/policy.mjs';
 import { createBudget, remainingForTurn } from '../lib/budget.mjs';
 import { createFleetGate } from '../lib/fleet-budget.mjs';
+import { FLEET_STOP_REASONS } from '../lib/budget.mjs';
 import { createAsker } from '../lib/prompt.mjs';
 import { summariseSpend, readAuditFiles, formatSpend, parseSince } from '../lib/spend.mjs';
 
@@ -109,6 +110,14 @@ const EXIT_OK = 0;
 const EXIT_FAILED = 1;
 const EXIT_UNCONFIGURED = 2;
 const EXIT_USAGE = 64;
+/**
+ * ⭐ "I CHOSE NOT TO RUN" IS NOT "I RAN AND FAILED", and under `--unattended`
+ * they need opposite reactions: one is a schedule behaving exactly as
+ * instructed, the other is something to look at. They had one exit code, so a
+ * cron log could not tell them apart — and the first one is far more common,
+ * which is how a person learns to ignore the alert that matters.
+ */
+const EXIT_SKIPPED = 3;
 
 function die(message, code) {
   process.stderr.write(`${message}\n`);
@@ -732,6 +741,15 @@ ${formatBoard(listed)}
    * turns it off, and an infrastructure failure degrades to the old behaviour
    * rather than blocking work (see lib/auto-lease.mjs).
    */
+  /**
+   * ⚠️ A WINDOW WITH NO CEILING MEASURES NOTHING. `--budget-window 7d` on its
+   * own reads like a spend limit and is not one — the kind of flag that makes
+   * somebody believe they are protected. Refused rather than ignored.
+   */
+  if (opts.budgetWindow && opts.fleetBudgetUsd === null) {
+    die('--budget-window sets the period --fleet-budget is measured over, so it needs one. Try: --fleet-budget 5.00 --budget-window 7d', EXIT_USAGE);
+  }
+
   const claimer = opts.autoLease
     ? createPathClaimer(root, { holder: opts.holder ?? `pid-${process.pid}` })
     : null;
@@ -1062,7 +1080,7 @@ ${formatBoard(listed)}
        * to be the one every OTHER terminal on this workspace is appending to,
        * and `--dir` is exactly how a terminal ends up somewhere else.
        */
-      fleetGate: createFleetGate(root, { fleetLimitUsd: opts.fleetBudgetUsd }),
+      fleetGate: createFleetGate(root, { fleetLimitUsd: opts.fleetBudgetUsd, since: opts.budgetWindow }),
       /**
        * ── ⚠️⚠️ THE CONSENT QUESTION NOBODY WAS EVER ASKED ────────────────────
        *
@@ -1316,6 +1334,33 @@ ${formatBoard(listed)}
    */
   const verdictExit = (outcome) => {
     const failed = sessionFailed(outcome, verdictOptions) || leaseLost !== null;
+
+    /**
+     * ── ⭐ "I CHOSE NOT TO RUN" IS NOT "I RAN AND FAILED" ────────────────────
+     *
+     * Under `--unattended` these need opposite reactions: a fleet ceiling
+     * declining a run is the schedule behaving exactly as instructed, and a run
+     * that started and broke is something to look at. They shared exit 1, and
+     * the harmless one is far more common — which is precisely how somebody
+     * learns to ignore the alert that mattered.
+     *
+     * ⚠️ ONLY WHEN IT DECLINED, not when it was cut off mid-way. A run that did
+     * some work and then hit the ceiling has left the job half-finished, and
+     * half-finished IS something to look at. `executed.length === 0` is the
+     * difference between the two, and it is the whole distinction.
+     *
+     * ⚠️ The reason list is `FLEET_STOP_REASONS` from budget.mjs rather than two
+     * retyped strings — the same anti-drift rule that put them there.
+     */
+    if (opts.unattended
+      && FLEET_STOP_REASONS.includes(outcome?.stoppedBecause)
+      && (outcome?.executed?.length ?? 0) === 0) {
+      (opts.json ? process.stderr : process.stdout).write(
+        `  declined: the fleet ceiling is spent, so nothing was started. Exit ${EXIT_SKIPPED} — this is the schedule working, not a failure.
+`,
+      );
+      return EXIT_SKIPPED;
+    }
     /**
      * ── ⭐⭐ A CLAIMED TASK IS CLOSED BY THE VERDICT, NOT BY FINISHING ────────
      *
@@ -1607,7 +1652,7 @@ ${formatBoard(listed)}
     const ladder = await escalate({
       root,
       task,
-      budget: createBudget({ limitUsd: opts.budgetUsd, limitIsDefault: opts.budgetExplicit !== true, fleetGate: createFleetGate(root, { fleetLimitUsd: opts.fleetBudgetUsd }) }),
+      budget: createBudget({ limitUsd: opts.budgetUsd, limitIsDefault: opts.budgetExplicit !== true, fleetGate: createFleetGate(root, { fleetLimitUsd: opts.fleetBudgetUsd, since: opts.budgetWindow }) }),
       // ⭐ Tier 0, and the only tier unless ACUVO_MODEL_TIERS is configured.
       baseModel: config.model,
       /**
