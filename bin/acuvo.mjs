@@ -694,6 +694,20 @@ async function main() {
   const executor = createLocalExecutor(root, {
     dryRun: opts.dryRun,
     claimPath: claimer ? (p) => claimer.claim(p) : null,
+    /**
+     * ⭐ WHO THIS TERMINAL IS — and the plan ledger keys on it. Measured with
+     * two terminals in one checkout: terminal 2 could not plan at all (the
+     * workspace already had terminal 1's plan), was invited by the refusal to
+     * DESTROY it with `replace:true`, and had every round prefixed with a
+     * banner describing terminal 1's task. `plan_step` from terminal 2 marked
+     * "port auth" done — work it never did.
+     *
+     * ⚠️ `opts.holder` is null unless the user typed `--holder`, and that is the
+     * whole compatibility story: a single terminal keeps `.acuvo/plan.json` and
+     * keeps `--resume`, while the seven-terminal case is exactly the case where
+     * a holder is already being named for the leases.
+     */
+    holder: opts.holder ?? null,
   });
 
   /**
