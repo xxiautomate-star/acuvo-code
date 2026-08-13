@@ -493,12 +493,33 @@ test('⚠️ a process that imports this module and uses it EXITS — no leaked 
     // No process.exit(). If anything above kept the loop alive, this hangs and
     // the timeout below fails the test — which is exactly the signal wanted.
   `;
+  /**
+   * ⚠️ THE CHILD'S STDERR IS THE WHOLE DIAGNOSIS, AND THIS TEST USED TO BIN IT.
+   *
+   * Observed once in six full-suite runs on 2026-08-13: the child exited 1
+   * after 671ms — far too fast to be the 20s timeout — and the failure said
+   * only "Command failed:" followed by the script it had just run. Whatever
+   * node printed on the way out was captured by `execFile` and then thrown
+   * away, so the one intermittent failure in this file is currently
+   * undiagnosable by design.
+   *
+   * ⭐ Rejecting with `err` alone loses `stderr`, the exit code and the partial
+   * stdout — all three of which `execFile` already has in hand. A test that can
+   * fail without saying why costs more than the flake it is reporting.
+   */
   const { stdout, code } = await new Promise((res, rej) => {
     const child = execFile(
       process.execPath,
       ['--input-type=module', '-e', script],
       { timeout: 20_000 },
-      (err, out) => (err ? rej(err) : res({ stdout: out, code: child.exitCode })),
+      (err, out, errOut) => {
+        if (!err) return res({ stdout: out, code: child.exitCode });
+        return rej(new Error(
+          `the child process failed (exit ${child.exitCode}, signal ${child.signalCode ?? 'none'}): ${err.message}\n`
+          + `--- child stderr ---\n${errOut || '(empty)'}\n`
+          + `--- child stdout ---\n${out || '(empty)'}`,
+        ));
+      },
     );
   });
   assert.equal(code, 0);

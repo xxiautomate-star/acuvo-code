@@ -196,19 +196,83 @@ test('npm test that spawns a descendant still times out, and the whole tree dies
   }
 });
 
+/**
+ * ── ⚠️⚠️ THE FIXED 2s TIMEOUT WAS RACING NODE'S OWN COLD START ───────────────
+ *
+ * Measured 2026-08-13: this test failed roughly 1 run in 5 when the full suite
+ * was under load, always the same way —
+ *
+ *     The input did not match the regular expression /direct child up/.
+ *     Input: ''
+ *
+ * Nothing was wrong with the product. `node --test` runs every file in
+ * parallel; with sixty processes competing for the disk, node's cold start
+ * stretches past 2,000ms, the timeout fires before the script reaches its first
+ * line, and the test asserts that output survived a kill that happened before
+ * any output existed. It was measuring machine load, not `close` semantics —
+ * the same trap the sibling test above already carries a warning about.
+ *
+ * ⭐ THE FIX IS NOT A BIGGER CONSTANT. A constant is a bet on the worst load
+ * this suite will ever see, and that bet has now been lost twice in this file
+ * (8s → 40s over there). Two changes instead:
+ *
+ *   1. **Measure this machine, under this load.** Time a node process that does
+ *      nothing, and give the real run a multiple of what that actually cost.
+ *      A loaded machine gets a longer rope; an idle one still finishes fast.
+ *   2. **Tell a setup failure apart from the defect.** The script drops a
+ *      marker file, so "the child never started" and "the child started and its
+ *      output was lost" cannot produce the same red. Only the second is the
+ *      regression this file exists to pin, and only it should ever read as one.
+ *
+ * ⚠️ Deliberately NOT a retry around the assertion. `_teardown.mjs` explains
+ * why only cleanup is ever retried: retrying an assertion is how a real
+ * intermittent product bug goes green.
+ */
 test('a direct child with no descendants still settles from close, with its signal intact', async () => {
   // The isolation control, kept as a test so a future "just settle on exit"
   // rewrite cannot quietly stop collecting output on the normal path.
   const root = mkdtempSync(join(tmpdir(), 'acuvo-treekill-solo-'));
   try {
-    writeFileSync(join(root, 'hang.mjs'), "console.log('direct child up');\nsetInterval(() => {}, 1000);\n");
     const executor = createLocalExecutor(root);
+
+    // What does starting node COST right now? Not what did it cost on an idle
+    // laptop in August. `node warm.mjs` exits immediately, so this is start-up
+    // and nothing else.
+    writeFileSync(join(root, 'warm.mjs'), 'process.exit(0);\n');
+    const warmStarted = Date.now();
+    await executeRunCommand({ command: 'node warm.mjs', executor, timeoutMs: 120_000 });
+    const coldStartMs = Date.now() - warmStarted;
+    const timeoutMs = Math.min(30_000, Math.max(2_000, coldStartMs * 4));
+
+    writeFileSync(
+      join(root, 'hang.mjs'),
+      // ⚠️ `import`, not `require` — this is an .mjs file and `require` is not
+      // defined in module scope. A ReferenceError here would kill the script
+      // before its first line and look exactly like the flake being fixed.
+      "import { writeFileSync } from 'node:fs';\n"
+      + "console.log('direct child up');\n"
+      + "writeFileSync('started.txt', 'up');\n"
+      + 'setInterval(() => {}, 1000);\n',
+    );
     const started = Date.now();
-    const result = await executeRunCommand({ command: 'node hang.mjs', executor, timeoutMs: 2_000 });
+    const result = await executeRunCommand({ command: 'node hang.mjs', executor, timeoutMs });
     const elapsed = Date.now() - started;
     assert.equal(result.ok, true);
     assert.equal(result.timedOut, true);
-    assert.ok(elapsed < 30_000, `took ${elapsed}ms — that is a hang, not slowness`);
+    assert.ok(elapsed < timeoutMs + 30_000, `took ${elapsed}ms against a ${timeoutMs}ms timeout — that is a hang, not slowness`);
+
+    /**
+     * ⚠️ The marker is written AFTER the log line, so its presence proves the
+     * script really did reach `console.log`. Missing marker = the kill landed
+     * during start-up and this run never exercised the property at all; say
+     * that, rather than blaming the code for output it was never given time to
+     * write.
+     */
+    assert.ok(
+      existsSync(join(root, 'started.txt')),
+      `node did not reach its first line inside ${timeoutMs}ms (cold start measured at ${coldStartMs}ms under this load), `
+      + 'so nothing was killed after writing output and this run proves nothing about `close`',
+    );
     // Output written before the kill must survive — that is what `close` buys.
     assert.match(result.stdout, /direct child up/);
   } finally {

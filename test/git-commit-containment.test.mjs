@@ -288,6 +288,60 @@ test('git_commit still commits when the caller spells the drive letter in the ot
   assert.equal(r.ok, true, `Windows paths are case-insensitive; a case-only difference is not an escape: ${r.ok === false ? r.error : ''}`);
 });
 
+/**
+ * ⚠️⚠️ THE 8.3 SHORT NAME — SEVEN TESTS DIED ON IT THE FIRST TIME CI RAN WINDOWS.
+ *
+ * `realpathSync` leaves `ACUVOR~1` exactly as it found it; `git rev-parse
+ * --show-toplevel` prints the long name. The containment check compared those
+ * two spellings of ONE directory and refused every git verb, naming the
+ * workspace as the outer repository it was supposedly hiding inside.
+ *
+ * ⭐ Not a runner quirk. Windows generates an 8.3 alias for any name over eight
+ * characters, so `C:\Users\<anything longer>` reaches it — the runner only
+ * found it first because `runneradmin` is `RUNNER~1`. This test reproduces it
+ * on any Windows volume with 8.3 creation left on, which is the default.
+ */
+function shortNameFor(dir) {
+  if (process.platform !== 'win32') return null;
+  try {
+    const listing = execFileSync('cmd', ['/c', 'dir', '/x', '/ad', `${dir}*`], { encoding: 'utf8', stdio: 'pipe' });
+    const base = dir.slice(dir.lastIndexOf('\\') + 1);
+    const line = listing.split('\n').find((l) => l.trimEnd().endsWith(base));
+    const m = line && line.match(/<DIR>\s+(\S+~\d+)\s+/);
+    return m ? m[1] : null;
+  } catch {
+    return null;
+  }
+}
+
+test('⚠️ git_commit still commits when the workspace is reached by its 8.3 SHORT NAME', async (t) => {
+  t.after(cleanup);
+  if (process.platform !== 'win32') {
+    t.skip('8.3 aliases are a Windows filesystem feature');
+    return;
+  }
+  const repo = tempDir('shortname-long-enough-to-alias');
+  makeRepo(repo);
+  write(repo, 'work.ts', 'export const s = 1;\n');
+
+  const alias = shortNameFor(repo);
+  if (!alias) {
+    t.skip('this volume generated no 8.3 alias (creation disabled) — nothing to reproduce');
+    return;
+  }
+  const viaShort = join(dirname(repo), alias);
+  assert.notEqual(viaShort.toLowerCase(), repo.toLowerCase(), 'the probe must really be using a different spelling');
+
+  const r = await gitCommit(viaShort, { message: 'commit through the short name', paths: ['work.ts'] });
+
+  assert.equal(
+    r.ok,
+    true,
+    `a workspace reached by its 8.3 alias is the same directory, not an outer repository: ${r.ok === false ? r.error : ''}`,
+  );
+  assert.deepEqual(r.files, ['work.ts']);
+});
+
 // ─────────────────────────────────────────────────────────────────────────────
 // THE REFUSAL THAT ALREADY EXISTED MUST NOT BE WEAKENED BY THE NEW ONE
 // ─────────────────────────────────────────────────────────────────────────────
