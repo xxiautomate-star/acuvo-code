@@ -30,6 +30,7 @@ import {
   runSession, toolResultText, formatSummary, gatherWorkspaceContext,
 } from '../lib/turn.mjs';
 import { createLocalExecutor } from '../lib/workspace.mjs';
+import { trustAuthoredCriteria } from '../lib/acceptance-consent.mjs';
 import { toolNamesForRounds, lspAvailable, languagesPresent } from '../lib/tools.mjs';
 import { toJson } from '../lib/report.mjs';
 
@@ -308,11 +309,23 @@ test('⚠️⭐ a model that calls check_acceptance under --no-run is REFUSED, n
 test('⚠️⚠️ check_acceptance counts as a run — the honesty line stopped lying pessimistically', async (t) => {
   const root = workspace(t);
   mkdirSync(join(root, '.acuvo'), { recursive: true });
+  const criteria = [{ command: 'node --version', phrase: 'node --version', kind: 'bare', runnable: true }];
   writeFileSync(
     join(root, '.acuvo', 'acceptance.json'),
-    `${JSON.stringify({ version: 1, declaredAt: new Date().toISOString(), criteria: [{ command: 'node --version', phrase: 'node --version', kind: 'bare', runnable: true }] })}\n`,
+    `${JSON.stringify({ version: 1, declaredAt: new Date().toISOString(), criteria })}\n`,
     'utf8',
   );
+  /**
+   * ⚠️⚠️ The bytes alone are now the ATTACK, not the feature. A workspace
+   * acceptance file is gated on consent — a cloned repository shipping one was
+   * proven able to run `node payload.js` and have it printed as `✔ MET`
+   * (lib/acceptance-consent.mjs). `declare_acceptance` records trust as it
+   * writes, which is why the ordinary path never prompts, so a fixture must
+   * record it too or it is modelling an untrusted repo. `ACUVO_TRUST_DIR` keeps
+   * the store inside the temp workspace and out of the real user's home.
+   */
+  process.env.ACUVO_TRUST_DIR = root;
+  trustAuthoredCriteria(criteria, { root });
 
   const events = [];
   const outcome = await runSession({

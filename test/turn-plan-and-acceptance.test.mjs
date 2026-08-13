@@ -27,6 +27,7 @@ import {
   runSession, planBannerFor, resolveAcceptance, formatSummary, sessionFailed, renderEvent, systemPrompt,
 } from '../lib/turn.mjs';
 import { createLocalExecutor } from '../lib/workspace.mjs';
+import { trustAuthoredCriteria } from '../lib/acceptance-consent.mjs';
 
 /* ────────────────────────────────────────────────────────────────────────────
  * fixtures
@@ -50,8 +51,26 @@ function writePlan(dir, steps) {
   }, null, 2)}\n`, 'utf8');
 }
 
-/** A declaration on disk, exactly as `declare_acceptance` writes it. */
+/**
+ * A declaration on disk, exactly as `declare_acceptance` writes it — INCLUDING
+ * the consent that verb records.
+ *
+ * ⚠️⚠️ THE TRUST HALF IS NOT SCAFFOLDING, IT IS THE THING BEING MODELLED. A
+ * workspace acceptance file is now gated: a cloned repository shipping one was
+ * proven able to run `node payload.js` and have it reported as `✔ MET` (see
+ * lib/acceptance-consent.mjs). Criteria the user's own session AUTHORED are
+ * trusted at the moment they are written, which is why the ordinary path never
+ * prompts — so a helper that writes the bytes and skips the trust is modelling
+ * a file that arrived from somewhere else, and these tests are not about that
+ * case. The refusal itself is pinned in test/acceptance-consent.test.mjs.
+ *
+ * ⭐ `ACUVO_TRUST_DIR` points the store at the temp workspace: a test must never
+ * write into the real user's home, and an isolated store also means one test
+ * cannot silently approve criteria for another.
+ */
 function writeAcceptance(dir, criteria) {
+  process.env.ACUVO_TRUST_DIR = dir;
+  trustAuthoredCriteria(criteria, { root: dir });
   mkdirSync(join(dir, '.acuvo'), { recursive: true });
   writeFileSync(join(dir, '.acuvo', 'acceptance.json'), `${JSON.stringify({
     version: 1,

@@ -842,12 +842,12 @@ For completeness, the properties none of them offers:
   (`lib/media.mjs`), and generates imagery with no configuration and no account
   (`lib/imagegen.mjs`) — critiqued before it is accepted, and reported as unreviewed when
   no critic is available.
-- ⭐ **Zero dependencies.** The entire auditable surface is 72 files and 40,824 lines,
+- ⭐ **Zero dependencies.** The entire auditable surface is 73 files and 41,112 lines,
   and there is no `node_modules` behind it. (Counted 2026-08-13 from
   `lib/*.mjs` + `bin/*.mjs`; `test/docs-truth.test.mjs` fails the build if this number
-  drifts, which is why it went 18 → 41 → 46 → 52 → 53 → 57 → 60 → 61 → 62 → 65 → 66 → 69 → 70 → 71 → 72 as modules landed. ⭐ A
+  drifts, which is why it went 18 → 41 → 46 → 52 → 53 → 57 → 60 → 61 → 62 → 65 → 66 → 69 → 70 → 71 → 72 → 73 as modules landed. ⭐ A
   count that fails the build is the only kind that stays true — this one has now caught its own
-  staleness six times, most recently the moment `auto-lease.mjs` shipped.
+  staleness six times, most recently the moment `acceptance-consent.mjs` shipped.
   ⚠️⚠️ AND IT WAS WRONG ANYWAY, BY TWO, FOR A DAY. The guard asserted only that the
   correct number appeared *somewhere* in this file, and `68` did — inside the unrelated
   citation `lib/command.mjs:68` on line 9. A build-failing count matched a line number

@@ -41,6 +41,7 @@ import {
 } from '../lib/tools.mjs';
 import { runSession, toolResultText, formatSummary } from '../lib/turn.mjs';
 import { createLocalExecutor } from '../lib/workspace.mjs';
+import { trustAuthoredCriteria } from '../lib/acceptance-consent.mjs';
 import { createMemoryExecutor } from '../lib/memory-workspace.mjs';
 import { evaluateAcceptance } from '../lib/acceptance.mjs';
 
@@ -55,6 +56,25 @@ function workspace(t, files = {}) {
     const full = join(dir, path);
     mkdirSync(join(full, '..'), { recursive: true });
     writeFileSync(full, content, 'utf8');
+  }
+  /**
+   * ⚠️⚠️ AN ACCEPTANCE FILE IN A FIXTURE IS NOW A CONSENT DECISION.
+   *
+   * A workspace `.acuvo/acceptance.json` is gated: a cloned repository shipping
+   * one was proven able to run `node payload.js` and have it printed as
+   * `✔ MET` (lib/acceptance-consent.mjs). Criteria the user's own session
+   * authored are trusted when written, which is why the ordinary path never
+   * prompts — and a fixture that drops the bytes in without the trust is
+   * modelling the ATTACK, not the feature these tests are about.
+   *
+   * ⭐ `ACUVO_TRUST_DIR` keeps the store inside the temp workspace, so a test
+   * never writes into the real user's home and cannot approve criteria for the
+   * next test.
+   */
+  const declared = files['.acuvo/acceptance.json'];
+  if (declared) {
+    process.env.ACUVO_TRUST_DIR = dir;
+    try { trustAuthoredCriteria(JSON.parse(declared).criteria, { root: dir }); } catch { /* a fixture with deliberately broken JSON */ }
   }
   return dir;
 }
