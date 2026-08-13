@@ -150,6 +150,14 @@ jobs:
           fi
           if [ "${STATUS}" -ne 0 ]; then
             echo "FAIL: the installed copy ran ${COUNT} tests and some of them failed"
-            grep -E '^not ok' /tmp/installed-suite.txt || true
+            # ⚠️ THE NAME OF A FAILING TEST IS NOT A DIAGNOSIS. This printed only
+            # `grep '^not ok'` until an installed-copy failure that reproduces
+            # NOWHERE ELSE — green in all four clone jobs, green five times in a
+            # row in an installed copy locally — arrived with nothing but its
+            # title. A failure you cannot reproduce is exactly the one whose
+            # assertion text you needed, and this job is the only place that
+            # failure exists. TAP puts the reason in the indented YAML block
+            # after the line, so take the block.
+            awk '/^not ok/{p=16} p&&p--' /tmp/installed-suite.txt | head -80
             exit 1
           fi
