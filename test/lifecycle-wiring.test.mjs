@@ -300,22 +300,42 @@ test('⭐ --continue with no new instruction re-uses the original task ("carry o
 });
 
 test('⚠️ every refusal on the resume path names what to do INSTEAD', () => {
+  /**
+   * ── ⚠️⚠️ THESE ASSERTS CARRY THE CHILD'S OUTPUT, AND THAT IS THE POINT ─────
+   *
+   * This test failed ONCE on 2026-08-15 — `--continue` on an empty workspace
+   * exited 1 (EXIT_FAILED) instead of 64 (EXIT_USAGE) — and the same tree
+   * passed on the next full run. It did not reproduce in 112 attempts: 40
+   * serial, then 72 at 24-way concurrency. So it needs the whole suite's load,
+   * which means the next sighting may be weeks away.
+   *
+   * ⚠️ AND WHEN IT HAPPENED, NOTHING WAS RECORDED. A bare `strictEqual` on an
+   * exit code prints "1 !== 64" and throws the child's stderr away — the one
+   * artifact that would name the cause. The only path in `bin/acuvo.mjs` that
+   * exits 1 here is `die(listed.error, EXIT_FAILED)` when `listSessions` returns
+   * `ok: false`, and its error text says which of the two causes it was. That
+   * text now reaches the failure message instead of the bin.
+   *
+   * ⭐ A flake you cannot reproduce is not fixed by staring at it. It is fixed
+   * by making the next occurrence explain itself.
+   */
   const dir = workspace();
+  const shown = (r) => `status=${r.status} signal=${r.signal ?? 'none'}\n--- stderr ---\n${(r.stderr ?? '').slice(0, 800)}\n--- stdout ---\n${(r.stdout ?? '').slice(0, 400)}`;
   try {
     const missing = runCli(['--dir', dir, '--resume', '20200101-000000-zzzz', 'x']);
-    assert.strictEqual(missing.status, EXIT_USAGE);
+    assert.strictEqual(missing.status, EXIT_USAGE, shown(missing));
     assert.match(missing.stderr, /--sessions/, 'an unknown id must point at the command that lists the real ones');
 
     const empty = runCli(['--dir', dir, '--continue', 'x']);
-    assert.strictEqual(empty.status, EXIT_USAGE);
+    assert.strictEqual(empty.status, EXIT_USAGE, shown(empty));
     assert.match(empty.stderr, /nothing to continue/);
 
     const valueless = runCli(['--dir', dir, '--resume']);
-    assert.strictEqual(valueless.status, EXIT_USAGE);
+    assert.strictEqual(valueless.status, EXIT_USAGE, shown(valueless));
     assert.match(valueless.stderr, /--resume needs the id/);
 
     const both = runCli(['--dir', dir, '--resume', 'x', '--continue', 'y']);
-    assert.strictEqual(both.status, EXIT_USAGE);
+    assert.strictEqual(both.status, EXIT_USAGE, shown(both));
     assert.match(both.stderr, /they disagree|Pass one/);
   } finally {
     rmSync(dir, { recursive: true, force: true });

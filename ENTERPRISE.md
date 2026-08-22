@@ -187,14 +187,40 @@ it defers every allowlist decision to `validateCommand` rather than keeping its 
 copy, but it *is* a place a process starts, and this is a list of those. Six and four
 are the numbers to quote. Counting is the first thing a reviewer does.
 
-⚠️ **This said "18 shipped files" and that number is now three times out of date.** The
-package ships **41 JavaScript files — 39 in `lib/`, 2 in `bin/` — about 19,700 lines**
-(counted 2026-08-11; `package.json`'s `files` allowlist is `bin/`, `lib/`, `README.md`,
-`LICENSE`, `CHANGELOG.md`). The argument survives the correction because it never rested
-on 18: zero dependencies means 19,700 lines is the *whole* audit, where a competitor's
-`node_modules` is where the review would actually have to start. But quote 41, not 18 —
-a reviewer who counts and gets a different answer has found a reason to check everything
-else, and they would be right to.
+⚠️ **This said "18 shipped files", then "41", then "90", then "101", then "108", and every
+one went stale in turn.** The package ships **118 files — 116 in `lib/`, 2 in
+`bin/` — about 77,339 lines**, with **233 test files** beside them (counted 2026-08-22).
+
+⭐ **AND THE 108 WENT STALE IN THE MOST INSTRUCTIVE WAY POSSIBLE: THREE OF THE FILES IT
+MISSED WERE REACHABLE FROM NOTHING.** `wiring-reach.test.mjs` was naming
+`lib/python.mjs`, `lib/cache-floor.mjs` and `lib/plan-coherence.mjs` as importable by no
+entry point — 2,120 lines of complete, tested capability that had not shipped in any sense
+a customer would recognise. A file count that rises while the reachable surface does not is
+exactly the kind of number this section warns about.
+
+⚠️ **AND THIS SENTENCE NAMED THE WRONG ALLOWLIST.** It said `files` was `bin/`, `lib/`,
+`README.md`, `LICENSE`, `CHANGELOG.md`. Measured with `npm pack --dry-run`: the real
+allowlist also carries **`test/`, `ENTERPRISE.md` and `ROADMAP.md`**, and the published
+tarball is **265 files, 5.1 MB unpacked — 182 of them tests against 98 of `lib/`.** That is
+deliberate, not drift (commit `ed08f2710`, *"ship the tests, and add CI that would have
+caught the false green"*): a document that invites you to audit 76736 lines and then ships
+you the source without the tests is asking to be taken on trust, which is the one thing this
+file refuses to ask for. ⭐ **Run them yourself: `npm test` inside the installed package.**
+The stale sentence is the more interesting failure — it under-claimed, so nobody would ever
+have complained, and it sat in the paragraph whose entire job is to be checkable.
+
+The argument survives every correction because it never rested
+on the number: zero dependencies means that line count is the *whole* audit, where a competitor's
+`node_modules` is where the review would actually have to start. But quote the current
+figure — a reviewer who counts and gets a different answer has found a reason to check
+everything else, and they would be right to.
+
+⚠️⚠️ **AND THE LINE COUNT IS THE HALF THAT KEPT SLIPPING.** `docs-truth` failed the
+build on the FILE count and never on the line count, so "41 files" was caught within a
+day while "19,700 lines" sat wrong for four days and "49,578" for one — in a paragraph
+whose whole purpose is to tell a reviewer the numbers are checked. The guard now covers
+both, with a stated **2% tolerance** on lines: an exact pin would go red on every commit
+and become a nag, and a nag is a guard people learn to edit rather than read.
 
 ### 2.1 Verifiable properties
 
@@ -212,7 +238,7 @@ else, and they would be right to.
 | **Subdirectory trap refused** | `lib/git.mjs`; documented in `README.md` § Git | Git walks upward; operating from a subdirectory of a larger repo would report and commit the whole outer project. Refused |
 | ⭐ **No tool can add an MCP server** | asserted by test, `test/smoke.test.mjs` | The test greps every registered tool name for anything resembling `connect`/`add_server`. A model that can grant itself capabilities can grant itself anything |
 | **Three verification states, never two** | `runSession` / `sessionFailed`, `lib/turn.mjs`; `toJson`, `lib/report.mjs` | ran-and-passed · ran-and-failed · **never ran**. Collapsing the third into the first is what makes an agent that "ships working code" a liar |
-| **Bounded by construction** | `MAX_ROUNDS_LIMIT` = 16, `lib/cli-args.mjs`; `DEFAULT_COMMAND_TIMEOUT_MS` + output caps, `lib/command.mjs` | An unattended agent cannot spend an unbounded number of paid completions |
+| **Bounded by construction** | `MAX_ROUNDS_LIMIT` = 64, `lib/cli-args.mjs`; `DEFAULT_COMMAND_TIMEOUT_MS` + output caps, `lib/command.mjs` | An unattended agent cannot spend an unbounded number of paid completions |
 | ⭐ **Bounded in dollars, not just in rounds** | `createBudget` / `canContinue`, `lib/budget.mjs` | `--budget` stops before the round that would cross the figure, and **refuses to start** when it cannot afford one (`reason: "too-small"`) rather than spending to find out. `--until-done` cannot be used without it — there is no unbounded mode |
 | ⭐ **Every run leaves a redacted record** | `recordRun` / `appendAudit` / `redact`, `lib/audit.mjs` | One JSON line per run in `.acuvo/audit/<date>.jsonl`. **New since the first draft** — §2.2/4 used to read "no audit log". See below for exactly what it does and does not capture |
 | **Zero transitive supply chain** | `package.json` | Nothing to audit but this package. Compare against any agent shipping a `node_modules` tree |
@@ -318,10 +344,34 @@ Specifically, none of the following is defended:
    specific, not incidental. Routing through a corporate AI gateway is a one-line code
    change (`fetchImpl` in `lib/model.mjs` and `callImpl` in `lib/chain.mjs` are injectable
    seams) but it is **not a configuration change**.
-7. **No provider pinning.** The request payload (`lib/model.mjs`) contains no `provider`
-   key of any kind, and OpenRouter's upstream for one model id rotates — our own source
-   documents the same id routing to Baidu vs StreamLake. Account-level retention controls
-   exist in the OpenRouter dashboard; **this repo exposes none of them.**
+7. ~~**No provider pinning.**~~ **⭐ THIS SHIPPED ON 2026-08-14 AND THIS ITEM IS NOW
+   WRONG IN THE FAVOURABLE DIRECTION.** It read: *"The request payload (`lib/model.mjs`)
+   contains no `provider` key of any kind … this repo exposes none of them."* Verified
+   today by reading the source: **`ACUVO_PROVIDER_ORDER`** exists (`lib/model.mjs:545`),
+   and when set, a `provider` preference **is** sent with the request
+   (`lib/model.mjs:574`, `:580`). The response's `provider` field is read back
+   (`:436`) so a run can report **who actually served each round**, and `--json`
+   emits it.
+
+   **What is true now, precisely:** the DEFAULT is still unpinned — with the variable
+   unset no `provider` key is sent and OpenRouter routes freely, which is the correct
+   default and is what the old sentence was really describing. What changed is that
+   **the control now exists and is exposed**, so a reviewer who requires "this model id
+   must only ever be served by these upstreams" has a supported answer instead of none.
+
+   ⚠️ **Read as a data-residency control, this is a preference, not a guarantee** —
+   verify the enforcement semantics against OpenRouter's own documentation before
+   relying on it in a DPA. The honest claim is *"we can express and record an upstream
+   preference, and we report who served each round"*, not *"we can restrict where your
+   prompt goes"*.
+
+   ⭐ Measured on one identical 4-round task: **46.7% cache hit unpinned vs 95.8%
+   pinned**, a 2.4× swing in the bill caused entirely by which upstream served the
+   round. So this is a cost control as much as a governance one.
+
+   ⚠️ **Recorded rather than silently edited, per §5.7** — and note the direction: a
+   stale *pessimistic* claim tells a buyer we cannot do something we can. That is the
+   second time this document has erred that way (see the bundle paragraph in §8).
 8. **No entitlement, metering, SSO or org policy.** BYOK, unmetered.
 9. **Two egress paths a reviewer will want named, neither of them obvious from the CLI's
    description.** `generate_image` is on by default with no configuration: the prompt goes
@@ -731,7 +781,7 @@ polyglot enterprise that is not a small advantage — it is the deciding one.
 
 ### 5.2 Horizon — and delegation, which is no longer absent
 
-Default **5** rounds, hard ceiling **16** (`DEFAULT_MAX_ROUNDS` and `MAX_ROUNDS_LIMIT`,
+Default **5** rounds, hard ceiling **64** (`DEFAULT_MAX_ROUNDS` and `MAX_ROUNDS_LIMIT`,
 `lib/cli-args.mjs` — this document previously said 3, then 8, see §3.8). The cap is a
 deliberate cost decision and it is *also* a real capability loss: a refactor that needs
 forty tool rounds cannot be expressed here.
@@ -842,12 +892,15 @@ For completeness, the properties none of them offers:
   (`lib/media.mjs`), and generates imagery with no configuration and no account
   (`lib/imagegen.mjs`) — critiqued before it is accepted, and reported as unreviewed when
   no critic is available.
-- ⭐ **Zero dependencies.** The entire auditable surface is 79 files and 41,621 lines,
-  and there is no `node_modules` behind it. (Counted 2026-08-13 from
+- ⭐ **Zero dependencies.** The entire auditable surface is 116 files and 76736 lines,
+  and there is no `node_modules` behind it. (Counted 2026-08-20 from
   `lib/*.mjs` + `bin/*.mjs`; `test/docs-truth.test.mjs` fails the build if this number
-  drifts, which is why it went 18 → 41 → 46 → 52 → 53 → 57 → 60 → 61 → 62 → 65 → 66 → 69 → 70 → 71 → 72 → 73 as modules landed. ⭐ A
+  drifts, which is why it went 18 → 41 → 46 → 52 → 53 → 57 → 60 → 61 → 62 → 65 → 66 → 69 → 70 → 71 → 72 → 73 → 80 → 84 → 90 → 100 → 101 → 102 → 103 → 107 → 108 → 111 as modules landed (111 = the three that were WRITTEN and imported by nothing — `python.mjs`, `cache-floor.mjs`, `plan-coherence.mjs`; 108 = `warm-provider.mjs`, which keeps a session on the upstream that holds its prompt cache; 107 = `login.mjs`, the command that stores an Acuvo credential — until it existed, `writeAccount` was called by nothing and every user fell through to BYOK). ⚠️ Two of those three landed on this count while remaining UNREACHABLE, which is the sharpest illustration this document has that a file count is a claim about bytes, never about capability. ⭐ A
   count that fails the build is the only kind that stays true — this one has now caught its own
-  staleness six times, most recently the moment `acceptance-consent.mjs` shipped.
+  staleness seven times, most recently when `handoff.mjs` + `changed-paths.mjs` landed a
+  helper that can WRITE. ⚠️ And it was ALREADY red before that: HEAD carried 81 files against
+  a document saying 80, so the guard had been failing for at least one unrelated module — a
+  reminder that a build-failing count only stays true while somebody reads the failure.
   ⚠️⚠️ AND IT WAS WRONG ANYWAY, BY TWO, FOR A DAY. The guard asserted only that the
   correct number appeared *somewhere* in this file, and `68` did — inside the unrelated
   citation `lib/command.mjs:68` on line 9. A build-failing count matched a line number

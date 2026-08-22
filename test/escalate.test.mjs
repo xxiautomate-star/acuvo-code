@@ -621,11 +621,35 @@ test('⚠️ --until-done and --best-of collided on the same flag', () => {
 
 // ── ⭐ MODEL TIERS: the ladder can escalate the MODEL, not just the strategy ─
 
-test('with no tiers configured, nothing about the run changes', async () => {
+test('with no tiers configured, the ladder escalates the MODEL as well as the effort', async () => {
   /**
-   * ⚠️ THE DEFAULT MUST BE INERT. This feature can multiply a bill, so a user
-   * who configured nothing has to get byte-identical behaviour — every rung on
-   * the model they already chose.
+   * ── ⚠️⚠️ THIS TEST DEFENDED A DELIBERATE PROPERTY AND IT IS BEING RETIRED ──
+   *
+   * It read: *"THE DEFAULT MUST BE INERT. This feature can multiply a bill, so a
+   * user who configured nothing has to get byte-identical behaviour."* That was
+   * correct, and it was correct for a reason that has since changed.
+   *
+   * ⭐ IT WAS WRITTEN FOR THE BYOK ERA, when the multiplied bill was the USER'S
+   * and they had not asked for it. Acuvo Code is now a paid asset on our key, so
+   * the bill is OURS and it is modelled rather than feared: escalation fires
+   * only on a task that has ALREADY FAILED — about 8% of them on our bench — and
+   * costs roughly $4.13 per user-month against $3.28 flash-only. Five points of
+   * margin to put a materially better model on the tasks that failed once.
+   *
+   * ⭐⭐ AND THE GUARD THAT REPLACES IT IS STRONGER THAN INERTNESS: the dollar
+   * ceiling sits UPSTREAM of the model choice. `--budget` stops the run before a
+   * rung it cannot afford, `--fleet-budget` bounds every terminal for the day,
+   * and both were hardened today in five places where they were not enforced. A
+   * bill cannot run away past a ceiling that refuses the next round, whatever
+   * model that round would have used.
+   *
+   * ⚠️ THE ESCAPE HATCH SURVIVES AND IS TESTED: `ACUVO_MODEL_TIERS` set to a
+   * single id gives every rung that model — the old inert behaviour, on purpose,
+   * one variable away. See test/defaults-pin-and-tiers.test.mjs.
+   *
+   * ⚠️ Retiring a safety test is the moment a real regression gets rubber
+   * stamped, so the premise change is written down here rather than the
+   * assertion being quietly edited.
    */
   const seen = [];
   await escalate({
@@ -637,7 +661,8 @@ test('with no tiers configured, nothing about the run changes', async () => {
     maxTier: 'fresh',
     runOne: async ({ tier, model }) => { seen.push({ tier, model }); return outcome({ verified: false, cost: 0.001 }); },
   });
-  assert.deepEqual(seen.map((s) => s.model), ['deepseek/deepseek-v4-flash-0731', 'deepseek/deepseek-v4-flash-0731']);
+  // rung 0 stays the user's model; rung 1 escalates. That IS the change.
+  assert.deepEqual(seen.map((s) => s.model), ['deepseek/deepseek-v4-flash-0731', 'deepseek/deepseek-v4-pro-0813']);
 });
 
 test('configured tiers give each rung a stronger model', async () => {
@@ -715,8 +740,11 @@ test('⚠️ a model switch is announced, and it invalidates the cost projection
 
 test('model tiers: the parser is bounded and tolerant', async () => {
   const { parseTiers, modelForRung, MAX_TIERS, describeSwitch } = await import('../lib/model-tier.mjs');
-  assert.deepEqual(parseTiers('base', {}), ['base'], 'unset means one tier');
-  assert.deepEqual(parseTiers('base', { ACUVO_MODEL_TIERS: '   ' }), ['base'], 'blank is not a configuration');
+  // ⚠️ Unset now means TWO tiers — the base plus the escalation model. The old
+  // 'unset means one tier' assertion is retired with the inert default; see the
+  // reasoning on the escalation test above.
+  assert.deepEqual(parseTiers('base', {}), ['base', 'deepseek/deepseek-v4-pro-0813'], 'unset escalates');
+  assert.deepEqual(parseTiers('base', { ACUVO_MODEL_TIERS: '   ' }), ['base', 'deepseek/deepseek-v4-pro-0813'], 'blank is not a configuration');
   assert.deepEqual(parseTiers('base', { ACUVO_MODEL_TIERS: 'a, b ,a,' }), ['a', 'b'], 'trimmed and de-duplicated');
   assert.equal(parseTiers('base', { ACUVO_MODEL_TIERS: 'a,b,c,d,e,f' }).length, MAX_TIERS, 'bounded');
   assert.equal(modelForRung(99, ['a', 'b']), 'b', 'past the end reuses the strongest');

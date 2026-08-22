@@ -7,15 +7,61 @@
 
 ## State
 
-- **1,757 tests · 1,755 passing · 0 failing.** 66 lib modules, 96 test files, zero
-  runtime dependencies.
-- Public repo is **current and green on a fresh Windows clone**, no install step.
+- Zero runtime dependencies. Public repo is **current and green on a fresh
+  Windows clone**, no install step.
 - A full 13-task bench run costs **$0.0133** and takes 174s.
+- Inventory (modules, test files, suite total) is **deliberately not written down
+  here** — see below. Measure it:
+  ```bash
+  ls lib/*.mjs | wc -l      # lib modules
+  ls test/*.test.mjs | wc -l # test files
+  node --test test/*.test.mjs # the only honest suite total
+  ```
 
-## ⚠️ FIRST JOB: CI has never been green
+> ── ⚠️⚠️ WHY THE COUNTS ARE GONE RATHER THAN CORRECTED ──────────────────────
+>
+> This section used to open **"1,757 tests · 1,755 passing · 0 failing. 66 lib
+> modules, 96 test files."** Measured 2026-08-14: **78 and 121** — the file was
+> understating its own codebase by 18% and 26%. Nothing breaks when a count goes
+> stale, so nobody re-checks, and it drifted for a day unnoticed.
+>
+> ⚠️ **AND THE OBVIOUS FIX — write 78 and 121, then bind them to `readdirSync`
+> with a test — WAS BUILT AND THEN DELETED, because it went red inside twenty
+> minutes and was RIGHT to.** Three agents work this checkout concurrently; two
+> of them added test files while this paragraph was being written, taking 121 to
+> 124. The guard would have failed the *other lanes' correct work* and forced
+> every agent to edit this document to land an unrelated test.
+>
+> ⭐ **A check that fails correct work is worse than no check** — this repo has
+> paid for that four times — so the defect class is closed the other way: the
+> number is not stated, so it cannot be wrong. `test/mcp-catalogue-claims.test.mjs`
+> now asserts that nobody **re-adds** a hardcoded inventory count here.
+>
+> ⭐ **The distinction worth carrying:** bind a number to its noun when the noun
+> has ONE owner and changes rarely (the README's tool count → `TOOL_NAMES.length`,
+> which is bound and passing). When the noun is a shared, fast-drifting
+> inventory, do not state it — publish the command instead.
 
-**All 17 GitHub Actions runs have failed.** Diagnosed, not guessed — it is **test
-assumptions, not product breakage**:
+## ~~⚠️ FIRST JOB: CI has never been green~~ — DONE, the same day this was written
+
+> ⭐ **RESOLVED 2026-08-13 17:40 AEST**, hours after this section was written and
+> never struck through. The build log records *"CI is green for the first time in
+> the repo's history (1 of 20 runs)"*, then *"CI green 3 for 3 today"*, then
+> *"CI green all day after the fix"* — the last two on the same date. So the
+> loudest instruction in this document has been pointing the next session at a
+> job that was already finished.
+>
+> ⚠️ **This is the pessimistic-drift failure again**, and it is the more
+> expensive direction: a stale *warning* costs a session's attention and tells a
+> reader we are broken in a way we are not. Struck rather than deleted, because
+> the diagnosis below is the durable part and is worth keeping.
+>
+> ⚠️ **What I could NOT re-verify from here, said plainly:** this checkout's only
+> remote is a local mirror (`127.0.0.1:8088`), so `gh run list` cannot reach
+> GitHub and I could not query the Actions API. The evidence above is the build
+> log, not a live run. **Re-check before quoting a streak.**
+
+The original diagnosis — it was **test assumptions, not product breakage**:
 
 | where | test | why |
 |---|---|---|

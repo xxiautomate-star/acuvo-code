@@ -102,9 +102,46 @@ function runCli(args, env) {
 
 /* ── the loopback guard ───────────────────────────────────────────────────── */
 
+/**
+ * ── ⚠️ SIGNED OUT MUST BE STATED, NOT ASSUMED ───────────────────────────────
+ *
+ * `resolveApiUrl` now consults the ACUVO ACCOUNT first, because a signed-in user
+ * routes through our gateway rather than straight to the provider. That means a
+ * bare `{}` is no longer "no configuration" — it is "whatever this developer
+ * happens to have in `~/.acuvo/credentials.json`", and on a machine where
+ * somebody has run `acuvo login` these assertions would fail for a reason that
+ * has nothing to do with the code.
+ *
+ * ⭐ This morning that exact shape — a test whose verdict depends on the
+ * developer's environment — made the anti-orphan guard permanently red and
+ * trained everyone to read past it. Pointing `ACUVO_HOME` at a directory that
+ * cannot exist states "signed out" explicitly, so the test means the same thing
+ * on every machine.
+ */
+const SIGNED_OUT = { ACUVO_HOME: join(tmpdir(), `acuvo-signed-out-${process.pid}`) };
+
 test('with no override, the real OpenRouter endpoint is used', () => {
-  assert.equal(resolveApiUrl({}), OPENROUTER_URL);
-  assert.equal(resolveApiUrl({ ACUVO_API_URL: '  ' }), OPENROUTER_URL);
+  assert.equal(resolveApiUrl(SIGNED_OUT), OPENROUTER_URL);
+  assert.equal(resolveApiUrl({ ...SIGNED_OUT, ACUVO_API_URL: '  ' }), OPENROUTER_URL);
+});
+
+test('⭐⭐ a signed-in account routes to OUR gateway, and outranks the loopback test seam', () => {
+  // The account must win over ACUVO_API_URL: that variable is a loopback-only
+  // TEST SEAM, and letting it redirect an authenticated session would be the
+  // exact exfiltration primitive its restriction exists to deny.
+  const signedIn = { ...SIGNED_OUT, ACUVO_TOKEN: 'acuvo_live_test' };
+  assert.match(resolveApiUrl(signedIn), /^https:\/\//);
+  assert.equal(
+    resolveApiUrl({ ...signedIn, ACUVO_API_URL: 'http://127.0.0.1:8080/v1' }),
+    resolveApiUrl(signedIn),
+    'the loopback seam must not redirect a signed-in run',
+  );
+});
+
+test('⚠️ a BYOK key is NEVER routed through our gateway', () => {
+  // Their key, their balance, their provider. A user's own credential arriving
+  // at our servers would be a betrayal of the plainest kind.
+  assert.equal(resolveApiUrl({ ...SIGNED_OUT, OPENROUTER_API_KEY: 'sk-or-v1-theirs' }), OPENROUTER_URL);
 });
 
 test('⭐ a loopback override is accepted, in every spelling of loopback', () => {

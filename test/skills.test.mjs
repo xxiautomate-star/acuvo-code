@@ -28,10 +28,12 @@ import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+import { discoverAllSkills } from '../lib/builtin-skills.mjs';
 import {
   discoverSkills, loadSkill, parseFrontmatter, normalizeSkillName,
   skillsPromptBlock, formatSkillForModel, skillsToolSchemas,
   SKILLS_DIR, MAX_SKILLS, MAX_SKILL_BYTES, MAX_DESCRIPTION_CHARS, MAX_SCAN_ENTRIES,
+  MAX_CATALOGUE_CHARS, MAX_WHEN_CHARS, MAX_NAME_CHARS,
 } from '../lib/skills.mjs';
 
 const NUL = String.fromCharCode(0);
@@ -309,7 +311,12 @@ test('⚠️ more skills than the catalogue holds: capped, counted, and ANNOUNCE
   assert.equal(found.capped, 5);
 
   const block = skillsPromptBlock(found);
-  assert.match(block, /\(5 more skills in \.acuvo\/skills\/ are not listed — the catalogue is capped at 20/);
+  // ⚠️ The wording changed 2026-08-18 and this assertion changed WITH it, on
+  // purpose. It used to demand "the catalogue is capped at 20" — true here,
+  // where the SKILL COUNT is what bit, and misleading whenever the CHAR budget
+  // bites first: a reader would be told "capped at 20" while looking at nine
+  // entries. Reporting shown-of-found is true under either limit.
+  assert.match(block, /\(5 more skills in \.acuvo\/skills\/ are not listed — 20 of 25 fit the catalogue budget/);
   assert.equal(block.split('\n').filter((l) => l.startsWith('- ')).length, MAX_SKILLS);
 
   // ⭐ AND THE ONE THAT MATTERS: the cap is on the LIST, not on the loader. A
@@ -524,4 +531,105 @@ test('⚠️ a process that imports this module and uses it EXITS — no leaked 
   });
   assert.equal(code, 0);
   assert.equal(stdout, 'ok:2:# review\ncheck the diff');
+});
+
+/**
+ * ── ⚠️⚠️ THE TWO CAPS MUST AGREE, AND THEY DID NOT ──────────────────────────
+ *
+ * `MAX_SKILLS` says the shelf holds twenty. `MAX_CATALOGUE_CHARS` decides how
+ * many of them the model is ever SHOWN. They were set from two different
+ * beliefs about how long a catalogue line is, and the header above MAX_SKILLS
+ * still records the wrong one ("still under ~1.5KB").
+ *
+ * MEASURED from the six skills actually shipped on 2026-08-18: lines run
+ * 183-202 characters, average 191. Twenty of those is 3,813 — so under the old
+ * 1,800 budget exactly NINE were shown and eleven were written, loaded, cached
+ * and never advertised.
+ *
+ * ⭐ A skill the model cannot see scores zero however good it is, so this test
+ * ties the constants together: raising MAX_SKILLS without the budget to print
+ * them now fails here instead of silently hiding half the shelf.
+ */
+/**
+ * ⚠️⚠️ THIS FIXTURE WAS HAND-WRITTEN AND IT WAS ALREADY OPTIMISTIC. The first
+ * version invented a description of ~84 characters, when the skills actually on
+ * disk run to 120 — their cap. Three skills written the day after took the real
+ * average from 191 to 203, and a hand-tuned fixture does not notice that: it
+ * would have kept passing while the shelf drifted past the budget again.
+ *
+ * ⭐ So it now measures THE SKILLS WE REALLY SHIP and projects the WORST one to a
+ * full shelf. The fixture cannot drift from reality because it is derived from
+ * it — the same reason `projectProblems` asks the validator instead of matching
+ * its prose.
+ */
+function widestShippedEntry() {
+  const shipped = discoverAllSkills('.');
+  assert.ok(shipped.skills.length > 0, 'no builtin skills were discovered — the projection would be vacuous');
+  return shipped.skills.reduce((worst, s) => {
+    const len = `- ${s.name} — ${s.description} · use it when: ${s.when}`.length;
+    return len > worst.len ? { len, s } : worst;
+  }, { len: 0, s: null });
+}
+
+test('⚠️⚠️ MAX_SKILLS entries at the size we really ship all fit in the catalogue', () => {
+  // Derived from disk, not invented: the widest skill we actually ship, twenty
+  // times over. If a future skill is written long, this fails when IT lands
+  // rather than when the twentieth does.
+  const { s: widest } = widestShippedEntry();
+  const skills = Array.from({ length: MAX_SKILLS }, (_, i) => ({
+    name: `${widest.name}-${String(i).padStart(2, '0')}`.slice(0, MAX_NAME_CHARS),
+    description: widest.description,
+    when: widest.when,
+    file: `${SKILLS_DIR}/skill-${i}.md`,
+    bytes: 2500,
+  }));
+
+  const block = skillsPromptBlock({
+    ok: true, dir: SKILLS_DIR, found: MAX_SKILLS, capped: 0,
+    scanTruncated: false, skipped: [], skills,
+  });
+
+  const listed = block.split('\n').filter((l) => l.startsWith('- '));
+  assert.equal(
+    listed.length, MAX_SKILLS,
+    `only ${listed.length} of ${MAX_SKILLS} skills reached the model — `
+    + `the catalogue budget (${MAX_CATALOGUE_CHARS}) cannot print a full shelf`,
+  );
+  assert.ok(!/are not listed/.test(block), 'a full shelf reported skills as hidden');
+});
+
+/**
+ * ⚠️ AND THE HONESTY OF THE CAP MESSAGE. When something IS hidden, the line must
+ * say how many were shown out of how many were found. It used to say "capped at
+ * ${MAX_SKILLS}" — so a reader looking at nine entries was told the cap was
+ * twenty, which points the next person at the wrong constant entirely.
+ */
+test('⚠️ when the catalogue does overflow, it reports shown-of-found, not the wrong cap', () => {
+  const long = 'x'.repeat(MAX_DESCRIPTION_CHARS);
+  const when = 'y'.repeat(MAX_WHEN_CHARS);
+  // ⚠️ MORE than MAX_SKILLS, and deliberately so. The budget is now derived from
+  // MAX_SKILLS x the per-entry maximum, so a legal shelf can no longer overflow
+  // it — which is the intended design, and means the only way to exercise the
+  // overflow MESSAGE is a list longer than discovery would ever hand it.
+  const OVERSIZED = MAX_SKILLS * 2;
+  const skills = Array.from({ length: OVERSIZED }, (_, i) => ({
+    name: `n${String(i).padStart(2, '0')}`.padEnd(MAX_NAME_CHARS, 'z'),
+    description: long,
+    when,
+    file: `${SKILLS_DIR}/s${i}.md`,
+    bytes: 10,
+  }));
+
+  const block = skillsPromptBlock({
+    ok: true, dir: SKILLS_DIR, found: OVERSIZED, capped: 0,
+    scanTruncated: false, skipped: [], skills,
+  });
+
+  const shown = block.split('\n').filter((l) => l.startsWith('- ')).length;
+  assert.ok(shown < OVERSIZED, 'this fixture was meant to overflow and did not');
+  assert.match(
+    block,
+    new RegExp(`${shown} of ${OVERSIZED} fit the catalogue budget`),
+    'the overflow notice does not say how many actually reached the model',
+  );
 });

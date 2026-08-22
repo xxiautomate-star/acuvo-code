@@ -49,8 +49,35 @@ const EXIT_USAGE = 64;
  */
 function runCli(args, { key = null, cwd = undefined, env: extra = {} } = {}) {
   const env = { ...process.env, NO_COLOR: '1', ...extra };
+  /**
+   * ── ⚠️⚠️ EMPTY, NOT DELETED — `delete` IS DEFEATED BY OUR OWN .env LOADER ──
+   *
+   * `delete` leaves the variable ABSENT, and absent is exactly what
+   * `bin/acuvo.mjs`'s `envLoad([root, cwd])` exists to fill: it calls
+   * `process.loadEnvFile`, which fills an absent variable from `.env.local` and
+   * leaves an existing one alone. MEASURED 2026-08-14:
+   *
+   *     was ''      -> loadEnvFile leaves it ''        (scrub holds)
+   *     was absent  -> loadEnvFile sets it 'fromfile'  (scrub defeated)
+   *
+   * So on any machine with an `.env.local` beside the CLI, the scrub handed the
+   * child back the very credentials it had just removed, and four tests in this
+   * file failed by REACHING A LIVE SERVICE — `--design` really rendered a
+   * screenshot and `--task-audio` really hit Modal. They were the only four
+   * failures in a 1,947-test suite.
+   *
+   * ⭐ AND THIS FILE'S OWN HEADER PREDICTED IT: "a test whose verdict depends on
+   * the developer's `.env` is a test that means nothing in CI". It had become
+   * that test — the one guard for this package's signature defect class,
+   * permanently red on the author's machine, training everyone to skip past it.
+   *
+   * ⭐ `''` IS NOT MERELY "NOT SET", IT IS THE DELIBERATE OFF SWITCH.
+   * `lib/media.mjs`'s `withDefault` already distinguishes the two —
+   * `k in env && trim() === ''` means OFF, unset means "use ours" — so an empty
+   * string states the intent this scrub always had, and survives the file load.
+   */
   for (const v of ['OPENROUTER_API_KEY', 'MODAL_TTS_URL', 'MODAL_TRANSCRIBE_URL', 'MODAL_PRESS_URL', 'RENDER_AUDIT_URL', 'MODAL_VIDEO_SECRET', 'PERCHANCE_IMAGE_URL']) {
-    delete env[v];
+    env[v] = '';
   }
   if (key !== null) env.OPENROUTER_API_KEY = key;
   for (const [k, v] of Object.entries(extra)) env[k] = v;
@@ -553,17 +580,30 @@ test('every module is reachable from a real entry point, or is named here', asyn
   for (const f of files) {
     const src = readFileSync(path.join(root, f), 'utf8');
     /**
-     * ⚠️ TWO KINDS OF EDGE, AND THE SECOND ONE IS REAL. `import … from './x.mjs'`
-     * is the obvious one. But a file can also be referenced as a SUBPROCESS
-     * ENTRY POINT — `new URL('./repl-driver.mjs', import.meta.url)` handed to
-     * `spawn` — which is every bit as wired as an import and invisible to a
-     * naive walk. Caught by this guard flagging `repl-driver.mjs` the hour it
-     * shipped: the honest fix is to see the edge, not to add an excuse for it.
+     * ⚠️ THREE KINDS OF EDGE, AND ONLY THE FIRST IS OBVIOUS.
+     * `import … from './x.mjs'` is the easy one. But a file can also be
+     * referenced as a SUBPROCESS ENTRY POINT — `new URL('./repl-driver.mjs',
+     * import.meta.url)` handed to `spawn` — which is every bit as wired as an
+     * import and invisible to a naive walk. Caught by this guard flagging
+     * `repl-driver.mjs` the hour it shipped: the honest fix is to see the edge,
+     * not to add an excuse for it.
+     *
+     * ⭐ AND THE THIRD, ADDED 2026-08-19 FOR THE SAME REASON: a DYNAMIC
+     * `await import('./x.mjs')`. `bin/acuvo.mjs` loads the login, account and
+     * doctor modules that way on purpose — they are needed by one flag each, so
+     * importing them statically would pay their parse cost on every single run
+     * of a CLI whose startup time a user feels.
+     *
+     * ⚠️ A lazily-loaded module is not an unreachable one, and treating it as
+     * one would push a correctly-wired file onto `KNOWN_UNWIRED` — turning an
+     * allowlist that exists to SHRINK into the place where real wiring goes to
+     * be forgotten. Third pattern, same principle: see the edge.
      */
     const rel = (spec) => path.posix.normalize(path.posix.join(path.posix.dirname(f), spec));
     imports[f] = [...new Set([
       ...[...src.matchAll(/from '(\.[^']+)'/g)].map((m) => rel(m[1])),
       ...[...src.matchAll(/new URL\('(\.[^']+)',\s*import\.meta\.url\)/g)].map((m) => rel(m[1])),
+      ...[...src.matchAll(/\bimport\('(\.[^']+)'\)/g)].map((m) => rel(m[1])),
     ])];
   }
 
@@ -578,8 +618,43 @@ test('every module is reachable from a real entry point, or is named here', asyn
 
   /** Known-unwired, deliberately. Shrink this list; never grow it silently. */
   const KNOWN_UNWIRED = new Set([
-    // A curated MCP server catalogue with no surface that offers it yet.
-    'lib/mcp-defaults.mjs',
+    /**
+     * ⚠️ `lib/localize.mjs` — QUEUED, NOT PARKED, and the distinction is the
+     * whole reason this entry has a date on it.
+     *
+     * It is finished and tested, it already exports `localizeToolSchemas()` and
+     * `runLocalizeTool()` — i.e. it was BUILT to be registered — and its own
+     * header measures file-level localization at **15-17x over a no-file
+     * baseline**, larger than any prompt, model or harness change measured on
+     * this codebase. So this is not a low-value module; it is a high-value one
+     * that stopped one step short.
+     *
+     * ⭐ WHAT IT IS ACTUALLY BLOCKED ON, precisely: `localize()` requires an
+     * `askImpl`, and the module imports no model client ON PURPOSE — its header
+     * calls that "the spend guard, and it is structural… the absence of any way
+     * to make a call at all". Registering it in `tools.mjs` therefore means
+     * deciding whether the TOOL DISPATCH LAYER may make model calls, which no
+     * other verb does. That is an architecture decision, not a wiring task, and
+     * guessing it here would put an unbudgeted model call inside a tool.
+     *
+     * ⚠️ ADDED 2026-08-20. If this line is still here without that decision
+     * having been made, the excuse has expired — exactly as `mcp-defaults.mjs`
+     * below did.
+     */
+    'lib/localize.mjs',
+    /**
+     * ⭐ `lib/mcp-defaults.mjs` WAS HERE AND IS NOT ANY MORE (2026-08-14). Its
+     * excuse read "a curated MCP server catalogue with no surface that offers
+     * it yet" — 500 lines of hand-verified integration work with zero
+     * importers. `--doctor` now imports it (`mcpCatalogueChecks` in
+     * lib/doctor.mjs) and prints the catalogue in the MCP section, so the
+     * excuse expired and the guard below caught it on the first full run.
+     *
+     * ⭐ THIS IS THE ALLOWLIST WORKING IN THE DIRECTION NOBODY DESIGNS FOR.
+     * A stale exemption is not a harmless leftover: the next reader takes it as
+     * a live statement that the module is unreachable, which is how a shipped
+     * capability stays invisible. Shrinking this list is the point of it.
+     */
     // The in-memory executor: built for "one loop, two clients", and the second
     // client is the console, which does not run this binary.
     'lib/memory-workspace.mjs',

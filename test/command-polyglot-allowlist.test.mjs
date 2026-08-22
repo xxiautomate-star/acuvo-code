@@ -490,10 +490,29 @@ test('every preset declares binaries, and every binary has a grammar', () => {
        * it — and this test was green. A binary that accepts no arguments is not
        * a governed binary, it is a broken one.
        */
-      assert.ok(
-        (spec.flags?.size ?? 0) + (spec.valueFlags?.size ?? 0) + (spec.separateValueFlags?.size ?? 0) + (spec.subcommands?.size ?? 0) > 0,
-        `${name}: ${b} has an EMPTY grammar — it would refuse every flag and print "allowed: " with nothing after it`,
-      );
+      /**
+       * ── ⭐ A DELEGATING SPEC IS NOT AN EMPTY ONE, AND IT IS PROVED, NOT
+       *      EXEMPTED ────────────────────────────────────────────────────────
+       *
+       * The python preset now carries no flag table at all: `command.mjs`
+       * routes it to `validatePythonArgv`, because the generic operand checker
+       * cannot express "argument authority transfers at `-m`". A table-shaped
+       * assertion would call that an empty grammar.
+       *
+       * ⚠️ SO IT IS NOT SKIPPED — it is asked to demonstrate the exact property
+       * the size check was a proxy for: that the binary accepts a real
+       * argument. That is a STRONGER test than counting a Set, and it is why
+       * this branch runs a command rather than trusting a marker.
+       */
+      if (spec.pythonic) {
+        const proof = validateCommand(`${b === 'pytest' ? 'pytest -q' : `${b} -m pytest -q`}`, { allowlist });
+        assert.ok(proof.ok, `${name}: ${b} delegates its grammar and then refuses ordinary arguments: ${proof.ok ? '' : proof.error}`);
+      } else {
+        assert.ok(
+          (spec.flags?.size ?? 0) + (spec.valueFlags?.size ?? 0) + (spec.separateValueFlags?.size ?? 0) + (spec.subcommands?.size ?? 0) > 0,
+          `${name}: ${b} has an EMPTY grammar — it would refuse every flag and print "allowed: " with nothing after it`,
+        );
+      }
       assert.ok(spec.resolve === 'path' || spec.resolve === 'node-module', `${name}: ${b} has no resolve rule`);
     }
   }

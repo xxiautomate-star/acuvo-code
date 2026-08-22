@@ -1,17 +1,29 @@
 {
   "name": "acuvo-code",
-  "version": "0.2.0",
+  "version": "0.3.1",
   "description": "Acuvo Code — the terminal client for the Acuvo capability registry. Zero dependencies, by design.",
   "type": "module",
   "bin": {
-    "acuvo": "./bin/acuvo.mjs",
-    "acuvo-mcp": "./bin/acuvo-mcp.mjs"
+    "acuvo": "bin/acuvo.mjs",
+    "acuvo-mcp": "bin/acuvo-mcp.mjs"
   },
   "engines": {
     "node": ">=20"
   },
+  "exports": {
+    ".": "./lib/turn.mjs",
+    "./turn": "./lib/turn.mjs",
+    "./tools": "./lib/tools.mjs",
+    "./workspace": "./lib/workspace.mjs",
+    "./memory-workspace": "./lib/memory-workspace.mjs",
+    "./budget": "./lib/budget.mjs",
+    "./policy": "./lib/policy.mjs",
+    "./lib/*": "./lib/*.mjs",
+    "./package.json": "./package.json"
+  },
   "scripts": {
-    "test": "node --test --test-timeout=180000 test/*.test.mjs",
+    "test": "node scripts/test.mjs",
+    "test:raw": "node --test --test-timeout=180000 test/",
     "bundle": "node scripts/bundle.mjs --out dist/acuvo.mjs",
     "bundle:mcp": "node scripts/bundle.mjs --entry bin/acuvo-mcp.mjs --out dist/acuvo-mcp.mjs",
     "machine": "node scripts/machine.mjs status",
@@ -19,11 +31,12 @@
   },
   "dependencies": {},
   "devDependencies": {},
-  "license": "MIT",
+  "license": "FSL-1.1-ALv2",
   "files": [
     "bin/",
     "lib/",
-    "test/",
+    "skills/",
+    "scripts/",
     "README.md",
     "LICENSE",
     "CHANGELOG.md",
@@ -32,13 +45,18 @@
   ],
   "repository": {
     "type": "git",
-    "url": "https://github.com/xxiautomate-star/acuvo-code"
+    "url": "git+https://github.com/xxiautomate-star/acuvo-code.git"
   },
+  "homepage": "https://acuvo.xxiautomate.com",
+  "bugs": {
+    "email": "roman@xxiautomate.com"
+  },
+  "author": "XXIautomate (Roman Puglielli)",
   "keywords": [
     "ai",
     "cli",
     "coding-agent",
-    "deepseek",
+    "agent",
     "terminal"
   ]
 }

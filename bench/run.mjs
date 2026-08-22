@@ -30,6 +30,7 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 import { TASKS } from './tasks.mjs';
+import { readOutcome } from './read-outcome.mjs';
 import { TOOL_NAMES } from '../lib/tools.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -86,12 +87,50 @@ function makeWorkspace(task) {
  */
 function runCli(task, ws) {
   const started = Date.now();
+  /**
+   * ── ⭐⭐ THE BENCH READS THE DOCUMENT NOW, NOT THE PROSE ───────────────────
+   *
+   * Every number below used to be scraped out of the human summary with a
+   * regex, and the comments underneath record THREE separate times that pattern
+   * matched the wrong thing — a fixture's own "$7.50" read as the run's cost, a
+   * summary warning captured instead of the model's reply. A benchmark whose
+   * inputs come from prose we keep improving is a benchmark that reports the
+   * improvements as regressions.
+   *
+   * ⭐ `--json` now carries all of it structurally, including `note`, which was
+   * added this morning precisely because the answer never reached the document.
+   *
+   * ⚠️ STDOUT ONLY. Under `--json` every human line goes to stderr by design, so
+   * concatenating the two — which this function used to do — produces a string
+   * that is not JSON.
+   */
   const r = spawnSync(process.execPath, [
-    CLI, '--dir', ws, '--max-rounds', String(task.rounds), task.prompt,
+    CLI, '--dir', ws, '--max-rounds', String(task.rounds), '--json', task.prompt,
   ], { encoding: 'utf8', timeout: 6 * 60_000, env: process.env });
+
+  let doc = null;
+  try { doc = JSON.parse(r.stdout ?? ''); } catch { doc = null; }
+
+  /**
+   * ⚠️ THE PROSE IS STILL CAPTURED, and still concatenated, because the grading
+   * checks below read the transcript for things no document reports — what the
+   * agent SAID mid-run, which tools it refused. The document is the source of
+   * truth for NUMBERS; the transcript stays the source for behaviour.
+   */
   const out = `${r.stdout ?? ''}${r.stderr ?? ''}`;
   return {
     out,
+    doc,
+    /**
+     * ⭐ WHICH UPSTREAM SERVED IT, AND HOW WELL THE CACHE HELD — the two
+     * variables that make two bench runs incomparable. Measured today: the same
+     * call costs $0.000592 on one provider and $0.000338 on another, a 7x
+     * spread on price and a material one on latency, and the bench pins
+     * NOTHING. A "46% cost regression" between two days may be nothing more
+     * than a different upstream, and until these are recorded nobody can tell.
+     */
+    providers: doc?.providers?.served ?? null,
+    cacheHit: doc?.cache?.hitRate ?? null,
     exitCode: r.status,
     seconds: (Date.now() - started) / 1000,
     // Parsed from the summary the CLI already prints — no second source of truth.
@@ -104,9 +143,7 @@ function runCli(task, ws) {
      * output. The summary's shape is `model · N rounds · N tokens · $X` — the
      * `tokens · ` prefix is what makes it unambiguous.
      */
-    cost: Number(out.match(/tokens\s*·\s*\$([0-9.]+)/)?.[1] ?? 0),
-    rounds: Number(out.match(/·\s*(\d+) rounds?\s*·/)?.[1] ?? 0),
-    verified: /✔ VERIFIED/.test(out),
+    ...readOutcome(doc, out),
     /**
      * The model's closing prose — what the `refuse` task inspects.
      *
@@ -166,7 +203,16 @@ for (const task of selected) {
 
   results.push({ task, res, failures, ws });
   const mark = failures.length === 0 ? '[32mPASS[0m' : `[31mFAIL[0m ${failures.length}/${task.checks.length}`;
-  console.log(`${mark}  ${res.rounds}r  ${res.seconds.toFixed(0)}s  $${res.cost.toFixed(4)}`);
+  /**
+   * ⭐ THE TWO NUMBERS THAT DECIDE WHETHER TWO RUNS ARE COMPARABLE, printed
+   * beside the ones people quote. A task that cost twice as much because it
+   * landed on a dearer upstream, or because the cache went cold, is not a
+   * regression — and without these on the line, nobody could tell the
+   * difference between that and a real one.
+   */
+  const served = res.providers ? Object.keys(res.providers).join('+') : '?';
+  const hit = typeof res.cacheHit === 'number' ? `${(res.cacheHit * 100).toFixed(0)}%` : '?';
+  console.log(`${mark}  ${res.rounds}r  ${res.seconds.toFixed(0)}s  $${res.cost.toFixed(4)}  ${served} ${hit} cached`);
   for (const f of failures) console.log(`               ↳ ${f}`);
   /**
    * ⚠️ THE TRANSCRIPT ON FAILURE, AND THE FIRST VERSION OMITTED IT — which made

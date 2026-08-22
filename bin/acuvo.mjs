@@ -25,9 +25,32 @@
 import { resolve, join } from 'node:path';
 import { existsSync, statSync, readFileSync } from 'node:fs';
 import { createInterface } from 'node:readline';
+import { randomUUID } from 'node:crypto';
 
-import { parseArgv, USAGE } from '../lib/cli-args.mjs';
+/**
+ * ⚠️ `planPhaseExecutor` IS THE SECOND LOCK ON `--plan`, and it comes from the
+ * module that PRINTS the promise (`USAGE`) so the sentence and its enforcement
+ * cannot drift apart — which is exactly what had happened. Measured 2026-08-20
+ * through the real `runSession` with this file's own plan-phase options: a
+ * `write_file` the model was never offered wrote a file to disk, an `edit_file`
+ * changed a source file and a `delete_file` removed one, all during a phase
+ * nobody had approved. See the block at the foot of lib/cli-args.mjs.
+ */
+import { parseArgv, USAGE, planPhaseExecutor } from '../lib/cli-args.mjs';
 import { runChat } from '../lib/chat.mjs';
+// ⭐ The providers behind `/skills` and `/mcp`. Both modules already existed and
+// already worked; nothing at the interactive prompt could reach either.
+/**
+ * ⚠️⚠️ `discoverAllSkills`/`loadAnySkill`, NOT the project-only pair. Measured:
+ * `/skills` reported **0** while the model saw **24**, and `/skills
+ * nextjs-app-router` answered *"this project defines no skills … there is
+ * nothing to read until someone writes one"* — a sentence that is simply false
+ * about a CLI that ships 24 of them. Same product, two answers, and the wrong
+ * one was the answer a human reads.
+ */
+import { discoverAllSkills, loadAnySkill } from '../lib/builtin-skills.mjs';
+import { routingNote } from '../lib/warm-provider.mjs';
+import { readMcpConfig } from '../lib/mcp.mjs';
 import { readModelConfig, MISSING_KEY_MESSAGE } from '../lib/model.mjs';
 import { executeRunCommand } from '../lib/command.mjs';
 import { createLocalExecutor } from '../lib/workspace.mjs';
@@ -36,24 +59,62 @@ import { runPool, detectConflicts, formatParallelSummary, shortLabel } from '../
 import { detectRepo, findToken, fetchIssue, branchNameFor, issueToTask, createBranch, nextSteps } from '../lib/github.mjs';
 // ⚠️ `formatChanges` is deliberately NOT imported: rendering the change list is
 // `formatSummary`'s job, and importing it here is how the second copy came back.
-import { describeChange, shortenRoot, toJson } from '../lib/report.mjs';
+import { describeChanges, shortenRoot, toJson } from '../lib/report.mjs';
 import { renderImage } from '../lib/terminal-graphics.mjs';
 import { saveSession, listSessions, resumeMessages, loadSession } from '../lib/session.mjs';
-import { recordRun } from '../lib/audit.mjs';
+import { recordRun, parseAuditLog } from '../lib/audit.mjs';
 import { runBestOf, formatBestOf } from '../lib/best-of.mjs';
 import { escalate, formatEscalation, outOfRoad } from '../lib/escalate.mjs';
 import { homedir } from 'node:os';
 import { loadEnvFiles as envLoad } from '../lib/env-file.mjs';
 import {
-  loadPolicy, invocationDecision, roundBudget, filterToolNames, mcpDecision,
+  loadPolicy, invocationDecision, roundBudget, costBudget, filterToolNames, mcpDecision,
   USER_POLICY_FILE, USER_POLICY_ENV, WORKSPACE_POLICY_FILE,
 } from '../lib/policy.mjs';
-import { createBudget, remainingForTurn } from '../lib/budget.mjs';
+/**
+ * ⚠️ `bestOfAttemptBudget` LIVES IN lib/, NOT HERE, AND THAT IS NOT TIDINESS.
+ * Importing this file EXECUTES the CLI — it has a top-level main that then waits
+ * on stdin — so a test that imports a decision function declared here HANGS
+ * FOREVER rather than failing. Measured: the first version of this change put it
+ * in this file and the test never returned. Pure decisions belong where they can
+ * be tested; that is what lib/ is for.
+ */
+import { createBudget, remainingForTurn, DEFAULT_BUDGET_USD, bestOfAttemptBudget } from '../lib/budget.mjs';
 import { createFleetGate } from '../lib/fleet-budget.mjs';
 import { FLEET_STOP_REASONS } from '../lib/budget.mjs';
-import { refuteClaim, formatRefutation } from '../lib/refute.mjs';
+import { refuteClaim, formatRefutation, refutationField } from '../lib/refute.mjs';
 import { createAsker } from '../lib/prompt.mjs';
+/**
+ * ── ⭐⭐ THE PLAN GATE, AND THE TWO VERDICTS THAT WERE COMPUTED AND NEVER SHOWN
+ *
+ * `lib/plan-coherence.mjs` is wired into `lib/turn.mjs`, and that wiring reaches
+ * the MODEL: the drift nudge is appended to the conversation and the
+ * reconciliation is put in the result object. Measured 2026-08-20, it reached
+ * nobody else — `renderEvent` has no case for the `plan-drift` event turn.mjs
+ * emits, and `formatReconciliation` is imported by turn.mjs on line 64 and
+ * called from nowhere. Two correct verdicts, invisible to the person paying.
+ *
+ * ⚠️ `toolNamesForRounds` IS IMPORTED HERE FOR ONE REASON ONLY: `--plan`'s
+ * read-only offer is an INTERSECTION with what this machine actually offers,
+ * never a fixed list. A hard-coded read list would offer `read_skill` in a
+ * project with no skills and the four LSP verbs on a machine with no language
+ * server — the dead buttons tools.mjs spends four hundred lines refusing.
+ */
+import { toolNamesForRounds } from '../lib/tools.mjs';
+import {
+  runPlanGate, planModeToolNames, planModeRounds, planPhaseTask,
+  driftBannerLine, formatReconciliation,
+} from '../lib/plan-coherence.mjs';
 import { summariseSpend, readAuditFiles, formatSpend, parseSince } from '../lib/spend.mjs';
+import { PLANS, formatPlan, allowanceRemaining, usageByModel } from '../lib/plan.mjs';
+import { labelForModelId } from '../lib/acuvo-models.mjs';
+/**
+ * ⭐ CREATIVE ENGINE CHOICE. `listEngines` asks the gateway what this ACCOUNT
+ * may reach and what each engine costs — this package holds no prices, on
+ * purpose. `setRunEngine` records the engine the user named on the command
+ * line so a render verb can read it later.
+ */
+import { listEngines, setRunEngine } from '../lib/creative-engines.mjs';
 
 /**
  * ⭐ Decided once, at the top, because it is a property of how this process was
@@ -82,6 +143,17 @@ const asker = createAsker();
  * word "compaction" to stop paying for a transcript they cannot see.
  */
 import { runDoctor, formatDoctor } from '../lib/doctor.mjs';
+/**
+ * ── ⭐ SHELL COMPLETION — built, tested, and reachable from nothing until now ──
+ * `lib/completion.mjs` is 509 lines that generate bash, zsh and fish scripts
+ * from the real flag list, so the completions cannot drift from the CLI. It had
+ * no entry point, which made it a capability nobody could use.
+ */
+import { completionScript, SUPPORTED_SHELLS } from '../lib/completion.mjs';
+import {
+  resolveConfig, explicitKeysFromArgv, applyConfigToOptions,
+  WORKSPACE_CONFIG_FILE, HOME_CONFIG_FILE, ACUVO_HOME_ENV,
+} from '../lib/rcfile.mjs';
 import { replaySession, formatTimeline, diffRuns, formatDiff } from '../lib/replay.mjs';
 import { designPass, formatDesignPass } from '../lib/design-loop.mjs';
 import {
@@ -108,6 +180,37 @@ import { acquireAll, renewAll, releaseAll, inspect, formatLeaseSummary, DEFAULT_
 import { createPathClaimer } from '../lib/auto-lease.mjs';
 import { boardAdd, boardList, boardClaim, boardDone, formatBoard } from '../lib/board.mjs';
 import { loadRuns, pickRun, recheckClaim, formatRecheck, recheckAll, formatRecheckAll } from '../lib/verify-claim.mjs';
+/**
+ * ── ⭐⭐ CHECKPOINT / REWIND — THE UNDO THIS TOOL DID NOT HAVE ───────────────
+ *
+ * Measured 2026-08-14: nothing in lib/ or bin/ restored a file. The agent could
+ * rewrite twelve files across five rounds and the only way back was git, and
+ * only if the tree happened to be clean beforehand. `openJournal` is handed to
+ * the executor so the previous bytes are copied at the two doors every mutation
+ * already goes through; `acuvo rewind` reads them back.
+ */
+import {
+  openJournal, readJournal, groupRuns, planRewind, applyRewind, checkpointSize,
+  formatCheckpoints, formatRewind,
+} from '../lib/checkpoint.mjs';
+/**
+ * ── ⭐⭐ CTRL-C, AND THE HALF OF IT THAT LIVES HERE ─────────────────────────
+ *
+ * `lib/interrupt.mjs` shipped INERT — the policy and all five signal handlers
+ * were wired to consult it, and nothing ever registered a handler, so the first
+ * Ctrl-C still killed the run and lost its transcript. This import is the wire
+ * that was missing. See `armInterrupt` for what one press does and why the
+ * second one is not negotiable.
+ */
+import { armInterrupt, wasAbortedByInterrupt, EXIT_INTERRUPTED } from '../lib/interrupt.mjs';
+/**
+ * ── ⭐⭐ AND THE OTHER HALF: SAYING SOMETHING WITHOUT STOPPING ──────────────
+ * Ctrl-C is "stop". Steering is "no, do it this way instead" — the thing you
+ * actually want at round three of eight. See `lib/steer.mjs` for why it is a
+ * file and not a keystroke (short version: a keystroke works in exactly one of
+ * this tool's two input modes, and not the one that needs it).
+ */
+import { takeSteer, planSteer, formatSteer, formatUnapplied, STEER_ABORT_REASON, STEER_FILE } from '../lib/steer.mjs';
 
 const EXIT_OK = 0;
 const EXIT_FAILED = 1;
@@ -144,6 +247,40 @@ function die(message, code) {
  * typo — two parsers both guessing is how `--jsonn` ends up silently ignored.
  */
 const LIFECYCLE_USAGE = [
+  /**
+   * ── ⚠️⚠️⭐ THE ONLY ROUTE OFF BYOK WAS INVISIBLE ───────────────────────────
+   *
+   * Measured against the real `node bin/acuvo.mjs --help` output on 2026-08-19,
+   * on a clean tree: "login" 0, "logout" 0, "whoami" 0. All three flags WORK —
+   * `--whoami` printed "Using OPENROUTER_API_KEY from your environment (BYOK)
+   * … Run `acuvo --login` with an Acuvo key to use your credits instead."
+   *
+   * ⚠️ SO `--whoami` INSTRUCTED THE USER TO RUN A COMMAND `--help` DID NOT
+   * LIST, while the Environment section called OPENROUTER_API_KEY "required —
+   * the only one needed to write code". A stranger reading the front door end
+   * to end concluded BYOK is the only mode this tool has. The doctrine is the
+   * opposite, and an unreachable capability has not shipped.
+   *
+   * ⚠️ THEY LIVE HERE AND NOT IN `USAGE` FOR A MECHANICAL REASON. Every flag
+   * `extractLifecycleFlags` strips is invisible to `parseArgv`, and
+   * `test/cli-flags-parse.test.mjs` asserts that everything documented in
+   * `USAGE` survives `parseArgv`. I put this block in `USAGE` first and that
+   * test went red naming all three — correctly. `LIFECYCLE_USAGE` is where the
+   * pre-stripped flags are documented; that is the convention, not a workaround.
+   *
+   * ⭐ AND IT IS FIRST IN THIS ARRAY, above the session flags, because it is the
+   * first decision a new user makes: whose money this spends.
+   */
+  '',
+  'Your account (an Acuvo key spends YOUR Acuvo credits — this is the way in):',
+  '  --login [key]         Sign in. With no value it reads the key on stdin, which is the',
+  '                        spelling to prefer: a credential typed as an argument lands in',
+  '                        shell history, in `ps`, and in any terminal recording.',
+  '                          acuvo --login < key.txt',
+  '  --whoami              Which account this machine is using, and whose money it spends.',
+  '                        Needs no key and spends nothing.',
+  '  --logout              Forget the stored key. Falls back to OPENROUTER_API_KEY if one',
+  '                        is set, which bills your provider account instead of your credits.',
   '',
   'Session lifecycle (a run is saved when it ends, so you never re-pay for the gather):',
   '  --sessions            List the runs saved in this workspace, newest first, and exit.',
@@ -163,6 +300,14 @@ const LIFECYCLE_USAGE = [
   'model prose. --dry-run writes neither file, because a dry run touches nothing.',
   '',
   'Look at what happened, and at what is working (none of these spend a completion):',
+  /**
+   * ⚠️ `completion <shell>` USED TO SIT ON THE LINE AFTER `--doctor`, i.e. IN
+   * THE MIDDLE OF --doctor's OWN DESCRIPTION. Rendered, a reader was told that
+   * `completion <shell>` prints "endpoints, which tools would be offered, git.
+   * Every dark or broken line names the exact variable that fixes it." — six
+   * continuation lines belonging to the entry above it. Pure array ordering; no
+   * sentence changed.
+   */
   '  --doctor              Say what is actually working here: key, model chain, media',
   '                        endpoints, which tools would be offered, git. Every dark or',
   '                        broken line names the exact variable that fixes it. Exits 0',
@@ -170,6 +315,7 @@ const LIFECYCLE_USAGE = [
   '                        key is sent to openrouter.ai to check it authenticates, and',
   '                        each configured endpoint is pinged. Add --offline to skip all',
   '                        of it — nothing leaves the machine, and no key is sent.',
+  `  completion <shell>    Print a completion script (${SUPPORTED_SHELLS.join(' · ')}) — append it to your shell profile`,
   '  --replay <id>         Step through a saved run: every round, call, result and refusal.',
   '                        Runs NOTHING and writes NOTHING. Add --json for the raw steps.',
   '  --replay <id> --only <what>',
@@ -206,12 +352,29 @@ function extractLifecycleFlags(argv) {
   const flags = {
     sessions: false, resume: null, continueLatest: false, save: true, audit: true,
     doctor: false, replay: null, diff: null, only: null, design: null,
+    login: false, loginToken: null, logout: false, whoami: false,
   };
   const rest = [];
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg === '--sessions') { flags.sessions = true; continue; }
     if (arg === '--doctor') { flags.doctor = true; continue; }
+    if (arg === '--logout') { flags.logout = true; continue; }
+    if (arg === '--whoami') { flags.whoami = true; continue; }
+    /**
+     * ⭐ `--login` TAKES ITS TOKEN OPTIONALLY. With a value it is convenient;
+     * with none it reads stdin, which is the spelling the docs should show —
+     * a live credential on the command line lands in shell history, in `ps`,
+     * and in any terminal recording. `gh auth login --with-token` reads stdin
+     * for exactly this reason.
+     */
+    if (arg === '--login') {
+      flags.login = true;
+      const next = argv[i + 1];
+      if (next !== undefined && !next.startsWith('--')) { flags.loginToken = next; i += 1; }
+      continue;
+    }
+    if (arg.startsWith('--login=')) { flags.login = true; flags.loginToken = arg.slice(8); continue; }
     if (arg === '--continue') { flags.continueLatest = true; continue; }
     if (arg === '--no-session') { flags.save = false; continue; }
     if (arg === '--no-audit') { flags.audit = false; continue; }
@@ -240,8 +403,70 @@ function extractLifecycleFlags(argv) {
   return { ok: true, flags, argv: rest };
 }
 
+/**
+ * ── ⭐⭐ THE ONLY THING `bin` OWNS ABOUT LOGGING IN ──────────────────────────
+ *
+ * The FLOW lives in `lib/device-login.mjs` so both doors share one copy —
+ * `acuvo --login`, and a bare `acuvo` that finds no credential. This adapter
+ * owns only what `bin` legitimately owns: exit codes, and how a failure reads.
+ *
+ * ⚠️ The first version of this flow was written inline inside the `--login`
+ * branch and a second caller needed it within the hour. A fix that lives inside
+ * one caller is a fix for one caller — three separate instances of exactly that
+ * were found and fixed in this codebase today. Extracted before the second copy
+ * could exist rather than after it caused a divergence.
+ */
+async function deviceLoginOrDie() {
+  const { runDeviceLogin } = await import('../lib/device-login.mjs');
+  const { writeAccount, DEFAULT_GATEWAY_URL } = await import('../lib/account.mjs');
+  const { maskToken } = await import('../lib/login.mjs');
+  const { spawn } = await import('node:child_process');
+  const gateway = process.env.ACUVO_GATEWAY_URL || DEFAULT_GATEWAY_URL;
+  try {
+    const out = await runDeviceLogin({
+      gatewayUrl: gateway,
+      spawn,
+      saveAccount: (token) => writeAccount({ token, gatewayUrl: gateway }),
+    });
+    process.stderr.write(`\nSigned in. Key ${maskToken(out.token)} saved.\n`);
+    if (out.restricted === false) {
+      process.stderr.write('WARNING: could not restrict permissions on the credentials file — check it yourself.\n');
+    }
+  } catch (e) {
+    die(e?.message ?? 'login failed.', EXIT_USAGE);
+  }
+}
+
 async function main() {
-  const lifted = extractLifecycleFlags(process.argv.slice(2));
+  /**
+   * ── ⭐ `acuvo completion <shell>` ──────────────────────────────────────────
+   *
+   * ⚠️ FIRST, BEFORE ANY FLAG PARSING. `completion` is a SUBCOMMAND, not a flag,
+   * and `parseArgv` refuses anything it does not recognise — so checking later
+   * means the refusal fires before the feature does. It also needs no key, no
+   * model and no network: printing a completion script is a `cat` of generated
+   * text, and making someone authenticate to install tab-completion teaches
+   * them the tool is heavier than it is.
+   *
+   * ⚠️ STDOUT CARRIES THE SCRIPT AND NOTHING ELSE, because the documented
+   * install is `acuvo completion zsh >> ~/.zshrc`. A banner, a hint or a colour
+   * code on stdout lands inside the user's shell profile and breaks their next
+   * login. Errors go to stderr for exactly that reason.
+   */
+  const rawArgs = process.argv.slice(2);
+  if (rawArgs[0] === 'completion') {
+    const result = completionScript(rawArgs[1], { command: 'acuvo' });
+    if (!result.ok) {
+      process.stderr.write(`${result.error}
+`);
+      return EXIT_USAGE;
+    }
+    process.stdout.write(`${result.script}
+`);
+    return EXIT_OK;
+  }
+
+  const lifted = extractLifecycleFlags(rawArgs);
   if (!lifted.ok) die(`${lifted.error}\n\n${USAGE}${LIFECYCLE_USAGE}\n`, EXIT_USAGE);
   const life = lifted.flags;
   /**
@@ -255,6 +480,20 @@ async function main() {
   const parsed = parseArgv(voiced.argv);
   if (!parsed.ok) die(`${parsed.error}\n\n${USAGE}`, EXIT_USAGE);
   const opts = parsed.options;
+  /**
+   * ── ⭐ THE ENGINE THE USER NAMED, RECORDED ONCE FOR THE WHOLE RUN ──────────
+   *
+   * The parser only VALIDATED the id (it is pure, and a parser with a side
+   * effect on module state cannot be called twice in a test file without the
+   * second call inheriting the first one's choice). This is the one place that
+   * commits it, and it is a no-op when nobody passed `--engine`.
+   *
+   * ⚠️ IT IS PER MEDIUM. `--engine acuvo-image-ultra` changes what an image
+   * costs and cannot change what `speak` does — a flag whose blast radius is
+   * wider than its name is how somebody gets billed for a decision they think
+   * they scoped.
+   */
+  if (opts.engine) setRunEngine(opts.engine);
   if (opts.help) {
     // ⚠️ THE NEW FLAGS ARE DOCUMENTED WHERE PEOPLE LOOK. A capability that only
     // the changelog knows about is the "built but unreachable" failure this
@@ -326,7 +565,8 @@ async function main() {
    * `opts.task` is empty for a command, which is exactly the trap `--task-audio`
    * fell into.
    */
-  const emitsOwnObject = life.sessions || life.doctor || life.replay !== null || life.design !== null
+  const emitsOwnObject = life.sessions || life.doctor || life.login || life.logout || life.whoami
+    || life.replay !== null || life.design !== null
     || opts.command !== null;
   if (opts.json && !emitsOwnObject && (opts.parallel || (!opts.task && opts.issue === null && !resumeRequested && !voice.taskAudio))) {
     die('--json emits one object for one task. --parallel and interactive mode print a running report instead, so run one task per invocation (acuvo --json "<task>"), or drop --json.', EXIT_USAGE);
@@ -421,6 +661,41 @@ async function main() {
   const readIfPresent = (file) => {
     try { return existsSync(file) ? readFileSync(file, 'utf8') : null; } catch { return null; }
   };
+  /**
+   * ── ⭐⭐ THE CONFIG FILE — 825 built lines that nothing had ever called ─────
+   *
+   * Deliberately here, beside the POLICY load, because they are the same shape
+   * and the same trust argument: `~/.acuvo/config.json` is yours, the
+   * workspace's `.acuvo/config.json` came with a repo you cloned, and the second
+   * may only make things STRICTER. A cloned repo that could RAISE your budget or
+   * switch running back on would be a config file with a security hole in it.
+   * `rcfile.mjs` enforces that direction; this is only the door.
+   *
+   * ⚠️⚠️ A KEY THE USER TYPED IS NEVER OVERWRITTEN, and that is enforced HERE
+   * rather than trusted to the resolver. `resolveConfig` is told WHICH keys were
+   * explicit but never sees their VALUES, so its `values` still carry the file's
+   * number for a key the flag also set. Applying that blindly would let a config
+   * file silently beat a flag the person just typed — the one behaviour a config
+   * system must never have.
+   *
+   * ⚠️ AND A MALFORMED CONFIG STOPS THE RUN, matching the policy loader directly
+   * below: absent means "no config", but present-and-broken is a broken control,
+   * and quietly falling back is how someone discovers their settings never
+   * applied — from a surprise bill.
+   */
+  const homeConfigDir = process.env[ACUVO_HOME_ENV]?.trim() || join(homedir(), '.acuvo');
+  const configLoad = resolveConfig({
+    argv: voiced.argv,
+    env: process.env,
+    homeText: readIfPresent(join(homeConfigDir, HOME_CONFIG_FILE)),
+    workspaceText: readIfPresent(join(root, WORKSPACE_CONFIG_FILE)),
+  });
+  if (!configLoad.ok) die(`config: ${configLoad.error}`, EXIT_USAGE);
+  // ⭐ The precedence rule lives in rcfile.mjs so it is testable without running
+  // the whole CLI — inline here it was reachable only by end-to-end invocation,
+  // which is how a rule this important ends up unverified.
+  applyConfigToOptions(opts, configLoad.values, explicitKeysFromArgv(voiced.argv));
+
   const adminPolicyFile = process.env[USER_POLICY_ENV]?.trim() || join(homedir(), USER_POLICY_FILE);
   const policyLoad = loadPolicy({
     adminText: readIfPresent(adminPolicyFile),
@@ -455,6 +730,33 @@ async function main() {
    */
   const capped = roundBudget(policy, opts.maxRounds);
   if (capped.capped) opts.maxRounds = capped.rounds;
+
+  /**
+   * ⚠️⚠️ AND SO IS THE COST CEILING — IT WAS ENFORCED BY NOTHING AT ALL.
+   * `costDecision` in policy.mjs is complete and had ZERO runtime callers.
+   * Measured: a workspace policy of `{"maxCostUsd": 0}` parsed fine, the
+   * decision function returned STOP when asked, and the run spent money over
+   * three rounds because nobody asked it. Exactly the disease the comment above
+   * describes for rounds, in the sibling control.
+   *
+   * ⭐ Folded into the ceiling the governor already reads, rather than added as
+   * a second check in the round loop — one mechanism cannot drift from itself,
+   * and a future call site cannot forget it.
+   */
+  const costCap = costBudget(policy, opts.budgetUsd);
+  if (costCap.capped) {
+    opts.budgetUsd = costCap.usd;
+    /**
+     * ⚠️ MARKED AS CHOSEN, NOT DEFAULT. `budgetExplicit` is what tells the
+     * governor a human picked this number — it changes the refusal wording and
+     * gates `--until-done`. An admin writing a policy file IS a human choosing,
+     * so a policy-set ceiling that still read as "the default" would announce
+     * itself as an accident.
+     */
+    opts.budgetExplicit = true;
+    opts.budgetSource = 'policy';
+    process.stderr.write(`  · ${costCap.reason}\n`);
+  }
 
   /**
    * ── ⭐ `--sessions` — WHAT IS SAVED, AND ABOVE THE KEY CHECK ON PURPOSE ────
@@ -515,6 +817,42 @@ async function main() {
    * ⚠️ Reads only. No key, no completion, no network — same class as `--doctor
    * --offline` and `leases`.
    */
+  /**
+   * ── ⭐⭐ `acuvo engines` — "WHAT WILL THIS COST ME", ASKED BEFORE SPENDING ──
+   *
+   * Roman, 2026-08-16: *"as long as users have the choice to switch between
+   * premium and basic for video and image then we should be good"* — and a
+   * choice you cannot price is not a choice. This is the surface where a person
+   * finds out that an Ultra clip is 585 credits and the core one is 117, before
+   * either of them has run.
+   *
+   * ⚠️ ABOVE THE KEY CHECK, with `leases` and `spend`: it needs no OpenRouter
+   * key, because it asks the ACUVO GATEWAY about an ACUVO ACCOUNT. Refusing it
+   * for a missing model key would be a true statement about the wrong problem.
+   *
+   * ⚠️⚠️ AND IT PRINTS "PRICES UNAVAILABLE" RATHER THAN A NUMBER WHEN NOBODY
+   * ANSWERS — which today is everybody, because the gateway has no `/engines`
+   * route yet (measured 2026-08-16: `acuvo-gateway/lib/handler.mjs` proxies chat
+   * completions and routes nothing, and `console/app/api/cli/v1/` holds only
+   * `chat/`). Shipping the numbers inside the package to make this look finished
+   * is the one thing that must not happen: an npm package pins the price it was
+   * published with, and the customer can edit the file. Prices are account facts
+   * and they stay on the server.
+   */
+  if (opts.command === 'engines') {
+    const result = await listEngines({});
+    if (opts.json) {
+      process.stdout.write(`${JSON.stringify(result, null, 2)}
+`);
+      return EXIT_OK;
+    }
+    process.stdout.write(`
+${result.text}
+
+`);
+    return EXIT_OK;
+  }
+
   if (opts.command === 'spend') {
     const since = parseSince(opts.since);
     if (since && since.error) die(since.error, EXIT_USAGE);
@@ -524,6 +862,54 @@ async function main() {
       return EXIT_OK;
     }
     process.stdout.write(`\n${formatSpend(summary, { since }).map((l) => `  ${l}`).join('\n')}\n\n`);
+
+    /**
+     * ── ⭐ WHAT THAT SPEND IS AGAINST ────────────────────────────────────
+     *
+     * A dollar figure alone cannot answer the question people actually ask,
+     * which is "how much have I got left". The plan is the denominator, and
+     * `lib/plan.mjs` holds it with prices measured from the endpoint each
+     * model is PINNED to — not from a model page, which is how pro looked
+     * 3.1x flash while we were being charged 11.2x.
+     *
+     * ⚠️ THE CACHE RATE IS PASSED IN, NOT ASSUMED. This plan clears an 80%
+     * margin only at or above 77% cache, so a margin quoted without the rate
+     * that produced it is a number somebody chose. It comes from this
+     * workspace's own audit log, computed above.
+     */
+    const observedCache = Number.isFinite(summary?.cacheHitRate) ? summary.cacheHitRate : 0.95;
+    /**
+     * ── ⭐ WHERE THIS WORKSPACE ACTUALLY STANDS AGAINST THE ALLOWANCE ────
+     *
+     * ⚠️ `allowanceRemaining` shipped and was called by nobody — an
+     * allowance nothing reads is a number on a pricing page. The usage is
+     * aggregated from this workspace's own audit log, per model that
+     * ANSWERED (not the one requested: a run that fell back spent tokens on
+     * whichever model actually served it).
+     *
+     * ⚠️ ENFORCEMENT AT RUN TIME NEEDS THE ACCOUNT. This is one workspace on
+     * one machine; the real limit is per TENANT and lives behind the
+     * gateway. What is honest to show today is where this workspace stands,
+     * and to say plainly that it is not the whole picture.
+     */
+    /**
+     * ⚠️ `readAuditFiles` returns `{name, text}` — RAW TEXT, not records. My
+     * first version assumed `.records` and silently produced 0.0M used,
+     * which is the worst possible wrong answer: an allowance reading zero
+     * looks healthy. Caught by running it against a workspace that had a
+     * real 93,743-token run in the log.
+     */
+    const auditRecords = readAuditFiles(root).flatMap((f) => parseAuditLog(f.text).records);
+    const { byModel, unknown } = usageByModel(auditRecords);
+    const left = allowanceRemaining(PLANS.starter, byModel);
+    const usageLines = Object.entries(left)
+      .filter(([, v]) => v.available)
+      .map(([id, v]) => `  ${labelForModelId(id).padEnd(12)} ${(v.used / 1e6).toFixed(1)}M of ${(v.granted / 1e6).toFixed(0)}M used${v.exhausted ? '  — EXHAUSTED' : ''}`);
+    if (unknown > 0) usageLines.push(`  ⚠ ${unknown} run(s) recorded no model or token count, so this is a floor`);
+    usageLines.push('  (this workspace only — a plan limit is per account, and that lives behind the gateway)');
+
+    const planLines = [...usageLines, '', ...formatPlan(PLANS.starter, observedCache)].map((l) => `  ${l}`);
+    process.stdout.write(`${planLines.join('\n')}\n\n`);
     return EXIT_OK;
   }
 
@@ -625,6 +1011,64 @@ ${formatBoard(listed)}
     die(`unknown board command "${verb}". Try: acuvo board · acuvo board add "…" · acuvo board done <id>`, EXIT_USAGE);
   }
 
+  /**
+   * ── ⭐⭐ `acuvo rewind` — THE UNDO, AND WHY IT SITS UP HERE ─────────────────
+   *
+   * Above the key check with `leases`, `spend`, `board` and `verify`: putting
+   * files back needs no credentials, no network and no completion. The moment
+   * you most want an undo is the moment something went wrong, and "configure an
+   * API key first" would be the worst possible answer to it.
+   *
+   * ⚠️ THE DEFAULT IS TO LIST, NOT TO ACT. A bare `acuvo rewind` restores
+   * nothing — it prints the checkpoints and the exact command to use. A verb
+   * that guesses which state you meant is a verb that overwrites the wrong one.
+   */
+  if (opts.command === 'rewind') {
+    const journal = readJournal(root);
+    if (!journal.ok) die(journal.error, EXIT_FAILED);
+    const runs = groupRuns(journal.entries);
+    const wanted = (opts.rewindArgs ?? [])[0] ?? null;
+
+    if (!wanted) {
+      // ⚠️ THE DISK COST IS PART OF THE ANSWER. Nothing prunes this store yet,
+      // so a listing that never mentions its size is the one place a user would
+      // have found out before it mattered.
+      const size = checkpointSize(root);
+      if (opts.json) {
+        process.stdout.write(`${JSON.stringify({ checkpoints: runs, unreadable: journal.unreadable, size }, null, 2)}\n`);
+        return EXIT_OK;
+      }
+      process.stdout.write(`\n${formatCheckpoints(runs, size).map((l) => `  ${l}`).join('\n')}\n\n`);
+      /**
+       * ⚠️ EXIT 3, NOT 0, WITH NOTHING TO SHOW. "There is no undo here" is not
+       * success, and a script asking "can I roll this back" must be able to
+       * tell it apart from "yes, here are four". Same reasoning as
+       * `acuvo verify` returning EXIT_SKIPPED for an unclaimed run.
+       */
+      return runs.length === 0 ? EXIT_SKIPPED : EXIT_OK;
+    }
+
+    const plan = planRewind(journal.entries, wanted);
+    if (!plan.ok) die(plan.error, EXIT_USAGE);
+    const result = applyRewind(root, plan, { dryRun: opts.dryRun, force: opts.force });
+    /**
+     * ⚠️⚠️ "I REFUSED EVERY FILE" IS NOT "I PUT THEM BACK", and a script must be
+     * able to tell them apart: `acuvo rewind <id> && npm test` would otherwise
+     * test the tree it was asked to undo. Three outcomes, three codes — the
+     * same rule `acuvo verify` follows for a run with no checkable claim.
+     * 0 something was restored · 3 nothing was, because it all conflicted ·
+     * 1 something actually failed.
+     */
+    const touched = result.restored.length + result.removed.length;
+    const code = !result.ok ? EXIT_FAILED : (touched === 0 && result.skipped.length > 0 ? EXIT_SKIPPED : EXIT_OK);
+    if (opts.json) {
+      process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+      return code;
+    }
+    process.stdout.write(`\n${formatRewind(result).map((l) => `  ${l}`).join('\n')}\n\n`);
+    return code;
+  }
+
   if (opts.command === 'leases') {
     const view = inspect(root);
     if (opts.json) {
@@ -650,6 +1094,97 @@ ${formatBoard(listed)}
    * withheld-tool reasons would be right about the doctor's assumption and
    * wrong about your next run.
    */
+  /**
+   * ── ⭐⭐ `--login` / `--logout` / `--whoami` — THE STEP THAT WAS MISSING ───
+   *
+   * `writeAccount` has been exported, documented and reachable in code for
+   * weeks while being called by NOTHING but its own tests. So `resolveCredential`
+   * never found an account, fell through to `OPENROUTER_API_KEY`, and every user
+   * was on BYOK — which `account.mjs` itself calls "never the plan" and which
+   * makes the storefront an advertisement for somebody else.
+   *
+   * ⚠️ ABOVE THE CREDENTIAL CHECK, deliberately: the command that FIXES a
+   * missing credential cannot be gated on having one. Same reason `--replay`
+   * sits above it.
+   */
+  if (life.whoami) {
+    const { describeAuth } = await import('../lib/login.mjs');
+    const { resolveCredential } = await import('../lib/account.mjs');
+    const d = describeAuth(resolveCredential());
+    process.stdout.write(`${d.line}
+`);
+    return d.ok ? EXIT_OK : EXIT_FAILED;
+  }
+
+  if (life.logout) {
+    const { clearAccount } = await import('../lib/account.mjs');
+    const cleared = clearAccount();
+    if (cleared.ok === false) die(cleared.error, EXIT_FAILED);
+    /**
+     * ⚠️ `.existed`, NOT the returned object. `clearAccount` returns
+     * `{ ok, existed, path }`, so testing the object itself is always truthy and
+     * would tell someone who was never logged in that their credential had just
+     * been removed — a lie that sends them looking for a problem that is not there.
+     */
+    process.stdout.write(cleared.existed
+      ? 'Logged out. The stored credential has been removed.\n'
+      : 'You were not logged in — nothing to remove.\n');
+    return EXIT_OK;
+  }
+
+  if (life.login) {
+    const { validateTokenShape, verifyToken, maskToken } = await import('../lib/login.mjs');
+    const { writeAccount, DEFAULT_GATEWAY_URL } = await import('../lib/account.mjs');
+
+    /**
+     * ⚠️ STDIN WHEN NO VALUE WAS GIVEN. A credential passed as an argument is
+     * in shell history and in `ps` output the moment it is typed.
+     */
+    let raw = life.loginToken;
+    if (raw === null) {
+      if (process.stdin.isTTY) {
+        await deviceLoginOrDie();
+        process.stderr.write('Run `acuvo` to start.\n');
+        process.exit(0);
+      }
+      const chunks = [];
+      for await (const c of process.stdin) chunks.push(c);
+      raw = Buffer.concat(chunks).toString('utf8');
+    }
+
+    const shape = validateTokenShape(raw);
+    if (!shape.ok) die(shape.reason, EXIT_USAGE);
+
+    const gateway = process.env.ACUVO_GATEWAY_URL || DEFAULT_GATEWAY_URL;
+    process.stderr.write(`Checking that key against ${gateway} …
+`);
+    const check = await verifyToken(shape.token, gateway);
+    /**
+     * ⚠️ VERIFY BEFORE WRITE. A saved-but-invalid token fails at the model call
+     * on some later run, far from the mistake, with an error about chat
+     * completions rather than about login.
+     */
+    if (!check.ok) die(check.reason, EXIT_FAILED);
+
+    const wrote = writeAccount({ token: shape.token, gatewayUrl: gateway });
+    if (!wrote || wrote.ok === false) {
+      die(`could not save the credential${wrote && wrote.error ? `: ${wrote.error}` : ''}`, EXIT_FAILED);
+    }
+    // Never echo the credential itself.
+    process.stdout.write(`Logged in (${maskToken(shape.token)}). Your runs now bill Acuvo credits.\n`);
+    /**
+     * ⚠️ SAY SO IF THE FILE COULD NOT BE LOCKED DOWN. `writeAccount` reports
+     * whether it managed to restrict permissions; on a filesystem that cannot
+     * (a Windows share, some mounts) the credential is readable by other users
+     * of the machine. Staying silent would be us deciding on the user's behalf
+     * that it did not matter to them.
+     */
+    if (wrote.restricted === false) {
+      process.stderr.write(`⚠️ ${wrote.note ?? `could not restrict permissions on ${wrote.path} — other users of this machine may be able to read it.`}\n`);
+    }
+    return EXIT_OK;
+  }
+
   if (life.doctor) {
     const report = await runDoctor({ root, allowRun: opts.allowRun, maxRounds: opts.maxRounds, skipNetwork: opts.offline === true });
     if (opts.json) process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
@@ -778,7 +1313,28 @@ ${formatBoard(listed)}
   // configuration is missing AFTER walking a large tree is a slower way to
   // deliver the same message, and on a big repo it reads as a hang.
   const config = readModelConfig(process.env);
-  if (!config.configured) die(MISSING_KEY_MESSAGE, EXIT_UNCONFIGURED);
+  if (!config.configured) {
+    /**
+     * ── ⭐⭐⭐ TYPING `acuvo` IS ENOUGH, THE WAY TYPING `claude` IS ───────────
+     *
+     * Roman, 2026-08-22: *"all they should have to type is acuvo and boom
+     * they're in."*
+     *
+     * This used to print instructions and exit — so a new user's first
+     * interaction was homework. A real person at a real terminal now gets the
+     * login itself, not a description of where to find one.
+     *
+     * ⚠️ ONLY WHEN A HUMAN IS THERE. Without a TTY this is a script, a CI job
+     * or a pipe, and opening a browser and blocking for ten minutes on an
+     * approval nobody is present to give would convert a clean "not configured"
+     * exit into a hang. Those callers keep the message and the exit code.
+     */
+    if (!process.stdin.isTTY) die(MISSING_KEY_MESSAGE, EXIT_UNCONFIGURED);
+    process.stderr.write('No credentials yet — signing you in.\n');
+    await deviceLoginOrDie();
+    process.stderr.write('\nRun the same command again to start.\n');
+    return EXIT_OK;
+  }
   if (opts.model) config.model = opts.model;
 
   /**
@@ -811,9 +1367,27 @@ ${formatBoard(listed)}
     : null;
   if (claimer) process.on('exit', () => { try { claimer.releaseAll(); } catch { /* exiting anyway */ } });
 
+  /**
+   * ── ⭐⭐ THE CHECKPOINT JOURNAL FOR THIS RUN ────────────────────────────────
+   *
+   * ⚠️ `null` UNDER `--dry-run`, and that is not an optimisation. `--help`
+   * promises a dry run "touches nothing"; a preview that created
+   * `.acuvo/checkpoints/` and copied files into it would have broken that
+   * promise to save an undo for a run that never happened. `writeFile` also
+   * returns before recording in dry-run mode — belt and braces, because the two
+   * halves of that promise live in two files.
+   *
+   * ⚠️ AND NOTHING IS CREATED UNTIL THE FIRST MUTATION. Opening it is free; a
+   * run that answers a question leaves no directory behind.
+   */
+  const journal = (opts.checkpoint && !opts.dryRun)
+    ? openJournal(root, { task: opts.task || null })
+    : null;
+
   const executor = createLocalExecutor(root, {
     dryRun: opts.dryRun,
     claimPath: claimer ? (p) => claimer.claim(p) : null,
+    journal,
     /**
      * ⭐ WHO THIS TERMINAL IS — and the plan ledger keys on it. Measured with
      * two terminals in one checkout: terminal 2 could not plan at all (the
@@ -961,6 +1535,22 @@ ${formatBoard(listed)}
   }
 
   let priorMessages = null;
+  /**
+   * ── ⭐⭐⭐ ONE STICKY KEY FOR THIS WHOLE CONVERSATION, ACROSS PROCESSES ────
+   *
+   * OpenRouter routes every request carrying the same `session_id` back to the
+   * same upstream SERVER. That is the half of the prompt-cache story our own
+   * prefix work could never reach: the prefix was already 99.9% byte-identical,
+   * and the misses were the ROUTING — a cache lives on one machine and a
+   * provider is a fleet.
+   *
+   * ⚠️ AND THE MEASURED FAILURE WAS BETWEEN PROCESSES, NOT WITHIN THEM: four
+   * consecutive cold runs went 65 / 98 / 31 / 98, because each new process
+   * rolled the dice again. So a RESUMED run must reuse the SAVED id — a fresh
+   * key here would land on a fresh machine and throw away the warm cache that
+   * the conversation being resumed had already paid to build.
+   */
+  let stickyKey = `acuvo-${randomUUID()}`;
   if (resumeRequested) {
     if (life.resume !== null && life.continueLatest) {
       die('--resume <id> and --continue both name a run to carry on, and they disagree. Pass one: --continue takes the most recent, --resume takes the id you name.', EXIT_USAGE);
@@ -992,6 +1582,9 @@ ${formatBoard(listed)}
     const resumed = resumeMessages(root, id);
     if (!resumed.ok) die(resumed.error, EXIT_USAGE);
     priorMessages = resumed.messages;
+    // ⭐ The saved id IS the conversation, so it is the routing key too. This
+    // line is what makes stickiness survive closing the terminal.
+    stickyKey = `acuvo-${resumed.id ?? id}`;
     if (!task) task = resumed.task;
     if (!task) {
       die(`run ${resumed.id} recorded no task text, so "carry on" has nothing to carry. Say what to do next: acuvo --resume ${resumed.id} "<the next step>"`, EXIT_USAGE);
@@ -1079,6 +1672,51 @@ ${formatBoard(listed)}
    * for the turn loop, using the same pure helper, so the two cannot drift.
    */
   let sessionSpentUsd = 0;
+  /**
+   * ── ⭐ WHAT ACTUALLY SERVED, FOR `/model` ─────────────────────────────────
+   *
+   * `aggregateProviders` already computes this per turn and `formatSummary`
+   * already prints it once, at the end. But routing is the question people ask
+   * in the MIDDLE of a session — "why is this costing more than it did" — and
+   * `/model` answered with the configured name only.
+   *
+   * ⚠️ THE EXPENSIVE CASE IS SILENT BY CONSTRUCTION. `pinFellBack` means a
+   * later name in the pin served the round: a cold prefix cache billed at up to
+   * 4.6x, measured, with no error anywhere. A user cannot ask about a number
+   * they were never shown.
+   */
+  let lastProviders = null;
+
+  /**
+   * ⚠️ SESSION-SCOPED, NOT TURN-SCOPED, because the EXIT CODE is a property of
+   * the process and `verdictExit` runs long after the arming has been disposed.
+   * Interactive mode never reads it (a conversation always exits 0 — see the
+   * banner comment below), which is correct: there, Ctrl-C returns you to the
+   * prompt and the session carries on.
+   */
+  let interruptedRun = false;
+
+  /**
+   * ⚠️ SET BY THE ROUND-BOUNDARY HOOK INSIDE `oneTurn`, READ BY `steerable`
+   * AFTER IT RETURNS. It is a variable rather than a return field because
+   * `oneTurn`'s return value is the session outcome — a shape `--json`,
+   * `formatSummary`, the audit log and `sessionFailed` all consume — and
+   * smuggling a CLI-local flag into it would put a field in the machine
+   * contract for the convenience of two lines of control flow.
+   */
+  let pendingSteer = null;
+  /**
+   * ⚠️⚠️ WHEN THIS TURN STARTED, SO A LEFTOVER STEER CANNOT HIJACK IT. Found by
+   * running it: a steer written just after the LAST round boundary is never
+   * picked up and the file survives the run — so the next `acuvo` in that
+   * workspace would consume it at round one and apply an instruction about
+   * yesterday's task to today's. See `takeSteer`'s `newerThan`.
+   *
+   * ⭐ THE TURN, NOT THE SEGMENT. A steer written during segment 1 that arrived
+   * too late for it is still about this turn and must reach segment 2; keying
+   * off the segment start would throw exactly that case away.
+   */
+  let turnStartedAt = 0;
 
   const oneTurn = async (turnTask, priorTurnMessages, over = {}) => {
     /**
@@ -1088,7 +1726,7 @@ ${formatBoard(listed)}
      * starve rung three of a budget it was correctly allocated.
      */
     if (over.budgetUsd === undefined) {
-      const room = remainingForTurn(opts.budgetUsd, sessionSpentUsd);
+      const room = remainingForTurn(opts.budgetUsd, sessionSpentUsd, { limitIsDefault: opts.budgetExplicit !== true, limitSource: opts.budgetSource ?? null });
       if (!room.ok) {
         const sentence = room.message;
         (opts.json ? process.stderr : process.stdout).write(`\n  ⛔ ${sentence}\n`);
@@ -1099,15 +1737,79 @@ ${formatBoard(listed)}
       if (room.remainingUsd !== null) over = { ...over, budgetUsd: room.remainingUsd };
     }
 
-    const result = await runSession({
+    /**
+     * ── ⭐⭐ ARMED PER TURN, DISPOSED IN A `finally` ─────────────────────────
+     *
+     * ⚠️ PER TURN IS THE WHOLE POINT. `runChat` calls this function once per
+     * turn for the life of a conversation; a handler left registered by turn 3
+     * would swallow the Ctrl-C pressed during turn 9 — the user would press,
+     * see the notice, and watch turn 9 keep going, because the signal that was
+     * aborted belongs to a controller nobody is reading any more. Hence the
+     * `finally` below, and hence the ownership guard in `onFirstInterrupt`.
+     *
+     * ⚠️ The notice goes to STDERR under `--json`, like every other human line
+     * on this path: stdout carries exactly one object and one friendly sentence
+     * there breaks `| jq` for everybody.
+     */
+    /**
+     * ⚠️ ONE CONTROLLER, TWO REASONS TO ABORT. `runSession` takes a single
+     * signal, so Ctrl-C and steering necessarily share it — and they are told
+     * apart by `gate.wasInterrupted()`, NOT by the abort reason. That matters
+     * for the exit code: a steered run must exit on its verdict, and only a
+     * genuine keypress may produce 130.
+     */
+    const controller = new AbortController();
+    const gate = armInterrupt({
+      controller,
+      notify: (notice) => {
+        interruptedRun = true;
+        (opts.json ? process.stderr : process.stdout).write(`\n  ⏹ ${notice}\n`);
+      },
+    });
+
+    let result;
+    try {
+      result = await runSession({
+      sessionId: stickyKey,
       task: turnTask,
       priorMessages: priorTurnMessages,
       executor: over.executor ?? executor,
       config,
+      /**
+       * ⭐ THE WIRE. `runSession` has taken a `signal` since it landed and
+       * NOTHING supplied one — the built-but-unreached defect this package
+       * ships most often. This is the supplier.
+       */
+      signal: gate.signal,
       maxTokens: opts.maxTokens,
       timeoutMs: opts.timeoutMs,
-      maxRounds: opts.maxRounds,
-      allowRun: opts.allowRun && !opts.dryRun,
+      /**
+       * ⚠️⚠️ THE THIRD OVERRIDE, AND IT EXISTS TO STOP `--max-rounds` BECOMING
+       * A LIE. A steered turn runs as several segments; if each one were handed
+       * the full `opts.maxRounds`, `--max-rounds 8` plus three steers would
+       * quietly mean 32 rounds. `steerable` passes what is LEFT. Every other
+       * caller omits it and is byte-identical.
+       */
+      maxRounds: over.maxRounds ?? opts.maxRounds,
+      /**
+       * ── ⭐⭐ THE TWO OVERRIDES `--plan`'s PROPOSAL PHASE NEEDS ─────────────
+       *
+       * ⚠️ `allowRun` IS AN OVERRIDE AND NOT A REPLACEMENT — `??`, so a run
+       * that names neither is byte-identical to yesterday's. The proposal phase
+       * passes `false`, and it has to: `toolNames` below decides what the model
+       * is OFFERED, while `allowRun` is also read by the DISPATCHER. A model can
+       * call a tool it was never shown (this package's own two-lock rule), so a
+       * read-only phase that only narrowed the offer would still execute a
+       * `run_command` the model guessed at.
+       *
+       * ⚠️ `toolNames` IS OMITTED UNLESS ASKED FOR, not passed as null. Passing
+       * null is the same as omitting it today, but `runSession` documents null
+       * as "compute the offer from the round budget" and pinning that
+       * equivalence here would make a future change to the default silently
+       * bypass every caller.
+       */
+      allowRun: over.allowRun ?? (opts.allowRun && !opts.dryRun),
+      ...(Array.isArray(over.toolNames) ? { toolNames: over.toolNames } : {}),
       shell: opts.shell,
       commandTimeoutMs: opts.commandTimeoutMs,
       /**
@@ -1177,6 +1879,43 @@ ${formatBoard(listed)}
        */
       onEvent: (event) => {
         /**
+         * ── ⭐⭐ THE ROUND BOUNDARY IS WHERE A STEER IS PICKED UP ───────────
+         *
+         * ⚠️ ABOVE the `over.quiet` return, and gated on an EXPLICIT opt-in
+         * rather than on `!quiet`. `--best-of` attempts and escalation-ladder
+         * rungs are quiet, and they are also automated retries of a decision
+         * the user already made — one steer file consumed by whichever of
+         * three parallel attempts reached a boundary first is a race with no
+         * right answer. `steerable` is the only caller that sets the flag.
+         *
+         * ⚠️ ONCE PER SEGMENT (`pendingSteer === null`). The abort takes effect
+         * at the NEXT boundary, so this hook fires again before the loop
+         * breaks; without the guard the second read would consume a steer the
+         * user wrote for the continuation and apply it to a run that is already
+         * stopping.
+         *
+         * ⭐ `controller.abort` rather than a mid-round injection: the loop
+         * returns cleanly with its transcript, and `steerable` restarts it with
+         * the instruction as a real user message. That is what makes the steer
+         * arrive at a boundary by construction instead of by care.
+         */
+        if (event.type === 'round-start' && over.steerable === true && pendingSteer === null) {
+          const steer = takeSteer(root, { newerThan: turnStartedAt });
+          if (steer) {
+            pendingSteer = steer;
+            /**
+             * ⚠️⚠️ A STALE STEER MUST NOT COST A ROUND, AND THE FIRST VERSION
+             * OF THIS CHARGED ONE. Measured on a live run: a leftover file
+             * aborted the loop at round 1, the task was never attempted, and
+             * the summary said "No files changed" — the run was destroyed by a
+             * sentence about a different task. It is still consumed and still
+             * reported (`steerable` prints it at the end, with the words), it
+             * just does not touch the run it does not belong to.
+             */
+            if (!steer.stale) controller.abort(STEER_ABORT_REASON);
+          }
+        }
+        /**
          * ⚠️ SILENT WHEN THE CALLER ASKS. Three best-of attempts share one
          * terminal, and the `--best-of` branch below learned this first:
          * "three interleaved round-by-round streams are unreadable". The
@@ -1191,12 +1930,16 @@ ${formatBoard(listed)}
          * a working terminal starts looking stale to the others and its files
          * become reclaimable while it is still writing them.
          *
-         * ⚠️ IT CANNOT ABORT THE ROUND, AND THAT LIMIT IS STATED RATHER THAN
-         * HIDDEN. `runSession` takes no abort signal, so the honest thing this
-         * callback can do is record the loss, say so immediately, and make the
-         * PROCESS fail — see `leaseLost` at the exit. Aborting mid-round is a
-         * real improvement and it needs a signal parameter on `runSession`,
-         * which is a change to the loop's contract, not to this callback.
+         * ⚠️ IT STILL DOES NOT ABORT THE ROUND, AND THAT IS NOW A CHOICE
+         * RATHER THAN A LIMIT. This comment used to say `runSession` takes no
+         * abort signal; it does now, and `gate.signal` above is one. What has
+         * not been decided is whether a lost lease SHOULD stop the run — it is
+         * a different event from a keypress with a different exit code (1, the
+         * verdict, not 130 — the distinction `wasAbortedByInterrupt` draws),
+         * and changing it here would quietly repurpose a mechanism the user
+         * asked for a different reason. So the callback still records the loss,
+         * says so immediately, and fails the PROCESS — see `leaseLost` at the
+         * exit.
          *
          * ⚠️ Only when leases are held. `renewAll([])` is harmless but running
          * it on every round of every run would put filesystem work in the hot
@@ -1212,13 +1955,53 @@ ${formatBoard(listed)}
             );
           }
         }
+        /**
+         * ── ⭐⭐ DRIFT, ON THE ROUND IT HAPPENED, TO THE PERSON PAYING ───────
+         *
+         * `turn.mjs` emits `{ type: 'plan-drift' }` the round a distinct drift
+         * is detected and appends the nudge to the conversation. `renderEvent`
+         * has no case for that type and returns `[]`, so until now the whole
+         * chain ended at the model: it was told, and the user was not.
+         *
+         * ⚠️ IT IS NOT `event.text`. That string is written FOR A MODEL — 400-odd
+         * characters offering both exits and naming the verbs — and printing it
+         * at a terminal is a paragraph per drift that a person has to parse to
+         * find the three filenames that matter. `driftBannerLine` rebuilds one
+         * line from the same evidence object, which is why it takes the verdict
+         * rather than the rendered nudge.
+         *
+         * ⚠️ ONCE PER DISTINCT DRIFT, because the event is: `turn.mjs`'s
+         * `nudged` set already keys on `drift.evidence.key`. A per-round repeat
+         * would be the plan-banner mistake — a true sentence that becomes noise.
+         *
+         * ⚠️ AND IT NEVER STOPS ANYTHING. Nothing here changes the exit code or
+         * the run. The verdict leans towards "on plan" by construction (see
+         * plan-coherence.mjs on why every threshold resolves that way), so the
+         * honest action is to say it out loud and let the human decide.
+         */
+        if (event.type === 'plan-drift') {
+          const line = driftBannerLine(event.verdict ?? event.drift ?? null);
+          if (line) (opts.json ? process.stderr : process.stdout).write(`  ${line}\n`);
+          return;
+        }
         const lines = renderEvent(event);
         if (lines.length === 0) return;
         const text = `${lines.join('\n')}\n`;
         if (opts.json) process.stderr.write(text);
         else process.stdout.write(text);
       },
-    });
+      });
+    } finally {
+      /**
+       * ⚠️⚠️ THE ONE LINE THIS FEATURE CANNOT SURVIVE WITHOUT. Unregistering
+       * here is what makes the SECOND Ctrl-C fatal (with nobody listening,
+       * `exitIsDeferred` returns false and `turn.mjs`'s handler exits 130) and
+       * what makes turn 9's Ctrl-C reach turn 9. In a `finally` because a
+       * thrown provider error must not leave the process holding a disarmed
+       * Ctrl-C — that is the state where the key does nothing at all.
+       */
+      gate.dispose();
+    }
     persistRun(turnTask, result);
     /**
      * ── ⭐ `--say` — NARRATE THE VERDICT ──────────────────────────────────────
@@ -1250,14 +2033,84 @@ ${formatBoard(listed)}
      * left the account either way; what `over.budgetUsd` changes is which
      * allowance the turn draws from, never whether it was spent.
      */
+    // ⚠️ Only when the turn named one. A transport that reports no routing
+    // must not erase what the previous turn honestly measured.
+    if (result?.providers) lastProviders = result.providers;
     const turnCost = Number(result?.usage?.cost ?? 0);
     if (Number.isFinite(turnCost) && turnCost > 0) sessionSpentUsd += turnCost;
 
     return result;
   };
 
+  /**
+   * ── ⭐⭐ ONE TURN, POSSIBLY IN SEVERAL SEGMENTS ────────────────────────────
+   *
+   * `oneTurn` is unchanged for everyone: it runs the loop once, saves the
+   * session, writes the audit line, charges the session budget and speaks the
+   * verdict. This wraps it so a user can redirect it mid-flight — write a line
+   * into `.acuvo/steer.txt` and the run stops at the next round boundary,
+   * appends what you said as a real user message, and carries on from the same
+   * transcript.
+   *
+   * ⚠️ THE LOOP IS OUTSIDE `oneTurn`, NOT INSIDE IT, AND THAT IS THE WHOLE
+   * SAFETY ARGUMENT. Every segment therefore goes through the one funnel that
+   * already gets money right — `sessionSpentUsd` is charged per segment and
+   * `remainingForTurn` subtracts it before the next one, so the `--budget`
+   * ceiling covers the WHOLE turn and not each piece of it. Merging segments
+   * inside `oneTurn` would have meant re-implementing that arithmetic, which is
+   * exactly how this file once handed out its ceiling forty times over.
+   *
+   * ⚠️ WHAT THE FINAL SUMMARY PRICES IS THE LAST SEGMENT, because that is the
+   * run it describes. The dollars from the earlier ones are printed on the
+   * steering line as they happen — see `formatSteer`. Nothing is hidden; it is
+   * reported where it occurs rather than summed into a number that would then
+   * disagree with the session record it came from.
+   *
+   * ⚠️ AND IT IS NOT USED BY `--best-of` OR THE ESCALATION LADDER. Those run
+   * several attempts of a decision the user already made, quietly and in
+   * parallel; one steer file consumed by whichever attempt reaches a boundary
+   * first is a race with no right answer.
+   */
+  const steerable = async (turnTask, priorTurnMessages, over = {}) => {
+    let task = turnTask;
+    let prior = priorTurnMessages;
+    let rounds = over.maxRounds ?? opts.maxRounds;
+    let steersUsed = 0;
+    // ⭐ Stamped ONCE per turn, before the first segment — see `turnStartedAt`.
+    turnStartedAt = Date.now();
+    const out = () => (opts.json ? process.stderr : process.stdout);
+
+    for (;;) {
+      // ⚠️ Cleared per segment: a steer belongs to the segment that read it.
+      pendingSteer = null;
+      const result = await oneTurn(task, prior, { ...over, steerable: true, maxRounds: rounds });
+      const taken = pendingSteer;
+      const plan = planSteer({ steer: taken, outcome: result, maxRounds: rounds, steersUsed });
+
+      if (!plan.go) {
+        /**
+         * ⚠️ A STEER THAT WAS NOT APPLIED IS ANNOUNCED. It has already been
+         * DELETED from disk by `takeSteer` — silently dropping it would mean
+         * the user typed an instruction, watched it vanish, and got no hint
+         * that the run never saw it.
+         */
+        if (plan.reason) out().write(`${formatUnapplied({ text: taken?.text, reason: plan.reason })}\n`);
+        return result;
+      }
+
+      steersUsed += 1;
+      out().write(`${formatSteer({ ...taken, roundsLeft: plan.roundsLeft, spentUsd: sessionSpentUsd })}\n`);
+      task = plan.task;
+      prior = plan.priorMessages;
+      rounds = plan.maxRounds;
+    }
+  };
+
   /** What this run actually wrote. Shared, because both reports need it. */
-  const changesOf = (result) => (result?.executed ?? []).filter((e) => e.mutated).map(describeChange);
+  // ⚠️ flatMap, not map: `write_files` and a delegated build each name many
+  // files in ONE record, and `.map` collapsed them into a single entry whose
+  // `path` was undefined. This feeds the JSON report and the audit log.
+  const changesOf = (result) => (result?.executed ?? []).filter((e) => e.mutated).flatMap(describeChanges);
 
   /**
    * ── ⭐⭐ THE TWO DURABLE RECORDS, AND THE FOUR RULES THEY OBEY ──────────────
@@ -1303,6 +2156,42 @@ ${formatBoard(listed)}
         process.stderr.write(`  · could not write the audit record: ${e?.message ?? e}\n`);
       }
     }
+    announceCheckpoint();
+  };
+
+  /**
+   * ── ⭐⭐ THE ONE LINE THAT MAKES THE UNDO EXIST ─────────────────────────────
+   *
+   * ⚠️ A CAPABILITY NOBODY IS TOLD ABOUT IS THE "BUILT BUT UNREACHABLE" DEFECT
+   * THIS PACKAGE KEEPS SHIPPING — six modules once sat finished and imported by
+   * nothing. A journal written silently would be the same failure wearing a
+   * disk: the person who needs it is the person who does not yet know it exists,
+   * and they will be looking at this scrollback when they need it.
+   *
+   * ⚠️ STDERR UNDER `--json`, like the banner and the lease line. Under `--json`
+   * stdout carries exactly one object, and one friendly sentence there breaks
+   * `| jq` for everybody.
+   *
+   * ⚠️ AND IT ANNOUNCES CHANGES, NOT RUNS. Interactive mode calls `persistRun`
+   * every turn; reprinting the same id after a turn that wrote nothing is noise
+   * that teaches people to stop reading the line.
+   */
+  let announcedFiles = 0;
+  let announcedErrors = 0;
+  const announceCheckpoint = () => {
+    if (!journal) return;
+    const out = opts.json ? process.stderr : process.stdout;
+    if (journal.files > announcedFiles) {
+      announcedFiles = journal.files;
+      out.write(`  · checkpoint ${journal.runId} — ${announcedFiles} file${announcedFiles === 1 ? '' : 's'} can be put back: acuvo rewind ${journal.runId}\n`);
+    }
+    /**
+     * ⚠️ A CHECKPOINT THAT FAILED TO RECORD IS WORSE THAN NONE — the operator
+     * believes they can undo. Same rule `audit.mjs` states for a log that
+     * quietly failed to write, and the reason `errors` exists at all.
+     */
+    for (const err of journal.errors.slice(announcedErrors)) out.write(`  ! ${err}\n`);
+    announcedErrors = journal.errors.length;
   };
 
   /**
@@ -1372,11 +2261,20 @@ ${formatBoard(listed)}
   const verdictOptions = { strict: opts.strict === true || inCI };
 
   const jsonDoc = (result, { task = null, fields = null } = {}) => {
-    const failed = sessionFailed(result, verdictOptions) || leaseLost !== null;
+    /**
+     * ⚠️ THE DOCUMENT AND THE SHELL MUST NEVER DISAGREE — that is the whole
+     * reason `exitCode` is in here. So the interrupt has to be visible on BOTH:
+     * `verdictExit` returns 130 and this said 1, which is exactly the drift the
+     * field was added to prevent, and a `| jq .exitCode` consumer would have
+     * been told a cancelled run was a failed one.
+     */
+    const stoppedByCtrlC = wasAbortedByInterrupt({ interrupted: interruptedRun, outcome: result });
+    const failed = sessionFailed(result, verdictOptions) || leaseLost !== null || stoppedByCtrlC;
     return {
       ...toJson(result, { changes: changesOf(result), task }),
       failed,
-      exitCode: failed ? EXIT_FAILED : EXIT_OK,
+      exitCode: stoppedByCtrlC ? EXIT_INTERRUPTED : (failed ? EXIT_FAILED : EXIT_OK),
+      ...(stoppedByCtrlC ? { interrupted: true } : {}),
       dryRun: opts.dryRun === true,
       ...(result?.budget ? { budget: result.budget } : {}),
       ...(leaseLost ? { leaseLost } : {}),
@@ -1434,7 +2332,21 @@ ${formatBoard(listed)}
   };
 
   const verdictExit = (outcome) => {
-    const failed = sessionFailed(outcome, verdictOptions) || leaseLost !== null;
+    /**
+     * ── ⭐⭐ AN INTERRUPT IS NOT A VERDICT ───────────────────────────────────
+     *
+     * ⚠️ Counted as `failed` for the BOARD's purposes — a run the user stopped
+     * did not finish its task, so the claim goes back on the board rather than
+     * being marked done — and reported as **130** rather than 1 to the shell,
+     * because exit 1 here means "the code it wrote still does not pass" and a
+     * script that cannot tell those apart retries the wrong one.
+     *
+     * ⚠️ `wasAbortedByInterrupt` needs BOTH halves: a press that lands during
+     * the final round leaves a completed, verified run, and reporting 130 for
+     * that would tell a caller to retry a job that succeeded.
+     */
+    const stoppedByCtrlC = wasAbortedByInterrupt({ interrupted: interruptedRun, outcome });
+    const failed = sessionFailed(outcome, verdictOptions) || leaseLost !== null || stoppedByCtrlC;
 
     /**
      * ── ⭐ "I CHOSE NOT TO RUN" IS NOT "I RAN AND FAILED" ────────────────────
@@ -1494,6 +2406,12 @@ ${formatBoard(listed)}
 `);
       }
       claimed = null;   // the exit hook must not release a lease already handed back
+    }
+    if (stoppedByCtrlC) {
+      (opts.json ? process.stderr : process.stdout).write(
+        `  ⏹ stopped by Ctrl-C. The transcript, the cost and the changes were all saved — \`acuvo --resume\` carries on from here. Exit ${EXIT_INTERRUPTED}.\n`,
+      );
+      return EXIT_INTERRUPTED;
     }
     return failed ? EXIT_FAILED : EXIT_OK;
   };
@@ -1565,7 +2483,7 @@ ${formatBoard(listed)}
     // `opts.task` is empty here, and reporting null would hide the framing the
     // issue body was wrapped in.
     const task = issueToTask(issue);
-    const outcome = await oneTurn(task, null);
+    const outcome = await steerable(task, null);
     say(`${formatSummary(outcome).join(String.fromCharCode(10))}\n`);
     say(`${nextSteps({ owner: repo.owner, repo: repo.repo, branch: made.branch, issue }).join(String.fromCharCode(10))}\n`);
     if (opts.json) {
@@ -1595,6 +2513,25 @@ ${formatBoard(listed)}
           allowRun: opts.allowRun && !opts.dryRun,
           shell: opts.shell,
           commandTimeoutMs: opts.commandTimeoutMs,
+          /**
+           * ── ⚠️⚠️ THE PROMISE WAS MADE IN THE REFUSAL AND KEPT NOWHERE ─────
+           *
+           * `cli-args.mjs` REFUSES `--budget` with `--parallel`, and its stated
+           * reason is that the default already applies: *"the default has no
+           * surprise to prevent: it is a per-run blast radius by construction,
+           * so N conversations getting N × $0.02 is what it means."*
+           *
+           * That was false. This call passed no `budgetUsd`, `runSession`
+           * defaults it to null, and null is UNLIMITED — so the N × $0.02 the
+           * refusal message promises was N × unbounded. Measured: a `--parallel`
+           * run printed no budget line for either session, while a single run in
+           * the same session printed one.
+           *
+           * ⭐ Now each conversation really does get the default ceiling, which
+           * is what the refusal already told the user they were getting. The
+           * message needed no change; the code had to catch up to it.
+           */
+          budgetUsd: DEFAULT_BUDGET_USD,
           onEvent: () => {},
         });
         /**
@@ -1642,8 +2579,73 @@ ${formatBoard(listed)}
    */
   if (!task) {
     await runChat({
-      runOne: oneTurn,
+      // ⭐ STEERABLE, not oneTurn: a conversation turn is exactly as long as a
+      // one-shot run and just as worth redirecting. Ctrl-C returns you to the
+      // prompt; a steer keeps the turn going with new instructions.
+      runOne: steerable,
       render: (result, out) => out.write(formatSummary(result).join(String.fromCharCode(10)) + String.fromCharCode(10)),
+      /**
+       * ── ⭐ WHAT THE `/` COMMANDS REPORT ON ────────────────────────────────
+       *
+       * ⚠️ THIS OBJECT IS THE WHOLE FEATURE. `lib/slash.mjs` is pure and knows
+       * nothing about disk or spend; without these providers every command
+       * would honestly answer "not available in this session" and the surface
+       * would be built-but-unreachable — the defect this repo has shipped four
+       * times in one day, inside the commits fixing it.
+       *
+       * ⚠️ EVERY PROVIDER IS CALLED AT THE MOMENT THE COMMAND IS TYPED, never
+       * captured up front. `/skills` after dropping a new file into
+       * `.acuvo/skills/` must see it, and `/cost` read once at startup would
+       * report $0.000000 for the whole session.
+       */
+      slashContext: {
+        skills: () => (discoverAllSkills(root)?.skills ?? []).map((s) => ({ name: s.name, description: s.description })),
+        loadSkill: (name) => loadAnySkill(root, name),
+        mcp: () => {
+          const cfg = readMcpConfig(root);
+          // ⚠️ A BROKEN CONFIG IS REPORTED AS ITSELF. `{ servers: [] }` here
+          // would say "you have no MCP servers" to someone whose mcp.json has a
+          // syntax error — the wrong problem, and they would go looking for it
+          // in the wrong file.
+          if (!cfg?.ok) return { source: cfg?.error ? `a config error: ${cfg.error}` : null, servers: [] };
+          return {
+            /**
+             * ⚠️ `cfg.file`, AND NULL WHEN THERE IS NO FILE — not a default
+             * path string. `slash.mjs` reads a `source` on an empty list as
+             * "there is a reason these are unusable", so defaulting it here
+             * would tell every workspace WITHOUT an mcp.json that its
+             * non-existent config was broken.
+             */
+            source: cfg.file ?? null,
+            servers: (cfg.servers ?? []).map((s) => ({
+              name: s.name,
+              transport: s.transport,
+              // ⚠️ NOT "connected". Servers are connected per RUN, and nothing
+              // is held open between turns, so the only honest thing this can
+              // report is that it is configured. Claiming a live connection we
+              // have not made is exactly the lie `imagegen`'s honesty tests exist for.
+              status: 'configured',
+            })),
+          };
+        },
+        cost: () => ({
+          spentUsd: sessionSpentUsd,
+          limitUsd: opts.budgetUsd,
+          limitIsDefault: opts.budgetExplicit !== true,
+        }),
+        model: () => ({
+          name: config.model,
+          /**
+           * ⚠️ THE ROUTE IS PART OF THE ANSWER. Two sessions on the same model
+           * id can differ ~4.6x in cost depending on which upstream served
+           * them, and nothing errors when the expensive one does. `null` until
+           * a turn has actually run — `renderModel` omits an absent note, so an
+           * unknown route says nothing rather than something reassuring.
+           */
+          note: routingNote(lastProviders),
+          source: opts.model ? '--model' : 'the configured default',
+        }),
+      },
     });
     return EXIT_OK;
   }
@@ -1712,6 +2714,27 @@ ${formatBoard(listed)}
           allowRun: opts.allowRun && !opts.dryRun,
           shell: opts.shell,
           commandTimeoutMs: opts.commandTimeoutMs,
+          /**
+           * ── ⚠️⚠️ THE CEILING WAS MISSING ON THE MODE THAT SPENDS THE MOST ──
+           *
+           * `runSession` defaults `budgetUsd = null`, which means UNLIMITED. So
+           * `--best-of N` ran N full sessions with no wall at all, bounded only
+           * by the round cap — on the one mode whose entire purpose is to spend
+           * several times over.
+           *
+           * ⚠️ AND WORSE THAN ABSENT: an explicit `--budget` was ACCEPTED
+           * without complaint and silently discarded. Measured — `--best-of 2
+           * --budget 0.005` ran both attempts and printed no budget line at
+           * all. Taking a user's instruction about money and dropping it is a
+           * different and worse failure than never offering the feature.
+           *
+           * ⭐ AN EXPLICIT BUDGET IS A TOTAL, NOT A PER-ATTEMPT ALLOWANCE.
+           * Someone typing `--best-of 5 --budget 0.05` means "spend at most five
+           * cents", not "spend up to twenty-five". Dividing is the reading that
+           * cannot surprise them; the alternative multiplies their number by N
+           * and would be indefensible on an invoice.
+           */
+          budgetUsd: bestOfAttemptBudget(opts),
           // ⚠️ Silent per attempt. Three interleaved round-by-round streams are
           // unreadable, and the report below is what the user acts on.
           onEvent: () => {},
@@ -1753,7 +2776,7 @@ ${formatBoard(listed)}
     const ladder = await escalate({
       root,
       task,
-      budget: createBudget({ limitUsd: opts.budgetUsd, limitIsDefault: opts.budgetExplicit !== true, fleetGate: createFleetGate(root, { fleetLimitUsd: opts.fleetBudgetUsd, since: opts.budgetWindow }) }),
+      budget: createBudget({ limitUsd: opts.budgetUsd, limitIsDefault: opts.budgetExplicit !== true, limitSource: opts.budgetSource ?? null, fleetGate: createFleetGate(root, { fleetLimitUsd: opts.fleetBudgetUsd, since: opts.budgetWindow }) }),
       // ⭐ Tier 0, and the only tier unless ACUVO_MODEL_TIERS is configured.
       baseModel: config.model,
       /**
@@ -1843,7 +2866,150 @@ ${formatBoard(listed)}
     return final ? verdictExit(final) : EXIT_FAILED;
   }
 
-  const outcome = await oneTurn(task, priorMessages);
+  /**
+   * ── ⭐⭐⭐ `--plan` — SAY WHAT YOU INTEND, AND DO NOTHING UNTIL I AGREE ─────
+   *
+   * ⚠️⚠️ THE TWO FLAGS PEOPLE ALREADY REACH FOR ARE NOT THIS, and the whole
+   * reason this gate had to be built is that both of them look like it.
+   * `--dry-run` prints the writes it WOULD have made — after the model has
+   * already decided what they are, which is the decision you wanted to see.
+   * `--no-run` withholds the process spawners and leaves writing untouched.
+   * Both are about the ACT; neither is about the INTENT, and neither has a
+   * place to say no.
+   *
+   * ⭐ EVERY PART OF IT ALREADY EXISTED. `ORIENT_TOOLS` (plan-coherence.mjs) is
+   * the read-only subset; `createAsker` (prompt.mjs) is the question, and it is
+   * already the thing that decides whether `ask_user` is offered at all;
+   * `toolNamesForRounds` (tools.mjs) already varies the offer by round budget.
+   * Nothing joined them. This is the join, and `runPlanGate` holds the parts
+   * that can be tested without a terminal.
+   *
+   * ⚠️ THE OFFER IS AN INTERSECTION, COMPUTED FROM THIS MACHINE. `root` and
+   * `env` decide whether `read_skill` and the four LSP verbs exist here at all,
+   * so the read-only list is `toolNamesForRounds(...) ∩ ORIENT_TOOLS` rather
+   * than a constant — a constant would ship the dead buttons tools.mjs spends
+   * four hundred lines refusing to ship.
+   *
+   * ⚠️ AND THE ROUND BUDGET IS THE PROPOSAL'S, NOT THE RUN'S. `planModeRounds`
+   * clamps to 2..5: below two, `toolNamesForRounds` collapses to the write-only
+   * single-shot list and the intersection is EMPTY (a model handed no tools and
+   * asked to plan); above five the proposal starts eating the budget the user
+   * typed for the work. The dollar ceiling is untouched — the proposal draws
+   * from the same `--budget` through `oneTurn`'s existing subtraction, so
+   * `--plan` cannot double what the user agreed to spend.
+   *
+   * ⚠️ IT SITS ON THE ORDINARY SINGLE-RUN PATH ONLY, deliberately. `--parallel`,
+   * `--best-of`, `--issue` and the escalation ladder each run several attempts
+   * of a decision already made; an approval prompt per attempt is an interview,
+   * and one shared approval across attempts approves a plan three of them never
+   * proposed. Those paths return above this line and are byte-identical.
+   */
+  if (opts.plan) {
+    const out = () => (opts.json ? process.stderr : process.stdout);
+    const planRounds = planModeRounds(opts.maxRounds);
+    const readOnly = planModeToolNames(toolNamesForRounds(planRounds, {
+      allowRun: false,
+      root: executor.root,
+      interactive: asker !== null,
+    }));
+    if (!readOnly.ok) die(`  ${readOnly.error}\n`, EXIT_USAGE);
+
+    const gate = await runPlanGate({
+      task,
+      ask: asker,
+      print: (text) => out().write(text),
+      propose: () => {
+        out().write(`  · planning first — read-only, ${planRounds} round${planRounds === 1 ? '' : 's'}, `
+          + `${readOnly.names.length} reading tools; writes are refused at the executor, not just withheld\n`);
+        return oneTurn(planPhaseTask(task), null, {
+          maxRounds: planRounds,
+          allowRun: false,
+          toolNames: readOnly.names,
+          /**
+           * ── ⚠️⚠️ THE THIRD OVERRIDE, AND IT IS THE ONE THAT MAKES THE
+           *        HEADLINE PROMISE TRUE ───────────────────────────────────
+           *
+           * `toolNames` narrows what the model is SHOWN and `allowRun: false`
+           * stops the dispatcher spawning a process. Neither stops a WRITE:
+           * `executeToolCall` is a switch on the tool name, `case 'write_file'`
+           * calls `executor.writeFile` with nothing in between, and `allowRun`
+           * is (correctly) not consulted because a write starts no process.
+           *
+           * ⚠️ MEASURED THROUGH THIS EXACT OPTION SET, 2026-08-20: a scripted
+           * `write_file` for a tool absent from the 13-name offer returned
+           * `ok:true, mutated:true` and left the file on disk; `edit_file`
+           * rewrote a source file; `delete_file` removed one. Three mutations
+           * during the phase whose whole promise is that there are none.
+           *
+           * ⭐ `over.executor` was ALREADY a supported override (`oneTurn` does
+           * `over.executor ?? executor`) and nothing had ever used it. This is
+           * the join, and it is structural rather than name-based: every write
+           * verb in the dispatcher reaches disk through writeFile/deleteFile/
+           * moveFile, including the ones a `delegate` helper would use, so a
+           * tool added next year is covered without a list being updated.
+           */
+          executor: planPhaseExecutor(executor),
+        });
+      },
+    });
+
+    if (!gate.proceed) {
+      /**
+       * ⚠️ EXIT 0 ON `declined`, AND NON-ZERO ON EVERYTHING ELSE. A person
+       * reading a plan and saying no is the feature working; failing the process
+       * for it would make `--plan` unusable in any script that checks a status.
+       * A refusal for want of a terminal or want of a plan IS a failure — the
+       * run was asked for and did not happen — and `--unattended` already
+       * exists for callers that need to tell "chose not to" from "could not".
+       */
+      out().write(`\n  ${gate.reason === 'declined' ? '✖ plan declined' : '✖ --plan could not run'} — ${gate.why}\n`);
+      return gate.reason === 'declined' ? EXIT_OK : EXIT_USAGE;
+    }
+    out().write(`  ✔ plan approved${gate.decision === 'amend' ? ' with an amendment' : ''} — starting work\n\n`);
+    /**
+     * ⭐ THE APPROVED PLAN BECOMES THE TASK, and it carries an instruction to
+     * record itself with `plan_start` and mark it with `plan_step`. That is the
+     * line that makes the approval BIND rather than merely happen: without a
+     * ledger there is nothing for `detectDrift` to compare the run against and
+     * nothing for the reconciliation block below to reconcile.
+     */
+    task = gate.task;
+  }
+
+  const outcome = await steerable(task, priorMessages);
+
+  /**
+   * ── ⚠️⚠️ THE SECOND OPINION USED TO BE SKIPPED IN THE MODE THAT NEEDS IT ───
+   *
+   * `secondOpinion` was called THIRTY LINES BELOW the `if (opts.json)` early
+   * return, so `--json --refute` accepted the flag, charged nothing, ran no
+   * refutation, and left NO field in the document to say it had been skipped.
+   * Found independently by three dogfood agents, and confirmed by source read.
+   *
+   * ⚠️ AND IT IS THE EXACT COMBINATION CI USES — `--json` to parse, `--refute`
+   * for the trust gate. So the one mode where nobody is watching the terminal
+   * was the one that silently dropped the check. This file's own comment says
+   * the refuter exists because "the claim worth testing is ✔ VERIFIED, because
+   * that is the one somebody is about to act on"; under `--json` that claim was
+   * never tested, and a script acted on it.
+   *
+   * ⭐ It moves ABOVE the return rather than being duplicated inside it: two
+   * call sites for one decision is how the human and machine paths drift, which
+   * is the defect this whole cluster is made of. `secondOpinion` already routes
+   * its own prose to stderr when `opts.json` is set, so the one-object-on-stdout
+   * contract holds without any change to it.
+   */
+  /**
+   * ⚠️ A CANCELLED RUN IS NOT REFUTED, IT IS UNFINISHED — and refuting costs a
+   * whole extra model run. Paying an adversarial reviewer to disprove work the
+   * user just stopped mid-way is spending money to be told what the user
+   * already knows. `alreadyFailed` is the existing gate for exactly this
+   * ("don't buy a second opinion on a run we already call failed"), so the
+   * interrupt joins it rather than growing a second skip condition.
+   */
+  const alreadyFailed = sessionFailed(outcome, verdictOptions) || leaseLost !== null
+    || wasAbortedByInterrupt({ interrupted: interruptedRun, outcome });
+  const opinion = await secondOpinion(outcome, alreadyFailed);
 
   if (opts.json) {
     /**
@@ -1855,8 +3021,37 @@ ${formatBoard(listed)}
      * `doc.exitCode` is the same `sessionFailed` result the object reports, so
      * a run can never tell the shell one thing and `jq` another.
      */
-    const doc = jsonDoc(outcome, { task });
+    /**
+     * ⭐ THREE DISTINGUISHABLE STATES, because collapsing any two of them would
+     * let a script read a skipped check as a passed one — which is the whole
+     * defect this fixes, moved one layer down:
+     *
+     *   asked: false          you never passed --refute
+     *   ran: false            you did, but the run had already failed, so
+     *                         refuting it would buy nothing (see secondOpinion)
+     *   ran: true, refuted:_  it ran, and this is what it found
+     *
+     * ⚠️ `refuted` is only meaningful when `ok` is true. A refuter that crashed
+     * must not read as "could not refute it", so its own `ok` travels with it
+     * rather than being flattened into a boolean.
+     */
+    // ⭐ The shape lives in lib/refute.mjs so it can be TESTED — importing
+    // bin/acuvo.mjs executes the CLI, which then waits on stdin, so a decision
+    // declared here is a decision no test can reach without hanging.
+    const refutation = refutationField(opts.refute === true, opinion, alreadyFailed);
+
+    const doc = jsonDoc(outcome, { task, fields: { refutation } });
     process.stdout.write(`${JSON.stringify(doc, null, 2)}\n`);
+    /**
+     * ⚠️ A REFUTED RUN MUST FAIL UNDER --json TOO. The human path returns
+     * EXIT_FAILED when the second opinion refutes the claim; without this the
+     * document could report `refutation.refuted: true` beside `exitCode: 0`,
+     * and a CI gate reading the exit code would pass a run our own adversarial
+     * check had just disproved. `doc.exitCode` is otherwise authoritative, so
+     * this is the one place allowed to override it — and the document carries
+     * the reason, so the two can still be reconciled by anyone reading both.
+     */
+    if (opinion?.ok && opinion.refuted) return EXIT_FAILED;
     return doc.exitCode;
   }
 
@@ -1873,6 +3068,35 @@ ${formatBoard(listed)}
    */
   const lines = formatSummary(outcome);
   process.stdout.write(`${lines.join('\n')}\n`);
+
+  /**
+   * ── ⭐⭐ WHAT THE MODEL'S OWN `done` WAS WORTH — PRINTED, AT LAST ───────────
+   *
+   * `runSession` has returned `reconciliation` since plan-coherence was wired
+   * in, and `formatReconciliation` exists to print it. Measured 2026-08-20:
+   * turn.mjs imported that formatter on line 64 and called it NOWHERE, so the
+   * block existed only inside `--json`. The one number nobody has ever been
+   * shown — how many steps marked done have any evidence behind them — was
+   * computed on every planned run and thrown away on the human path.
+   *
+   * ⚠️ ONLY WHEN THERE WAS A PLAN FOR THIS TASK. `turn.mjs` omits the field
+   * entirely otherwise (`planForTask` returns null for a plan left behind by a
+   * different task), so this is silent on the overwhelming majority of runs
+   * rather than printing "nothing to reconcile" at everybody.
+   *
+   * ⚠️ BELOW `formatSummary`, NOT ABOVE IT. The escalation ladder learned this
+   * the expensive way twenty lines up: the last thing on screen is the thing a
+   * person reads, and a step marked done with nothing behind it is worth more
+   * of that position than the cost line.
+   *
+   * ⚠️ AND IT SAYS NOTHING ABOUT CORRECTNESS. `formatReconciliation`'s own last
+   * line states that; it is left in rather than trimmed for width, because this
+   * block appearing to be a verification verdict is exactly the `✔ VERIFIED`
+   * over an untouched deliverable that produced plan-coherence.mjs.
+   */
+  if (outcome?.reconciliation?.ok) {
+    process.stdout.write(`\n${formatReconciliation(outcome.reconciliation).join('\n')}\n`);
+  }
 
   /**
    * ── ⭐ SHOW THE PICTURE, DO NOT DESCRIBE IT ────────────────────────────────
@@ -1920,15 +3144,56 @@ ${formatBoard(listed)}
    * reviewer that could clear a red run would be a way to launder a bad result,
    * which is the opposite of the reason it exists.
    */
-  const alreadyFailed = sessionFailed(outcome, verdictOptions) || leaseLost !== null;
-  const opinion = await secondOpinion(outcome, alreadyFailed);
+  // ⚠️ `alreadyFailed` and `opinion` are computed ABOVE the --json return now,
+  // so both paths act on the same single evaluation. Re-running the refuter
+  // here would charge for a second adversarial pass and could disagree with the
+  // document already printed.
   if (opinion?.ok && opinion.refuted) return EXIT_FAILED;
 
   return verdictExit(outcome);
 }
 
+/**
+ * ── ⭐⭐⭐ THE UPDATE CHECK RUNS AT EXIT, NEVER AT STARTUP ────────────────────
+ *
+ * Roman, 2026-08-22: *"how do we do self updates so all users get updates as
+ * soon as we do it… like Claude."*
+ *
+ * ⚠️ AT EXIT BECAUSE STARTUP LATENCY IS THE ONE THING A CLI CANNOT SPEND. The
+ * user has their answer by the time this runs, so the worst case — a 3-second
+ * timeout against an unreachable registry — costs them nothing they were
+ * waiting on. At startup the same code would delay the first token of every
+ * single run to serve a check that matters once a day.
+ *
+ * ⚠️ AND IT CANNOT FAIL THE RUN. Every path is caught and the exit code is the
+ * one `main()` decided. An update mechanism that can turn a successful task into
+ * a failure has inverted its own purpose.
+ */
+async function noticeUpdateQuietly() {
+  try {
+    const { updatesEnabled, checkForUpdate, applyUpdate, updateNotice } = await import('../lib/self-update.mjs');
+    if (!updatesEnabled()) return;
+    // A machine-readable run must stay machine-readable — a friendly line on
+    // stderr is still a surprise to something parsing this.
+    if (process.env.ACUVO_JSON === '1') return;
+
+    const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
+    const { latest, isNewer } = await checkForUpdate({ current: pkg.version });
+    if (!isNewer) return;
+
+    const { spawn } = await import('node:child_process');
+    const started = applyUpdate({ spawn });
+    process.stderr.write(updateNotice(pkg.version, latest, started));
+  } catch {
+    // Deliberately total. Nothing about staying current is worth a stack trace.
+  }
+}
+
 main().then(
-  (code) => process.exit(code),
+  async (code) => {
+    await noticeUpdateQuietly();
+    process.exit(code);
+  },
   (err) => {
     // Nothing should reach here — every expected failure is a returned value.
     // A stack trace escaping to the user is therefore a BUG in this package,

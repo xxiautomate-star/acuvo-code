@@ -23,7 +23,8 @@ import { normalizeRelativePath } from '../lib/workspace.mjs';
 import { validateCommand, tokenizeCommand, scrubEnvironment } from '../lib/command.mjs';
 import { applyEdit } from '../lib/edit.mjs';
 import { globToRegExp } from '../lib/search.mjs';
-import { validateCommitMessage, refusedCommitPath } from '../lib/git.mjs';
+import { validateCommitMessage } from '../lib/git.mjs';
+import { refusedCommitPath } from '../lib/secret-paths.mjs';
 import { mediaToolNames } from '../lib/media.mjs';
 import { TOOL_NAMES, toolNamesForRounds } from '../lib/tools.mjs';
 

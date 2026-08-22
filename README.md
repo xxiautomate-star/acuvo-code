@@ -8,6 +8,37 @@ Zero dependencies. One file of Node, no framework, no install-time build step.
 acuvo "the invoice test is failing — work out why and fix it"
 ```
 
+## If you already use Claude Code, Codex or Cursor, here is the only reason to add this
+
+**You do not bring a key.** Every other terminal agent in this class hands you a config file and a
+provider bill: an Anthropic key, an OpenAI key, an OpenRouter key — yours, metered by them, and a
+second invoice on top of whatever subscription you already pay. Acuvo Code has **one account**.
+`acuvo --login` writes an Acuvo key, and every request after it goes to
+`https://acuvo.xxiautomate.com/api/cli/v1/chat/completions` — the same account as the Acuvo web
+platform, not a provider console you have to go and top up separately
+(`lib/account.mjs`, `DEFAULT_GATEWAY_URL`).
+
+That is the whole pitch, and it is worth being blunt about how narrow it currently is:
+
+| | what an Acuvo account gets you today |
+|---|---|
+| **The coding loop** — write, run, read the failure, fix | ✅ **covered by the account.** `acuvo --login`, no provider key, no BYOK. |
+| **Bring your own key instead** | ✅ still supported. Without `--login` the CLI bills *your* provider account, and says so on every run (`bin/acuvo.mjs`). |
+| **Speech, transcription, documents, images** | ⚠️ **the endpoints ship baked in and are live** — all eight probed 2026-08-12 — but they are gated on a separate `ACUVO_MEDIA_SECRET`, and **`--login` does not issue one**. See the box below. |
+| **Video and face** | ⛔ not reachable. `face-gateway` and `image-engine` answered **404** in that same probe — absent, not busy. |
+
+> ⚠️ **So do not read this page as "one subscription covers CLI + builder + image + video + voice +
+> face".** It does not, today. `lib/login.mjs` and `lib/account.mjs` mention neither `MODAL_*` nor
+> `ACUVO_MEDIA_SECRET` anywhere — the account covers **the model calls**, and the creative half is a
+> separate credential that logging in does not hand you. This README has already been wrong in both
+> directions once (see [Install](#install)), and the version of that mistake that costs the most is
+> always the flattering one.
+
+**And there is no benchmark number on this page, deliberately.** Terminal-Bench has been run 12 times
+here — `bench/terminal-bench/results/` holds all 12 — and **every scored trial came back 0.0**, so
+there is nothing to quote. Any percentage printed here would be a number about our harness, not about
+this agent. What follows is measured behaviour instead.
+
 ---
 
 ## Why this instead of the others
@@ -26,13 +57,27 @@ Be clear about what that claim is worth: it is a software edge a competent devel
 
 It also speaks, transcribes, and turns HTML into PDF/PNG/PPTX — see [Media tools](#media-tools).
 
-> ⚠️ **BE CLEAR ABOUT WHAT YOU GET ON INSTALL: these eight tools are DARK by default and we do not host a service you can point at.** `see_page`, `speak`, `transcribe`, `make_document`, `read_document`, `read_table`, `edit_image` and `expand_image` each need an HTTP endpoint named by an environment variable. They are not trial-limited or coming soon — **there is no public endpoint to enable them with**, and this README should not read as though there is.
+> ⚠️ **BE CLEAR ABOUT WHAT YOU GET ON INSTALL: these eight tools are DARK by default.** `see_page`, `speak`, `transcribe`, `make_document`, `read_document`, `read_table`, `edit_image` and `expand_image` are the media half, and a fresh install offers none of them.
 >
-> Measured on a bare machine, 2026-08-13: **35 of 49 tools are offered.** Of the 14 that are not, four (`find_definition`, `find_references`, `check_types`, `list_symbols`) light up by themselves in any TypeScript project, taking it to **38**, one needs a skills directory, and `ask_user` appears only when stdin and stdout are both terminals. The other eight are the media half.
+> ⚠️ **THIS PARAGRAPH USED TO SAY "there is no public endpoint to enable them with", AND THAT IS NO LONGER TRUE.** It was true when it was written; it stopped being true on 2026-08-12, when all eight endpoints were probed concurrently and **every one answered** — `tts`, `transcribe`, `document-press`, `video-render`, `voice-clone` and `avatar` returned `405 Method Not Allowed`, which is the healthy reply a POST-only service gives a GET, and reading it as a failure is how a working stack gets reported as broken. The URLs were then baked into `lib/media.mjs` as defaults, so nobody has to be told them. Two endpoints did *not* answer: `face-gateway` and `image-engine` returned **404**, and those two are genuinely absent.
+>
+> ⭐ **So the real gate is a CREDENTIAL, not a missing service.** These are paid GPU endpoints and they **fail shut**: with no `ACUVO_MEDIA_SECRET` (or `MODAL_VIDEO_SECRET`) the config reports dark, because a missing credential must never mean "open to everyone" on something that bills per second (`lib/media.mjs`). ⚠️ And `acuvo --login` does **not** issue that secret — the account covers model calls, not the media half. Getting the wrong *reason* for a dark tool costs a reader an afternoon of pointing environment variables at services that were never the problem.
+>
+> Measured on a bare machine, 2026-08-14: **37 of 52 tools are offered.** Of the 15 that are not, one needs a skills directory, `ask_user` appears only when stdin and stdout are both terminals, four are the LSP tools (see below), `git_push` is opt-in (`ACUVO_ALLOW_PUSH=1` — it is the only verb that leaves your machine), and the other eight are the media half.
 >
 > ⭐ The endpoints are plain env vars, so if you run a compatible service you can point at your own. The interface is documented under [Media tools](#media-tools). What we are not doing is implying a hosted one exists.
 >
-> ⭐ **Everything above this box works with nothing but Node and a model key** — the write→run→fix loop, the language presets, git, search, LSP, MCP, the budget governor, `acuvo spend`. The senses are an extra, not the product.
+> ⭐ **The write→run→fix loop — the actual product — works with nothing but Node and a model key.** So do git, search, the budget governor, `acuvo spend`, the plan ledger, project memory, the audit log and `--doctor`. The senses are an extra, not the product.
+>
+> ⚠️ **AND THREE THINGS THIS BOX USED TO PUT IN THAT SENTENCE DO NOT BELONG IN IT.** It previously read "the language presets, git, search, **LSP, MCP**, the budget governor" — and claimed the four LSP tools "light up by themselves in any TypeScript project". Measured on this machine 2026-08-14 with `--doctor`:
+>
+> | claimed as free | what it actually needs | evidence |
+> |---|---|---|
+> | **LSP** (`find_definition`, `find_references`, `check_types`, `list_symbols`) | a language server **installed** — a TypeScript project is not enough | `--doctor`: *"no language server is installed for typescript"* → `npm i -D typescript-language-server typescript` (`lib/lsp.mjs:126-131`) |
+> | **MCP** | a server to talk to, and this client passes npx `--no`, so it cannot fetch one | `--doctor` → *"MCP SERVERS · dark"*; the curated catalogue is off by default for exactly this reason (`lib/mcp-defaults.mjs`) |
+> | **the language presets** | the toolchain on PATH, and they are **off by default** anyway | `--doctor`: *"presets available … off by default, so pytest / go test / cargo test are refused here"* |
+>
+> ⭐ Each is genuinely free of *our* dependencies — nothing here needs a key or an account — but "works with nothing but Node and a model key" is a first-run promise, and a reader who installs to try the LSP tools finds four dark rows. The client is zero-dependency; the *capabilities* are not all zero-setup, and the honest version of this page distinguishes them.
 
 ---
 
@@ -171,10 +216,13 @@ Every flag below is real; run `acuvo --help` for the authoritative list.
 |---|---|
 | `--dir <path>` | Workspace root. Default: the current directory. |
 | `--model <id>` | OpenRouter model id. Default: `$OPENROUTER_CODEGEN_MODEL`, else `deepseek/deepseek-v4-flash-0731` (`DEFAULT_MODEL`, `lib/model.mjs`). |
-| `--max-rounds <n>` | Write → run → fix rounds, 1–16. Default **5** (`DEFAULT_MAX_ROUNDS`, `lib/cli-args.mjs`). `1` means one completion and nothing executed. |
-| `--budget <usd>` | Stop when the **next** round would cross this much spend. `--budget 0.50`, `--budget 25c`, `--budget $2` all parse. Refuses to start at all if it cannot afford one round. **A $0.02 ceiling is on by default** — a measured task costs $0.0008–$0.003, so it never fires on ordinary work, and a runaway costs two cents to discover. `--budget none` removes it. |
+| `--max-rounds <n>` | Write → run → fix rounds, 1–64. Default **24** (`DEFAULT_MAX_ROUNDS`, `lib/cli-args.mjs`). `1` means one completion and nothing executed. The loop stops on its own when the work verifies, so a task needing four rounds still takes four — the ceiling is headroom, not a spend commitment. |
+| `--budget <usd>` | Stop when the **next** round would cross this much spend. `--budget 0.50`, `--budget 25c`, `--budget $2` all parse. Refuses to start at all if it cannot afford one round. **A $0.05 ceiling is on by default** — a measured task costs $0.0008–$0.003, so it never fires on ordinary work, and a runaway costs five cents to discover. It is sized to back `--max-rounds`' default of 24 (24 rounds is roughly $0.03–$0.06 as context grows), rather than picked. `--budget none` removes it. |
 | `acuvo verify [id] [--all]` | **Re-check a past claim, for nothing.** Every run records the exact command this process watched exit 0. `acuvo verify` runs it again — **no model call, no cost** — and says whether the claim is still true. Measured: a run claimed `npm test` passed; after somebody edited the source, `acuvo verify` answered *"THE CLAIM NO LONGER HOLDS — `npm test` claimed exit 0 and now exits 1"* and exited 1. ⚠️ A broken re-check does **not** accuse the run of lying — the file may have changed since; it says the claim is not true *now*. ⚠️ "No checkable claim" exits 3, never 0: a run that executed nothing proved nothing. ⭐ This is downstream of having a machine-checkable verdict at all — an agent whose success criterion is its own closing paragraph has nothing to re-check. **`--all` answers the question a fleet actually leaves behind**: seven terminals working a board overnight produce fifty claims, and nobody wants fifty receipts — they want to know which are still true. Deduplicated by command, which is what makes it cheap: twelve runs that claimed `npm test` are twelve claims and **one** thing to run. A command that now fails names every claim that rested on it. |
 | `--all` | Only with `acuvo verify`. Re-checks **every** recorded claim instead of the most recent one. Exits 0 if all still hold, 1 if any do not, 3 if nothing checkable was ever recorded. |
+| `acuvo rewind [id]` | **Undo what the agent did to your files.** Every run copies the previous contents of each file it writes or deletes into `.acuvo/checkpoints/`, so a run that rewrote twelve files across five rounds can be put back with one command — no model call, no cost, no git required. Bare `acuvo rewind` lists the checkpoints and exits **3** when there are none, because "there is no undo here" is not success. `acuvo rewind <id>` restores the tree to how it looked *before that run started* — including **deleting files the agent created**, which a `git checkout` cannot do because they are untracked. ⚠️ **It refuses any file you changed yourself after the run.** Each entry records the sha256 of what the agent left; if the file on disk is not that, it is skipped with the reason, because a rewind that threw away your edit would be the accident rather than the fix. `--force` overrides and prints every forced path as FORCED. `--dry-run` says exactly what it would touch and touches nothing. |
+| `--no-checkpoint` | Do not record the previous contents of the files this run writes, so `acuvo rewind` will have nothing to put back for it. On by default — it costs one read of a file that is about to be overwritten anyway, blobs are content-addressed so ten rounds rewriting one file store one copy per distinct version, and nothing is created at all until a run mutates something. Off automatically under `--dry-run`, which promises to touch nothing. |
+| `--force` | Only with `acuvo rewind`. Restore even the files you edited after the run finished. Everything it overwrites this way is printed as **FORCED**. |
 | `--refute` | **Get a second opinion.** When the run claims success, an independent agent with a fresh context — no sight of how the first one thought — tries to *refute* the claim: runs the tests, checks the callers, looks for a requirement nothing addressed. It **cannot write**. Measured on a run that cheated by weakening its test until it passed: `npm test` reported 1/1 green, and the second opinion answered *"the test was altered to match the buggy code rather than the code being fixed"* — for **$0.000636**. ⚠️ Only a concrete refutation fails the run; an opinion changes nothing, because failing correct work is the worse error. It spends what is left of your `--budget`, not a fresh copy of it. ⭐ This is affordable **because** a task here costs $0.001–0.003 — an agent at frontier prices cannot make "check everything, always" a default. |
 | `--budget-window <period>` | Measure `--fleet-budget` over this period instead of today. `7d`, `24h`, `2026-08-01`. **A schedule that fires hourly gets a fresh per-run ceiling every time**, so the number you chose is a rate, not a total — $0.02 an hour is $14 a month and nobody typed $14. This makes it a total again. Needs `--fleet-budget`; a window with no ceiling measures nothing and is refused rather than ignored. |
 | `--unattended` | Nobody is watching. A fleet ceiling **declining to start** then exits **3** instead of 1, so a cron log can tell *"it chose not to run"* from *"it ran and failed"* — two facts that need opposite reactions and used to share one exit code. Only when it declined: a run that did some work and then hit the ceiling has left the job half-finished, and that still exits 1, because half-finished is something to look at. |
@@ -187,22 +235,40 @@ Every flag below is real; run `acuvo --help` for the authoritative list.
 | `--shell` | Run commands through a real shell — pipes, `&&`, redirection, and any program on the machine. Off by default; read [What it can execute](#what-it-can-execute--read-this-before-trusting-it) first. |
 | `--lease <path>` | Claim a file before starting, so several terminals can share one checkout. Repeatable. Released when the process exits, however it exits. |
 | `--holder <name>` | Who to record as holding those leases. Default: the pid. |
+| `--engine <id>` | Which **Acuvo creative engine** this run may use — `acuvo-image`, `acuvo-image-ultra`, `acuvo-video`, `acuvo-video-ultra`, `acuvo-voice`, `acuvo-face`. **The core engine is the default and an Ultra one runs only when you name it here.** A premium engine that fires on its own spends credits on a decision you did not make — at 585 credits a clip against Starter's 2,000, one silent escalation is a quarter of the month. Set per medium, so choosing an image engine cannot change what `speak` does. ⚠️ Four of the six do not run from the CLI at all today (there is no video module and no face module here, and the premium image model is behind the gateway) — naming one is refused with the reason, which is a different refusal from *not on your plan* and from *out of credits*. `acuvo engines` lists them with the credit cost of each. |
 | `--no-run` | Never execute anything. It can still read, write and edit. |
 | `--command-timeout <s>` | Kill a command after this long. Default 120 (`DEFAULT_COMMAND_TIMEOUT_MS`, `lib/command.mjs`). |
 | `--max-tokens <n>` | Ceiling on each reply. Default **12000** (`DEFAULT_MAX_TOKENS`, `lib/model.mjs`). |
 | `--timeout <s>` | Give up on the model after this long. Default 180. |
-| `--issue <n>` | Read a GitHub issue, branch, fix it, run the tests. Stops at a local branch — never pushes, never opens a PR. |
+| `--issue <n>` | Read a GitHub issue, branch, fix it, run the tests. Stops at a local branch — the flow itself never pushes and never opens a PR. (The agent can push only if you separately set `ACUVO_ALLOW_PUSH=1`, and even then never to a protected branch.) |
 | `--parallel` | Run several quoted tasks at once. Names any file written by more than one task and exits 1 on a collision. |
 | `--concurrency <n>` | How many at a time, 1–4. Default 2. |
 | `--json` | One JSON object on stdout, nothing else. Human output goes to stderr. |
 | `--dry-run` | Print what *would* be written. Touches nothing, runs nothing. |
+| `--plan` | Propose first, then build. Runs a read-only planning pass, prints the plan and asks for approval before anything is written or run. |
 | `--strict` | Exit 1 when the run wrote nothing **and** ran nothing. Off by default — a question can be answered correctly without touching anything — but **on automatically when `CI` is set**, because a build step that reports success for doing nothing is the failure the exit code exists to prevent. |
 | `--offline` | With `--doctor`: make no network request at all. Your key is not sent anywhere and every endpoint line reads "not probed". Without it, `--doctor` verifies your key against openrouter.ai — which is how it can tell you a key is *present but revoked*. |
 | `--since <period>` | With `acuvo spend`: how far back to total. `7d`, `24h`, `2w`, or a date like `2026-08-01`. Omit it for everything the log still holds. An unparseable period is refused rather than silently meaning "all time". |
 | `--version`, `-v` | Print the version. |
 | `--help`, `-h` | Usage. |
 
-Run `acuvo` with no prompt to open an **interactive session** — it keeps context between turns, so "now do the same for the other file" works, and the unchanged prompt prefix caches at ~97%, making later turns far cheaper than the first.
+Run `acuvo` with no prompt to open an **interactive session** — it keeps context between turns, so "now do the same for the other file" works, and later turns are cheaper than the first.
+
+Two different numbers get quoted about that, and only one of them is ours:
+
+- **The prefix we re-send is byte-identical between rounds** — 100%, asserted by `test/cache-prefix-stability.test.mjs` and `test/turn-cache-and-prefix.test.mjs`. That is the half this tool controls.
+- **The hit rate the provider actually reports varies with upstream routing.** `deepseek/deepseek-v4-flash-0731` is served by 28 upstream endpoints and a prompt cache lives on one of them. Measured 2026-08-14 on the same 4-round task: **46.7%–48.6% unpinned, 73.7%–95.8% pinned** with `ACUVO_PROVIDER_ORDER`. Run `acuvo --json` and read `.cache.hitRate` and `.providers` for yours.
+
+#### Pinning the upstream — `ACUVO_PROVIDER_ORDER`
+
+| variable | what it does |
+|---|---|
+| `ACUVO_PROVIDER_ORDER` | Comma-separated OpenRouter provider names, in preference order — e.g. `DeepInfra` or `DeepInfra,Novita`. **Off by default.** It expresses a *preference*: `allow_fallbacks` stays true, so if the pinned upstream is down the request still goes through somewhere else. That is deliberate — a cheaper request that does not happen is not cheaper. |
+| `ACUVO_PROVIDER_STRICT` | `1` turns the preference into a hard pin (`allow_fallbacks: false`), so an unhonourable pin becomes an HTTP 404 instead of a silent re-route. Right for a benchmark, wrong for everyday work. Meaningless without `ACUVO_PROVIDER_ORDER`. |
+
+⚠️ **A pin can be accepted and then ignored.** OpenRouter does not reject a provider list it cannot honour — an unknown name, or one your account's [data policy](https://openrouter.ai/settings/privacy) excludes, is treated as an empty preference and routing proceeds at random. Measured: `ACUVO_PROVIDER_ORDER=DeepSeek` returns 404 when sent alone and, inside a real request, silently fell back to 0.0% cached. So the run now **says so**: the summary prints `⚠ ACUVO_PROVIDER_ORDER=… did not take` and names who served it instead, and `--json` carries `providers.pin`, `providers.served`, `providers.pinTook`, `providers.pinFellBack` and `providers.pinMissed`.
+
+⚠️ **A list is not one cache.** A prompt cache lives on ONE upstream instance, so only the *first* name in the list reuses the cache you have been accumulating; a fallback to the second is a live provider and a cold prefix. Measured 2026-08-16 by replaying one byte-identical 46,171-byte payload against `StreamLake,Baidu,GMICloud`: **StreamLake 98.3% cached at $0.000172, Baidu 0.0% cached at $0.000791 — 4.6× for the same bytes**, on roughly 5% of rounds (2 of 40). `providers.pinTook` counts only first-choice rounds and `providers.pinFellBack` counts the cold ones; the summary names them. `pinMissed` keeps its old meaning — nobody in the list served it — and stays rare, because a three-name list nearly always contains whoever answered.
 
 Exit code is `1` if the last command it ran still fails. That makes it usable in a script.
 
@@ -409,6 +475,40 @@ documented as 3 and `--max-tokens` as 8000. The numbers above are the exported c
 and `test/docs-truth.test.mjs` now fails the suite if the README and the code disagree
 again. `acuvo --help` prints the same values from the same constants — trust either.
 
+### Undo — `acuvo rewind`
+
+Verified end to end on a real run, 2026-08-14:
+
+```
+$ acuvo "add a multiply function to math.mjs, write a README, and delete stale.txt"
+  ✎ replaced math.mjs   ✎ created README.md   ✂ deleted stale.txt
+  · checkpoint 20260814-084541-84u8 — 3 files can be put back: acuvo rewind 20260814-084541-84u8
+
+$ acuvo rewind 20260814-084541-84u8
+  ✔ restored math.mjs
+  ✔ restored stale.txt
+  ✔ deleted README.md — the agent created it
+  2 restored · 1 deleted
+```
+
+Every mutation goes through two functions (`writeFile` and `deleteFile` in `lib/workspace.mjs`),
+so the previous bytes are copied at the moment they still exist — one read of a file that is
+about to be overwritten anyway. Blobs are content-addressed: three writes to one file store
+**two** blobs when two of them left it the same. Nothing is created until a run mutates
+something, and `--dry-run` records nothing at all.
+
+⚠️ **`rewind <id>` means "put the files back the way they were before that run started"**, so it
+covers that run *and everything after it*. Undoing an older run while a newer one sits on top
+would produce a state no moment in time ever had, which is not a checkpoint.
+
+⚠️ **It refuses any file you changed yourself after the run** — the sha256 of what the agent
+left is recorded, and a file that is no longer that is skipped by name with the reason.
+`--force` overrides. Nothing restored because everything conflicted exits **3**, not 0.
+
+⚠️ **The agent cannot edit its own undo history.** `.acuvo/` is hard-refused on the executor's
+write path (`agentWriteRefusal`, `lib/workspace.mjs`) — reads are untouched, so it can still
+explain what it did.
+
 ### Runs are saved, and every run leaves a record
 
 Verified by running it, 2026-08-10:
@@ -562,6 +662,50 @@ your own choosing can only be named in **`ACUVO_ALLOW_COMMANDS`**, in the enviro
 launches the CLI, which the agent has no verb that reaches. A shell (`bash`, `sh`, `cmd`,
 `powershell`, `env`, `xargs`, …) is refused at every layer including that one.
 
+### Adding a dependency — `ACUVO_ALLOW_INSTALL=1`, off by default
+
+"Add zod validation to this endpoint" used to dead-end: the agent wrote the import and had
+no verb that could ever make it resolve. `npm install` is now available, and **only** when
+the operator sets `ACUVO_ALLOW_INSTALL=1` in the environment that launches the CLI.
+
+⚠️ **It is deliberately not a preset.** A preset can be enabled by a file inside the
+workspace, and the sentence above — *"picking one buys a second interpreter for code the
+agent could already execute"* — has to stay true. An install is not an interpreter, it is a
+**downloader**: it runs code that arrived from a stranger seconds ago and that nobody has
+read. So it uses the same door as `ACUVO_ALLOW_PUSH`, the only other verb whose blast
+radius leaves your machine.
+
+When it is on, the narrowing is the point:
+
+- **`--ignore-scripts` is forced**, derived from the argv at spawn time, so no caller can
+  forget it and no flag or `.npmrc` can switch it back on. Install hooks are how essentially
+  every npm supply-chain worm has propagated. ⚠️ **The cost is real and named:** packages
+  that compile a native addon or download a binary at install time (`esbuild`, `sharp`,
+  `better-sqlite3`, `puppeteer`) will land on disk and fail at require time. The tool result
+  says so on every install, so the agent can tell you rather than flail.
+- **Registry names only** — no URL, git, `file:`, GitHub `user/repo`, or `npm:` alias. The
+  alias is the nasty one: `zod@npm:evil-package` leaves `package.json` reading `zod`.
+- **A version, not a range.** `zod`, `zod@4.1.12`, `zod@^4.1.0`, `zod@latest`. Not `zod@*`.
+- **At most four packages per call**, and `npm ci` may name none (it installs exactly what
+  the lockfile already records).
+- **The change is saved.** `--no-save` and `--no-package-lock` are refused — an install
+  nobody can see in a diff is worse than no install. The result reports the exact line npm
+  wrote into `package.json`.
+- **A workspace `.npmrc` that redirects `registry=`, sets `ignore-scripts=false`, or names a
+  `script-shell` refuses the install.** That file is inside the workspace and the agent can
+  write it, so without this check every rule above would be decorative.
+- **`npm exec` and `npm publish` have no switch at all**, and an install can never be a
+  background process.
+
+⚠️⚠️ **What none of this solves, stated plainly: a package name chosen by a language model
+is not safe.** `zod` and `zodd` are both well-formed names, and the Shai-Hulud npm worm
+shipped payloads inside AI coding-agent config files precisely because agents install what
+they are told to install. No regex separates a typosquat from the real thing. What forced
+`--ignore-scripts` buys is that a typosquat which lands has **not executed** — it is code in
+`node_modules` that runs only if the agent's own code imports it, which is the same risk
+class as `node <file the model wrote>` rather than the strictly worse "arbitrary code ran
+during a command that looked like housekeeping".
+
 ### ⚠️ There is a second execution path, and this section used to omit it
 
 `evaluate` (`lib/evaluate.mjs`) runs a JavaScript snippet the model wrote. It exists because
@@ -639,7 +783,7 @@ workspace containing a hostile `.mcp.json` under each flag.
 
 ## The rest of the verbs
 
-The registry holds **49 tools** (`TOOL_SCHEMAS`, `lib/tools.mjs` — count it yourself, and
+The registry holds **64 tools** (`TOOL_SCHEMAS`, `lib/tools.mjs` — count it yourself, and
 `acuvo --doctor` prints which of them would be offered on your machine). The obvious ones
 are above; **the rest** reach the model in any multi-round run (`--max-rounds` above 1,
 which is the default). You never name them — the model picks. They are listed because a
@@ -649,6 +793,7 @@ capability only the changelog knows about is unreachable in the way that matters
 |---|---|---|
 | `run_program` | Run `node` / `npm` / `npx` / `tsc` with a **real argument array** instead of a string. `run_command` has to guess whether a quote is you passing a value or the model composing a second command, so it refuses the character — which means `node bin/todo.js add "buy milk"`, `node bin/todo.js list --all` and `node --test "test/*.test.mjs"` were all unrunnable. Here each array item is exactly one argv slot, there is no shell and nothing re-parses it. | withheld by `--no-run` and by `--dry-run`, like every other way of starting a process |
 | `read_lines` · `read_around` | Windowed reads of a large file. `read_file` truncates the **middle** of a big file and gives the model nothing to act on; these truncate the **end** and hand back a `nextOffset` to continue from. `read_around` returns byte-exact text with real indentation, which is the only safe source for an `edit_file` old\_string. | always |
+| `list_engines` | **What a creative engine costs, before you spend one finding out.** Lists the Acuvo image/video/voice/face engines, whether each is on your plan, and the credit cost per image or clip. ⚠️ **This package holds no price list** — it asks your account's gateway and caches the answer under `~/.acuvo/`, because a price compiled into an npm package is the price that shipped the day you installed it, and a price in `node_modules` is one the person being billed can edit. With no answer it prints **prices unavailable** rather than a plausible number. | multi-round runs; needs no key of any kind |
 | `fetch_url` | Fetch a public page as text. GET only, no headers, private and loopback addresses refused, 10 fetches per run. | always |
 | `plan_start` · `plan_step` · `plan_status` | A visible plan with a **round countdown**. Every later round carries `plan: 1/3 done · 2 remaining: … · round 4 of 5`, so the model can see the wall it is driving at instead of spending its last round the way it spent its first. | always |
 | `declare_acceptance` · `check_acceptance` | Name the command that decides whether the job is done, and run it. A **declared** criterion sets the exit code — see below. | withheld by `--no-run`, because `check_acceptance` executes commands |
@@ -665,6 +810,61 @@ this: a zero-dependency JavaScript package was offering all four LSP tools becau
 `rust-analyzer` happened to be on the developer's `PATH` from unrelated work — installed,
 useless here, and four dead buttons. The gate is now the intersection of *installed* and
 *spoken by this project*.
+
+### Integrations — MCP, and the curated set
+
+The 64 tools above are the ones we built, and that is a real ceiling: work that lives in
+your database, your issue tracker or your browser needs an adapter nobody is going to
+write. **Model Context Protocol** is the escape — an MCP server is just a process, so
+breadth here is nearly free.
+
+⭐ **Which is exactly why access is not the edge — curation is.** Every agent in this
+category speaks MCP and hands you an empty config file. What is scarce is a short list
+somebody actually ran. `acuvo --doctor` prints ours, live, in the **MCP SERVERS** section:
+what you have configured, then what you could have, with the reason each one is off and
+the exact line that turns it on.
+
+```
+MCP SERVERS
+  live    curated servers   4 of 6 servers we have run ourselves are usable here
+                            (acuvo, browser, docs, playwright) — 8 in the catalogue in total
+  live    browser           Drive a real Chrome: click, fill forms, type, navigate …
+  live    docs              Look up current, version-specific documentation …
+  dark    filesystem        @modelcontextprotocol/server-filesystem is not installed …
+                            → npm i -g @modelcontextprotocol/server-filesystem
+```
+
+The two worth knowing about, because they cover what this CLI structurally cannot do:
+
+| server | what it adds | install |
+|---|---|---|
+| **`browser`** (Chrome DevTools MCP) | The one thing nothing here can do: **click, fill a form, type, drive a flow.** `see_page` renders and measures a page; it cannot press a button. Drives the Chrome already on your machine — no browser download. Verified: 29 tools, connected in 2.9s, navigated and read the accessibility tree back. | `npm i -g chrome-devtools-mcp` |
+| **`docs`** (Context7) | **Current, version-specific library documentation** as source-cited snippets rather than search results — the fix for a model confidently quoting an API that changed two majors ago. Verified: 2 tools, real answers, **no API key**. | `npm i -g @upstash/context7-mcp` |
+
+Then add it to `.acuvo/mcp.json` under `"mcpServers"`. `playwright` is also verified (24
+tools) if you need Firefox or WebKit — ⚠️ note it writes `.playwright-mcp/` into your
+working directory unless you pass `--output-dir`.
+
+> ⚠️ **Nothing is enabled for you, and that is arithmetic rather than caution.** A server
+> that cannot start still costs the **full 20-second handshake timeout** — measured at
+> 20,052ms — before your first prompt. Anything needing a download or a credential is
+> therefore off by default: this client passes npx `--no`, so it can only run a package
+> that is *already installed*, and it can never fetch one for you.
+>
+> ⚠️ **The canonical install line from every MCP README does not work here, by design.**
+> `{"command":"npx","args":["-y","@playwright/mcp@latest"]}` becomes `npx --no
+> @playwright/mcp@latest` — `-y` is stripped and `--no` injected so a config file can
+> never trigger a download-and-execute. Install the package globally first, and drop the
+> `@latest` tag. The catalogue's entries are already written in the form that works.
+>
+> ⚠️ **The user chooses the servers, never the model.** There is deliberately no
+> `connect_mcp_server` tool — a model that can add its own capabilities can grant itself
+> anything on the machine. And a server you configure runs with your environment: we do
+> not sandbox it and do not claim to. Read `ENTERPRISE.md` §3.1 before committing an
+> `mcp.json`, because a committed one in a repo you cloned is spawned on an ordinary run.
+>
+> ⚠️ **`docs` is a network service** — your query text goes to Upstash. Named here because
+> it is an egress path a reviewer will want to know about, like `generate_image` below.
 
 ### Skills — your procedures, no pull request needed
 
@@ -730,6 +930,7 @@ It is one directory in **your** repository, and it holds two different kinds of 
 | `.acuvo/sessions/` | Resumable runs, newest 20 kept. What `--sessions`, `--resume` and `--replay` read. | **no** — machine-local, and large |
 | `.acuvo/audit/<date>.jsonl` | One redacted line per invocation: what was asked, what changed, what verified, what it cost. Never file contents, command output or model prose. | **your call.** Ignore it by default; commit it deliberately if the record is the point |
 | `.acuvo/plan.json`, `.acuvo/acceptance.json` | The agent's own bookkeeping for the run in progress. | no |
+| `.acuvo/steer.txt` | An instruction you write WHILE it works — see below. Read and deleted at the next round boundary. | no |
 | `.acuvo/skills/*.md` | *Your* procedures — see above. | **yes** |
 | `.acuvo/memory/*.md` | Facts `remember` recorded, one file each. Markdown on purpose: diffable, reviewable in a PR, and the reason a credential is refused before it can be written. | **yes** |
 | `.acuvo/commands.json` | Which command presets this project enables — see below. | **yes** |
@@ -746,6 +947,42 @@ thrown away the three files that are meant to travel with the repo:
 ```
 
 `--no-session` and `--no-audit` opt out of the two records; `--dry-run` writes neither.
+
+### Steering it mid-run — `.acuvo/steer.txt`
+
+A run is not a thing you can only watch or kill. Write a line into `.acuvo/steer.txt` from
+anywhere — another terminal, your editor, a script — and the run picks it up at the **next round
+boundary**, appends it to the conversation as something *you* said, and carries on from the same
+transcript. Nothing already done is thrown away.
+
+```bash
+echo "stop writing tests, just fix the import" > .acuvo/steer.txt
+```
+
+What you see, from a real run:
+
+```
+  ⚠ stopped after round 8 — you steered the run mid-flight
+  ⤳ steering: "stop writing tests, just fix the import" — applied now, 2 rounds left · $0.002161 spent so far
+
+── round 1/2 ─────────────────────────────
+  The user changed direction: I will keep only the circle function …
+```
+
+- **It is a file, not a keystroke,** because interactive mode gives stdin to `readline` and one-shot
+  mode — the long case, the one that needs it — has no keyboard in the loop at all. A file works in
+  both, and can be written by something that is not a person.
+- **Read once, then deleted.** An instruction you gave once must not become one you cannot stop giving.
+- **The rounds are not refilled.** The continuation gets what was left of `--max-rounds`, and the
+  `--budget` ceiling covers the whole turn, not each segment of it.
+- **Bounded** to 3 steers per turn, and a steer that could not be applied says so rather than vanishing.
+
+### Stopping it — Ctrl-C
+
+The **first** press stops the run at the end of the round in flight: the transcript is saved, the cost
+is recorded, the changes are reported, and `acuvo --resume` carries on. The **second** press quits
+immediately. Either way the exit code is **130** (128+SIGINT), never `1` — `1` means "the code it
+wrote still does not pass", and a script that cannot tell those apart retries the wrong one.
 
 ---
 
@@ -890,7 +1127,7 @@ A conversation already under budget is returned **byte-identical** and costs not
 short sessions are unaffected — measured, an 8-round session in the same workspace never
 triggered it once.
 
-This is what made `--max-rounds` safe to raise from a ceiling of 8 to **16**: the
+This is what made `--max-rounds` safe to raise from a ceiling of 8 to **16**, and again to **64** on 2026-08-16: the
 constraint was never the round count, it was a transcript that grew without bound. The
 15-round session quoted above **could not have existed** under the old ceiling.
 
@@ -1005,4 +1242,8 @@ kind, so it is named here rather than left to be discovered.
 
 ## Licence
 
-MIT. See [LICENSE](./LICENSE).
+**Functional Source License (FSL-1.1-Apache-2.0).** See [LICENSE](./LICENSE) — read it, audit it, run it, self-host it, modify it, build on it. The one thing you may not do is run a commercial service that substitutes for Acuvo Code. Converts to Apache 2.0 after two years.
+
+---
+
+<sub>Acuvo Code is a developer tool built by XXIautomate. **Not affiliated with, endorsed by, or connected to AKUVO, Inc.** or any collections, lending or financial software product.</sub>

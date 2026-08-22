@@ -176,15 +176,33 @@ test('⚠️⭐ --no-run is enforced at the DISPATCHER too — a model can call 
  * 3. AVAILABILITY GATES — absent dependency means ABSENT TOOL, never a broken one
  * ──────────────────────────────────────────────────────────────────────────── */
 
-test('⭐ read_skill is withheld when the project defines no skills…', (t) => {
+/**
+ * ⚠️⚠️ THIS TEST WAS INVERTED ON 2026-08-17, DELIBERATELY, AND HERE IS WHY.
+ *
+ * It used to assert that `read_skill` is WITHHELD from a project with no
+ * skills — correct behaviour when the only possible skills were ones a user
+ * wrote, because offering a reader with nothing to read is a dead tool that
+ * costs prompt tokens every round.
+ *
+ * That premise is now false. Acuvo SHIPS skills (`acuvo-code/skills/`, surfaced
+ * by `lib/builtin-skills.mjs`), so the shelf is never empty: every project gets
+ * the design-system, Next.js, Supabase, app-quality, verification and planning
+ * skills whether or not it defines its own.
+ *
+ * ⭐ The gate is still on CONTENT, exactly as before — it is just that content
+ * now always exists. The old assertion is kept below in inverted form rather
+ * than deleted, so the change in behaviour is visible to whoever reads this
+ * next instead of looking like a test that quietly disappeared.
+ */
+test('⭐ read_skill is ALWAYS offered, because Acuvo ships skills of its own', (t) => {
   const root = workspace(t);
-  assert.strictEqual(skillsAvailable(root), false);
-  assert.ok(!toolNamesForRounds(5, { env: {}, root }).includes('read_skill'));
+  assert.strictEqual(skillsAvailable(root), true, 'the bundled shelf is never empty');
+  assert.ok(toolNamesForRounds(5, { env: {}, root }).includes('read_skill'));
 
-  // …an empty skills directory is still no skills — the gate is on CONTENT.
+  // An empty PROJECT skills directory changes nothing — the bundle still stands.
   mkdirSync(join(root, '.acuvo', 'skills'), { recursive: true });
-  assert.strictEqual(skillsAvailable(root), false, 'an empty directory is not a capability');
-  assert.ok(!toolNamesForRounds(5, { env: {}, root }).includes('read_skill'));
+  assert.strictEqual(skillsAvailable(root), true, 'an empty project dir does not remove the bundled skills');
+  assert.ok(toolNamesForRounds(5, { env: {}, root }).includes('read_skill'));
 });
 
 test('⭐ …and appears the moment one exists', (t) => {
@@ -235,6 +253,22 @@ test('⭐ …and appear when one is present in node_modules', (t) => {
    * test accused a correct product of being broken.
    */
   writeFileSync(join(root, 'index.ts'), 'export const answer: number = 42;\n');
+  /**
+   * ⚠️⚠️ AND IT HAS TO HAVE THE THING THE SERVER DRIVES — the SAME shape again,
+   * one layer deeper, on 2026-08-17. `workspaceCanBeServed` (lsp.mjs) now checks
+   * for `typescript/lib/tsserver.js`, because `typescript-language-server`
+   * drives tsserver and does not contain one. A fixture with the server but not
+   * the compiler installs something that starts and then cannot serve, so all
+   * four verbs are dead buttons and the gate correctly keeps them shut.
+   *
+   * ⭐ The comment above says this is the "check that fails correct work" shape
+   * caught for the fifth time. This is the sixth, and the resolution is the same
+   * one: the gate tightened for a researched reason and a fixture predating it
+   * accused correct code of being broken. The fixture moves, never the gate.
+   */
+  const tsLib = join(root, 'node_modules', 'typescript', 'lib');
+  mkdirSync(tsLib, { recursive: true });
+  writeFileSync(join(tsLib, 'tsserver.js'), '// what typescript-language-server actually drives\n');
   assert.strictEqual(lspAvailable(root, { PATH: '' }), true);
   const offered = toolNamesForRounds(5, { env: { PATH: '' }, root });
   for (const n of ['find_definition', 'find_references', 'check_types', 'list_symbols']) {
@@ -396,13 +430,45 @@ test('⚠️ a memory workspace refuses the disk-bound tools with a sentence, no
     ['check_types', { file: 'a.ts' }, /held in memory/],
     ['plan_start', { task: 't', steps: ['a'] }, /memory|disk/i],
     ['declare_acceptance', { commands: ['npm test'] }, /memory|disk/i],
-    ['read_skill', { name: 'deploy' }, /no disk|no skills/i],
+    /**
+     * ⚠️⚠️ `read_skill` LEFT THIS LIST ON 2026-08-17 AND THAT IS THE POINT.
+     *
+     * It belonged here while every skill lived in the user's `.acuvo/skills` —
+     * a memory workspace has no disk, so there was nothing to read. Acuvo now
+     * SHIPS skills inside the package (`lib/builtin-skills.mjs`), and those are
+     * on the CLI's own disk regardless of what the workspace is.
+     *
+     * ⭐ This is the whole value of the change, not a side effect: THE BUILDER
+     * RUNS ON A MEMORY EXECUTOR. Leaving `read_skill` disk-bound would have
+     * meant the one surface with no skills of its own — the thing customers use
+     * to build software — was also the one surface that could never read ours.
+     * Its positive behaviour is asserted in the test below.
+     */
   ]) {
     const r = await executeToolCall(callFor(name, args), executor);
     assert.strictEqual(r.result.ok, false, `${name} must refuse on a memory workspace`);
     assert.match(r.result.error, pattern, `${name}: ${r.result.error}`);
     assert.strictEqual(r.mutated, false);
   }
+});
+
+/**
+ * ⭐⭐ THE BUILDER RUNS HERE. A memory workspace has no project on disk, so
+ * before the skills were bundled this surface had access to nothing at all.
+ */
+test('⭐⭐ a memory workspace CAN read the skills Acuvo ships', async () => {
+  const executor = { root: '(memory)' };
+
+  const found = await executeToolCall(callFor('read_skill', { name: 'acuvo-design-system' }), executor);
+  assert.strictEqual(found.result.ok, true, 'a bundled skill must load with no project on disk');
+  assert.match(String(found.result.body ?? ''), /Content-Security-Policy/i, 'the real skill body, not a stub');
+  assert.strictEqual(found.mutated, false, 'reading a skill changes nothing');
+
+  // ⚠️ And an unknown name still refuses — naming what IS available, so the
+  // model can correct itself instead of guessing again.
+  const missing = await executeToolCall(callFor('read_skill', { name: 'no-such-skill' }), executor);
+  assert.strictEqual(missing.result.ok, false);
+  assert.match(missing.result.error, /acuvo-design-system/, 'the refusal lists what exists');
 });
 
 /* ────────────────────────────────────────────────────────────────────────────

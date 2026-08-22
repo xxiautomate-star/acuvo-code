@@ -45,7 +45,8 @@ import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 
-import { gitCommit, refusedCommitPath } from '../lib/git.mjs';
+import { gitCommit } from '../lib/git.mjs';
+import { refusedCommitPath } from '../lib/secret-paths.mjs';
 
 const madeDirs = [];
 

@@ -49,6 +49,8 @@ import {
   SKIP_DIRS,
   HIDDEN_DIRS_ALLOWED,
   DEFAULT_BUDGET_TOKENS,
+  rankScripts,
+  orderForBudget,
 } from '../lib/repo-map.mjs';
 
 const REPO_ROOT = fileURLToPath(new URL('..', import.meta.url));
@@ -479,11 +481,28 @@ test('⚠️ A MALFORMED package.json IS NOT FATAL — a repo mid-edit still get
   assert.deepEqual(map.stats.entryPoints, []);
 });
 
-test('the test directory is named, with a count, because "where are the tests" is the second question anyone asks', () => {
+test('the test directory is named up front; its file count is a total and sits with TOTALS', () => {
+  /**
+   * ⚠️⚠️ THIS TEST USED TO READ `assert.match(map.text, /test\/.*2/)` AND WOULD
+   * HAVE PASSED BY COINCIDENCE. The count moved out of the TESTS section (it
+   * changes whenever the agent writes a test, and that section sits AHEAD of the
+   * FILES listing — measured 2026-08-16, creating one test file left 13 bytes of
+   * a 19,950-byte map cacheable) and into TOTALS at the end. `/test\/.*2/`
+   * matches the new line just as happily as the old one, so the assertion would
+   * have gone on passing while the thing its name describes had moved.
+   *
+   * ⭐ Both halves are asserted separately now, and each is bound to the section
+   * it belongs to — which is what makes the test able to notice a move at all.
+   */
   const fs = makeFs({ 'test/a.test.mjs': 'x', 'test/b.test.mjs': 'x', 'src/a.js': 'x' });
   const map = buildRepoMap('/repo', fs);
-  assert.match(map.text, /TESTS/);
-  assert.match(map.text, /test\/.*2/);
+
+  const tests = map.text.indexOf('\nTESTS\n');
+  const totals = map.text.indexOf('\nTOTALS');
+  assert.ok(tests > 0, 'no TESTS section — "where are the tests" is unanswered');
+  assert.ok(totals > tests, 'TOTALS must come after TESTS');
+  assert.match(map.text.slice(tests, map.text.indexOf('\n\n', tests + 1)), /^\s+test\/$/m, 'TESTS must name the directory');
+  assert.match(map.text.slice(totals), /test\/\s+2 files/, 'TOTALS must carry the suite size');
 });
 
 test('the biggest files are ranked by size, descending, with the path as the tiebreak', () => {
@@ -849,6 +868,185 @@ test('symbolsShown counts the symbol lists actually RENDERED, not the files scan
   const map = buildRepoMap('/repo', fs);
   assert.equal(map.stats.symbolsShown, 1,
     'it counted files rather than symbol lists — the one number that reconciles `text` with `files` has to be exact, or it is worse than absent');
+});
+
+// ── 10b. THE DEPTH CLIFF, AND THE SCRIPT THAT WAS HIDDEN ────────────────────
+//
+// ⚠️⚠️ MEASURED ON `console/` (2,406 files, 360 directories) BEFORE THIS BLOCK
+// EXISTED: 659 files listed — and they came from **7 of the 360 directories**,
+// with ZERO files below depth 1. The old comparator ordered strictly by depth
+// inside a category, which is a breadth-first cut, which is a depth cliff: the
+// budget ran out inside depth 1 and every deeper directory vanished together.
+// 1,610 of the 1,747 omitted files were source (1,017 `.ts`, 386 `.tsx`).
+//
+// ⭐ THE ASSERTIONS BELOW BIND TO REACH, NOT TO A COUNT. "659 files" looked like
+// 27% coverage and was really 1.9% of the directories; a test that pinned a file
+// count would have passed throughout the entire defect. That is the same trap as
+// the guard that was satisfied by a line number — bind a number to its noun.
+
+/** Which directories does the map actually reach into? */
+function listedDirs(map) {
+  return new Set(map.files.map((f) => {
+    const i = f.path.lastIndexOf('/');
+    return i < 0 ? '' : f.path.slice(0, i);
+  }));
+}
+
+test('⚠️⚠️ THE DEPTH CLIFF: a budget cut must never make every directory below a depth invisible at once', () => {
+  // 40 directories at four different depths, one source file each, plus enough
+  // shallow files to exhaust a tight budget the way `console/`'s 1,281 did.
+  const files = { 'index.js': 'x' };
+  for (let i = 0; i < 60; i++) files[`top/shallow${String(i).padStart(2, '0')}.js`] = 'x';
+  for (let d = 2; d <= 5; d++) {
+    for (let i = 0; i < 10; i++) {
+      files[`${'lvl/'.repeat(d - 1)}mod${String(i).padStart(2, '0')}/index.js`] = 'x';
+    }
+  }
+  const map = buildRepoMap('/repo', makeFs(files), { budgetTokens: 400 });
+  assert.equal(map.truncated, true, 'the fixture no longer truncates, so it is not testing the cut any more');
+
+  const depths = new Set(listedPaths(map).map((p) => p.split('/').length - 1));
+  // ⭐ THE PROPERTY: the cut is a SAMPLE across the tree, so no whole depth band
+  // may be wiped out while a shallower one is listed exhaustively.
+  for (const d of [2, 3, 4, 5]) {
+    assert.ok([...depths].some((x) => x >= d),
+      `nothing at depth ${d} or below survived the budget — that is the cliff, and it is how 353 directories became invisible`);
+  }
+  assert.ok(listedPaths(map).some((p) => p.startsWith('lvl/lvl/lvl/lvl/')),
+    'the deepest directories were dropped wholesale rather than sampled');
+});
+
+test('⭐ every source directory is represented before any one directory is listed exhaustively', () => {
+  const files = {};
+  // One fat directory that could swallow the whole budget on its own, and forty
+  // thin ones that the old ordering never reached because they sit deeper.
+  for (let i = 0; i < 300; i++) files[`fat/f${String(i).padStart(3, '0')}.js`] = 'x';
+  for (let i = 0; i < 40; i++) files[`src/area${String(i).padStart(2, '0')}/deep/index.js`] = 'x';
+  const map = buildRepoMap('/repo', makeFs(files), { budgetTokens: 700 });
+  assert.equal(map.truncated, true, 'the fixture no longer truncates');
+
+  const dirs = listedDirs(map);
+  const missing = [];
+  for (let i = 0; i < 40; i++) {
+    if (!dirs.has(`src/area${String(i).padStart(2, '0')}/deep`)) missing.push(i);
+  }
+  assert.deepEqual(missing, [],
+    `${missing.length} of 40 source directories are invisible while one fat directory is listed — `
+    + 'an invisible directory does not read as "budgeted out", it reads as "does not exist"');
+  assert.equal(map.stats.dirsListed, map.stats.dirsTotal,
+    'dirsListed/dirsTotal disagree with the paths actually emitted');
+});
+
+/**
+ * ⚠️ THE FIXTURE THAT SEPARATES CATEGORY FROM DEPTH, and the reason it looks
+ * contrived. The obvious version — one shallow `src/target.ts` against deep
+ * images — passes even with the category rule deleted, because the DEPTH
+ * tiebreak rescues the source file on its own. A mutation that removed category
+ * survived it. So here the source file is the DEEPEST thing in the tree and the
+ * assets are shallow: nothing but category can save it.
+ */
+function categoryVsDepthFixture() {
+  const files = { 'src/a/b/c/target.ts': 'x' };
+  for (let i = 0; i < 200; i++) files[`set${String(i).padStart(3, '0')}/img.png`] = 'x';
+  return files;
+}
+
+test('the directory-reach stats are real measurements, not a restatement of the file count', () => {
+  // ⚠️ MUST BE A TRUNCATED TREE. On a repo that fits, dirsListed and dirsTotal
+  // are equal whatever the code does, so `dirsListed = dirsTotal` survives — a
+  // mutation proved exactly that. The gap only exists where the budget bites.
+  const map = buildRepoMap('/repo', makeFs(categoryVsDepthFixture()), { budgetTokens: 120 });
+  assert.equal(map.truncated, true, 'the fixture no longer truncates, so the two stats cannot disagree');
+  assert.equal(map.stats.dirsTotal, 201, 'dirsTotal is not counting every directory that holds a file');
+  assert.ok(map.stats.dirsListed < map.stats.dirsTotal,
+    'dirsListed equals dirsTotal on a truncated tree, so it is being asserted rather than measured');
+  assert.equal(map.stats.dirsListed, listedDirs(map).size,
+    'dirsListed disagrees with the directories actually present in the emitted paths');
+});
+
+test('⚠️ the breadth sample still honours category — the DEEPEST source file beats two hundred shallow assets', () => {
+  const map = buildRepoMap('/repo', makeFs(categoryVsDepthFixture()), { budgetTokens: 120 });
+  assert.ok(listedPaths(map).includes('src/a/b/c/target.ts'),
+    'the breadth sample let two hundred images crowd out the one source file — the category rule was lost');
+});
+
+test('the breadth sample is deterministic — the order files are DISCOVERED in cannot decide which one a directory contributes first', () => {
+  /**
+   * ⚠️ TESTED THROUGH `orderForBudget` DIRECTLY, NOT THROUGH `buildRepoMap`.
+   * The walk already sorts each directory's entries before pushing them, so a
+   * `buildRepoMap` fixture cannot reach this code with unsorted input at all —
+   * a mutation deleting the sort inside `orderForBudget` survived every
+   * end-to-end fixture. The guarantee belongs to this exported function, which
+   * is callable on its own, so it has to be proved on its own.
+   */
+  const files = [];
+  for (const d of ['x', 'y', 'z']) for (const f of ['a.js', 'b.js', 'c.js']) files.push({ path: `${d}/${f}`, depth: 1 });
+  const forward = orderForBudget(files).map((f) => f.path);
+  const backward = orderForBudget([...files].reverse()).map((f) => f.path);
+  assert.deepEqual(backward, forward,
+    'the sample depends on discovery order, so the map reshuffles run to run and the cached prompt prefix is destroyed');
+  // And the first pass really is one file per directory, in path order.
+  assert.deepEqual(forward.slice(0, 3), ['x/a.js', 'y/a.js', 'z/a.js']);
+});
+
+test('⚠️⚠️ `npm test` MUST BE VISIBLE — six alphabetically-earlier scripts hid it on a real repo', () => {
+  // `console/`'s actual script list. The first six alphabetically are six
+  // spellings of `bench`, and the old `.slice(0, 6)` showed exactly those.
+  const scripts = {};
+  for (const n of ['bench', 'bench:all', 'bench:apps', 'bench:creative', 'bench:creative:all',
+    'bench:creative:selftest', 'build', 'dev', 'dev:turbo', 'lint', 'prove:unattended',
+    'schema:probe', 'schema:probe:offline', 'start', 'test', 'type-check']) scripts[n] = `run ${n}`;
+  const map = buildRepoMap('/repo', makeFs({
+    'package.json': JSON.stringify({ name: 'console', scripts }),
+    'src/a.ts': 'x',
+  }));
+  // ⭐ BOUND TO THE NOUN. A model that cannot see the project's own test command
+  // cannot verify its work — it invents `npm run tests` and concludes there are none.
+  assert.match(map.text, /script test\b/, 'the test command is not in the map at all');
+  for (const verb of ['build', 'lint', 'type-check']) {
+    assert.match(map.text, new RegExp(`script ${verb}\\b`), `${verb} was crowded out by a bench variant`);
+  }
+});
+
+test('⭐ after the ranked verbs, at most one script per `:` family — the variants are what did the crowding out', () => {
+  const scripts = {};
+  for (let i = 0; i < 12; i++) scripts[`aaa:v${i}`] = 'x';
+  scripts.test = 'node --test';
+  const map = buildRepoMap('/repo', makeFs({
+    'package.json': JSON.stringify({ name: 'p', scripts }),
+    'src/a.ts': 'x',
+  }));
+  assert.match(map.text, /script test\b/);
+  const shown = [...map.text.matchAll(/^ {2}script (\S+)/gm)].map((m) => m[1]);
+  const aaa = shown.filter((n) => n.startsWith('aaa'));
+  assert.equal(aaa.length, 1, `twelve variants of one verb took ${aaa.length} slots: ${aaa.join(', ')}`);
+});
+
+test('a shortened script list SAYS it is short — a silently truncated list reads as the complete set', () => {
+  const scripts = {};
+  for (let i = 0; i < 20; i++) scripts[`job${i}`] = 'x';
+  const map = buildRepoMap('/repo', makeFs({
+    'package.json': JSON.stringify({ name: 'p', scripts }),
+    'src/a.ts': 'x',
+  }));
+  assert.match(map.text, /further scripts not shown/,
+    'scripts were dropped with no admission that anything was dropped');
+});
+
+test('⚠️ and a package with few scripts is NOT told anything was hidden — a check that fires on correct work is worse than none', () => {
+  const map = buildRepoMap('/repo', makeFs({
+    'package.json': JSON.stringify({ name: 'p', scripts: { test: 'node --test', build: 'x' } }),
+    'src/a.ts': 'x',
+  }));
+  assert.ok(!/further script/.test(map.text), 'claimed scripts were hidden when all of them were shown');
+});
+
+test('rankScripts puts the verification verbs first and reports what it left out', () => {
+  const { chosen, omitted } = rankScripts(['zebra', 'build', 'aaa', 'test', 'lint'], 8);
+  assert.deepEqual(chosen.slice(0, 3), ['test', 'build', 'lint'],
+    'the verbs an agent needs to verify its work are not first');
+  assert.equal(omitted, 0);
+  assert.equal(rankScripts(Array.from({ length: 30 }, (_, i) => `s${i}`), 8).omitted, 22);
 });
 
 // ── 11. THE MODULE'S OWN DISCIPLINE ─────────────────────────────────────────

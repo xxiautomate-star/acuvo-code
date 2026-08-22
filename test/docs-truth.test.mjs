@@ -280,6 +280,62 @@ test('ENTERPRISE.md states the real shipped-file count', () => {
   );
 });
 
+test('⚠️⚠️ ENTERPRISE.md states the real shipped LINE count too — the half that kept slipping', () => {
+  /**
+   * ── ⚠️⚠️ THE GUARD ABOVE ONLY EVER CHECKED FILES ───────────────────────────
+   *
+   * ENTERPRISE.md says, in as many words, that `test/docs-truth.test.mjs`
+   * "fails the build if this number drifts" — and it only ever failed on the
+   * FILE count. So "41 files" was caught within a day while "about 19,700
+   * lines" sat wrong for four days (the real figure had reached 52,931) and
+   * "49,578 lines" for one, inside the paragraph whose entire purpose is to
+   * tell a reviewer these numbers are checked. Found by an adversarial pass.
+   *
+   * ⭐ A TOLERANCE, AND IT IS NOT LAZINESS. The file count changes only when a
+   * module lands; a line count changes on almost every commit, so an exact pin
+   * would go red constantly and become a nag — and a nag is a guard people
+   * learn to edit rather than read (this repo's own argument, made twice about
+   * consent prompts). 2% of ~53,000 is ~1,000 lines: two or three substantial
+   * modules of drift before anyone is asked to look.
+   *
+   * ⚠️ AND IT IS ANCHORED TO THE WORD "lines", for the same reason the count
+   * above is anchored to "files": on 2026-08-13 a bare substring match passed
+   * on a document saying 66 files while 68 shipped, because `68` appeared in
+   * the citation `lib/command.mjs:68`. A build-failing number satisfied by a
+   * line number is not a guard.
+   */
+  const countLines = (dir) => readdirSync(join(ROOT, dir))
+    .filter((f) => f.endsWith('.mjs'))
+    .reduce((n, f) => n + readFileSync(join(ROOT, dir, f), 'utf8').split('\n').length - 1, 0);
+  const real = countLines('lib') + countLines('bin');
+
+  const quoted = [...ENTERPRISE.matchAll(/\b([0-9][0-9,]{2,})\s+lines\b/g)]
+    .map((m) => Number(m[1].replace(/,/g, '')))
+    .filter((n) => Number.isFinite(n));
+  assert.ok(quoted.length > 0, 'ENTERPRISE.md no longer quotes a line count at all — say the number or drop the claim');
+
+  const TOLERANCE = 0.02;
+  const off = quoted.filter((n) => Math.abs(n - real) / real > TOLERANCE);
+  /**
+   * ⚠️ Same allowance the file-count test needs: the document is ALLOWED to
+   * quote a superseded figure while SAYING it was superseded. Forbidding that
+   * would force the corrections to be deleted, which is the opposite of what
+   * this file is for.
+   */
+  const lines = ENTERPRISE.split('\n');
+  const stillAsserted = off.filter((n) => lines.some((line, i) => {
+    if (!new RegExp(`\\b${n.toLocaleString('en-US')}\\s+lines\\b|\\b${n}\\s+lines\\b`).test(line)) return false;
+    const context = lines.slice(Math.max(0, i - 2), i + 3).join(' ');
+    return !/\b(said|used to|was|stale|sat wrong|out of date|no longer|corrected|superseded)\b/i.test(context);
+  }));
+
+  assert.deepEqual(
+    stillAsserted, [],
+    `ENTERPRISE.md asserts a line count more than ${TOLERANCE * 100}% from the real ${real.toLocaleString('en-US')} `
+    + `(lib/*.mjs + bin/*.mjs). Update the figure, or mark the old one as superseded in the sentence around it.`,
+  );
+});
+
 test('`evaluate` is disclosed as an execution path wherever execution is described', () => {
   /**
    * ⚠️ THE OMISSION THIS TEST EXISTS FOR. The README's "What it can execute"
@@ -388,4 +444,63 @@ test('the README states the real size of the tool registry', async () => {
     `README does not state the real registry size (${TOOL_SCHEMAS.length}).`,
   );
   assert.ok(README.includes('`TOOL_SCHEMAS`'), 'and it must cite the export that actually holds them');
+});
+
+test('⭐⭐ the caching claim is split into the half we control and the half we measured', (t) => {
+  /**
+   * ⚠️⚠️ SKIPS WHEN MVP-PLAN.md IS NOT ON DISK, AND THAT IS NOT LAZINESS.
+   *
+   * `package.json` ships `test/` deliberately (commit ed08f2710, "ship the
+   * tests, and add CI that would have caught the false green") so a reviewer can
+   * run them against the code they installed — ENTERPRISE.md now says so out
+   * loud. But the tarball does NOT carry the repo-only working notes this test
+   * reads.
+   *
+   * MEASURED 2026-08-15: repo `npm test` = 0 failures; `npm install` of the
+   * tarball then `npm test` = 3 failures, all of them tests whose SUBJECT was
+   * not shipped. A reviewer taking us up on "run them yourself" met a red suite
+   * on a perfectly healthy build — which discredits the 2,500 tests that were
+   * telling the truth. 43 other tests here already skip when their subject is
+   * absent; these now follow the pattern instead of being the exception.
+   */
+  if (!existsSync(join(ROOT, 'MVP-PLAN.md'))) return t.skip('MVP-PLAN.md is a repo-only working note and is not in the published tarball');
+
+  /**
+   * ⚠️ THE DEFECT THIS PINS, MEASURED 2026-08-14. The README told a buyer "the
+   * unchanged prompt prefix caches at ~97%", and MVP-PLAN.md shipped
+   * "97.2% measured, 4.3× cut" as a ✅ row. Neither number is produced by any
+   * artefact in this repository. The only in-repo measurement is the three-call
+   * probe in `test/turn-cache-and-prefix.test.mjs` — prompt=3616, cached=3072,
+   * which is 84.9% and "3.05× cheaper". Real 4-round CLI runs the same day came
+   * in at 46.7% and 48.6% unpinned.
+   *
+   * ⚠️⚠️ AND THE TWO NUMBERS ARE DIFFERENT CLAIMS, which is why quoting one
+   * figure was always going to be wrong. ~97% is a property of the BYTES WE SEND
+   * (prefix stability — ours, asserted, true). The hit rate is what the PROVIDER
+   * reports, and it is decided by which of 28 upstream endpoints served the
+   * round. Selling the first as if it were the second is the caching equivalent
+   * of reporting `booked` as `won`.
+   *
+   * ⚠️ KEYED OFF NUMBERS AND IDENTIFIERS, per this file's own rule — rephrase
+   * the prose freely; put the unsourced 97.2% back and it goes red.
+   */
+  const MVP = readFileSync(join(ROOT, 'MVP-PLAN.md'), 'utf8');
+
+  for (const [name, text] of [['README.md', README], ['MVP-PLAN.md', MVP]]) {
+    assert.ok(
+      !/97\.2%|caches at ~97%/.test(text),
+      `${name} still quotes the unsourced 97.2% / ~97% cache figure. No artefact in this repo produces it; `
+        + 'the measured pair is prefix stability (asserted, 100% between consecutive rounds) and a '
+        + 'provider-reported hit rate of 46.7–95.8% depending on routing.',
+    );
+    assert.ok(
+      text.includes('46.7'),
+      `${name} must state the measured hit-rate floor (46.7%, 2026-08-14) next to any caching claim, `
+        + 'so the reader sees what routing costs rather than only the best case.',
+    );
+  }
+
+  // ⭐ And the README has to name the lever, since it is the difference between
+  // the two numbers and it is off by default.
+  assert.ok(README.includes('ACUVO_PROVIDER_ORDER'), 'the README must name the variable that moves the hit rate');
 });

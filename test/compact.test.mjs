@@ -781,8 +781,22 @@ test('⚠️ the "N characters removed" figure is EXACT against the original, ev
   for (let i = 0; i < 14; i += 1) {
     msgs.push(...round(`r${i}`, 'read_file', { path: `m${i}.mjs` }, `START${i}\n${'w'.repeat(9_000)}\nEND${i}`));
   }
-  const out = compactMessages(msgs, { budgetTokens: 1_500, keepLastRounds: 0, maxResultChars: 4_000 });
+  /**
+   * ⚠️ THE BUDGET MOVED 1,500 → 3,000 WHEN THE FIFTH PASS LANDED, AND NOTHING
+   * ELSE IN THIS TEST DID. At 1,500 this fixture now falls through tightening
+   * into `receipts`, which replaces twelve of the fourteen clamps with one-line
+   * pointers — so the test would have been measuring two clamps instead of
+   * fourteen, and `checked >= 10` below would have started failing for a reason
+   * that has nothing to do with the arithmetic it is pinning. Measured on this
+   * fixture: at 3,000 it is `tightenRounds: 4`, `clampChars: 400`, all fourteen
+   * results clamped and none receipted — every assertion here at FULL strength.
+   * ⭐ Lowering `checked` to match the new number would have been the weakening;
+   * moving the budget so the pass under test is the pass that runs is not.
+   */
+  const out = compactMessages(msgs, { budgetTokens: 3_000, keepLastRounds: 0, maxResultChars: 4_000 });
   assert.ok(out.report.tightenRounds > 0, 'the fixture must actually drive tightening');
+  assert.equal(out.report.passes.find((p) => p.pass === 'receipts'), undefined,
+    'this fixture must exercise CLAMPING — if receipts fire here it is measuring the wrong pass');
 
   const MARKER = /\n\n\[… ([\d,]+) characters removed from the MIDDLE of this [^\]]*…\]\n\n/;
   let checked = 0;

@@ -38,6 +38,7 @@ Both facts have to travel with the score, so they are written here.
 """
 
 import json
+import os
 import shlex
 import urllib.request
 from pathlib import Path
@@ -92,7 +93,45 @@ NODE_VERSION = "v22.17.0"
 #: ⭐ A BUDGET IS A BLAST RADIUS, NOT AN ALLOWANCE. Sizing it by "what could a
 #: task possibly need" invites the worst case. Sizing it by "what has one ever
 #: actually cost, times a wide margin" makes the worst case affordable.
-BUDGET_USD = 0.10
+#:
+#: ── ⚠️⚠️ WHY THIS READS AN ENV VAR INSTEAD OF BEING EDITED ───────────────────
+#: A smoke run ("does the adapter reach the model at all?") needs a TIGHTER cap
+#: than a scoring run, because it is spending a balance measured in cents. The
+#: obvious way to get one is to edit this line, run, and edit it back — and the
+#: edit-back is the step that gets forgotten. A published score would then belong
+#: to a budget nobody remembers setting, and NOTHING would report it: the number
+#: looks identical either way.
+#:
+#: ⭐ SO THE SCORED VALUE STAYS IN THE SOURCE and a run may only ever tighten it.
+#: `max()` is deliberately absent — this takes the MINIMUM of the two, so the env
+#: var cannot be used to quietly BUY a better score by handing a task more money
+#: than the documented ceiling. A knob that can only reduce is the same rule the
+#: workspace-env guard applies to permissions, for the same reason.
+_SCORED_BUDGET_USD = 0.10
+
+
+def _budget_usd() -> float:
+    """The per-task ceiling: the scored default, or a tighter one from the env."""
+    raw = os.environ.get("ACUVO_BENCH_BUDGET_USD")
+    if not raw:
+        return _SCORED_BUDGET_USD
+    try:
+        asked = float(raw)
+    except ValueError:
+        # ⚠️ A typo must not silently fall back to the scored value on a run
+        # somebody set the var to protect a 14-cent balance.
+        raise ValueError(
+            f"ACUVO_BENCH_BUDGET_USD={raw!r} is not a number. Unset it to use the "
+            f"scored default of ${_SCORED_BUDGET_USD}."
+        )
+    if asked <= 0:
+        raise ValueError(f"ACUVO_BENCH_BUDGET_USD={raw!r} must be greater than zero.")
+    return min(asked, _SCORED_BUDGET_USD)
+
+
+#: Kept as a module-level name so `verify.py` and the README can still refer to
+#: "the per-task dollar ceiling" without knowing about the override.
+BUDGET_USD = _SCORED_BUDGET_USD
 
 # ⚠️⚠️ 600s, NOT THE CLI's DEFAULT 180. Measured 2026-08-12 on the first trial
 # where the agent genuinely ran: it read `decomp.c` and `data.txt`, began reasoning
@@ -275,6 +314,17 @@ class AcuvoAgent(BaseInstalledAgent):
         escaped = shlex.quote(instruction)
         access = self.model_connection
 
+        # ⚠️ ANNOUNCED, NOT ASSUMED. If a run was tightened below the scored
+        # ceiling, that fact has to appear in the run's own output — otherwise a
+        # cheap smoke run and an expensive scoring run are indistinguishable
+        # afterwards, and the score gets attributed to the wrong budget.
+        budget_usd = _budget_usd()
+        if budget_usd != _SCORED_BUDGET_USD:
+            print(
+                f"[acuvo] per-task budget TIGHTENED to ${budget_usd} "
+                f"(scored default is ${_SCORED_BUDGET_USD}) — this is not a scoring run"
+            )
+
         api_key = access.api_key
         if not api_key:
             raise ValueError(
@@ -310,7 +360,7 @@ class AcuvoAgent(BaseInstalledAgent):
                 # to fail, harbor would raise NonZeroAgentExitCodeError and the
                 # trial would be recorded as an error rather than a miss,
                 # quietly deleting our real failures from the denominator.
-                f"acuvo --json --shell --max-rounds {MAX_ROUNDS} --budget {BUDGET_USD} "
+                f"acuvo --json --shell --max-rounds {MAX_ROUNDS} --budget {budget_usd} "
                 f"--timeout {REQUEST_TIMEOUT_S} {escaped} "
                 f"> {RESULT_FILE} 2> {STDERR_FILE} || true"
             ),
@@ -343,17 +393,52 @@ class AcuvoAgent(BaseInstalledAgent):
             print(f"[acuvo] result document unreadable ({exc}) — cost is UNKNOWN, not zero")
             return
 
-        usage = doc.get("usage") or {}
-        context.n_input_tokens = int(usage.get("prompt_tokens") or 0)
-        context.n_output_tokens = int(usage.get("completion_tokens") or 0)
+        # ── ⚠️⚠️ THIS READ THE WRONG KEYS, AND REPORTED "UNKNOWN" FOR TWO REAL
+        #        TRIALS WITH FULL COST DATA SITTING IN THE FILE ────────────────
+        #
+        # It used to read `doc["usage"]["cost"]`, `prompt_tokens`,
+        # `completion_tokens` and `prompt_tokens_details.cached_tokens` — the
+        # OpenAI wire shape. The CLI's `--json` document does not use it.
+        # Measured 2026-08-16 on the first two trials that ever reached a model:
+        #
+        #     doc["usage"]                 -> ABSENT
+        #     doc["costUsd"]               -> 0.00251549424
+        #     doc["tokens"]                -> 31821        (usage.total_tokens)
+        #     doc["cache"]["promptTokens"] -> 19730
+        #     doc["cache"]["cachedTokens"] -> 8960
+        #
+        # ⭐ THE HONEST FALLBACK IS WHY THIS WAS SURVIVABLE. It refused to print
+        # 0.00 and said UNKNOWN instead — so the failure shipped a BLANK cost
+        # column rather than the claim "our agent is free". A flattering default
+        # here would have published a false headline nobody could have caught
+        # from the outside.
+        #
+        # ⚠️ AND THE COST COLUMN IS THE ENTIRE POINT. A Terminal-Bench score
+        # beside a real dollar figure is the argument; a score beside an empty
+        # column is the claim every other entry already makes.
+        cost = doc.get("costUsd")
+        if cost is not None:
+            context.cost_usd = float(cost)
 
-        # ⭐ The cached half is reported separately because it is 50x cheaper,
+        cache = doc.get("cache") or {}
+        prompt_tokens = cache.get("promptTokens")
+        total_tokens = doc.get("tokens")
+
+        if prompt_tokens is not None:
+            context.n_input_tokens = int(prompt_tokens)
+
+        # ⭐ The cached half is reported separately because it is ~50x cheaper,
         # and an agent whose margin comes from cache hits should be visible as
-        # such rather than averaged into one token count.
-        cached = ((usage.get("prompt_tokens_details") or {}).get("cached_tokens"))
+        # such rather than averaged into one token count. Measured on these two
+        # trials: 45.4% and 78.1%.
+        cached = cache.get("cachedTokens")
         if cached is not None:
             context.n_cache_tokens = int(cached)
 
-        cost = usage.get("cost")
-        if cost is not None:
-            context.cost_usd = float(cost)
+        # ⚠️ SUBTRACTION, AND IT IS NAMED AS SUCH. The CLI reports a TOTAL and a
+        # prompt count; it does not report completions separately. This is
+        # arithmetic on two measured figures, not a price estimated from token
+        # counts — the thing this docstring forbids. Skipped entirely rather
+        # than guessed if either half is missing.
+        if prompt_tokens is not None and total_tokens is not None:
+            context.n_output_tokens = max(0, int(total_tokens) - int(prompt_tokens))

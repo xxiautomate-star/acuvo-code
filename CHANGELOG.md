@@ -8,6 +8,37 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- **`acuvo rewind` — undo what the agent did to your files.** Every run now
+  copies the previous contents of each file it writes or deletes into
+  `.acuvo/checkpoints/` (content-addressed, so ten rounds rewriting one file
+  store one copy per distinct version) and prints one line when it finishes:
+  `· checkpoint 20260814-084541-84u8 — 3 files can be put back`. `acuvo rewind`
+  lists them; `acuvo rewind <id>` puts the tree back the way it was **before
+  that run started**, including **deleting the files the agent created**, which
+  `git checkout` cannot do because they are untracked. No model call, no cost,
+  no API key, and it works in a directory that is not a git repository at all.
+  Proven end to end on a real run: `math.mjs` rewritten, `README.md` created,
+  `stale.txt` deleted — one command restored all three.
+  ⚠️ **It refuses any file you changed yourself after the run.** Each entry
+  records the sha256 of what the agent left; if the file on disk is not that, it
+  is skipped with the reason, because a rewind that threw away your edit would
+  be the accident rather than the fix. `--force` overrides and prints every such
+  path as FORCED. A rewind that restored nothing because everything conflicted
+  exits **3**, never 0 — `acuvo rewind <id> && npm test` must not test the tree
+  it was asked to undo.
+  ⚠️ **The bug only a real command line could find (twice, for $0.006):**
+  written first with the `argv[0]` anchor `board` and `verify` use,
+  `acuvo --dir <ws> rewind` did not dispatch — the word fell through as a TASK
+  and a paid agent session read the workspace and did nothing. The verb is now
+  claimed as the first POSITIONAL. `board`, `verify`, `leases` and `spend` still
+  carry the original defect.
+  ⚠️ **And the second one:** `evaluate` writes its snippet through the executor
+  and deletes it with raw `unlinkSync`, so the first real run announced "3 files
+  can be put back" when the user had two. The tool's own scratch file is now
+  excluded by the pattern `evaluate.mjs` itself exports.
+- **`--no-checkpoint`** turns the recording off; it is on by default, off
+  automatically under `--dry-run`, and creates nothing until a run mutates
+  something.
 - **`delegate` — read-only subagents.** Hand a research question to a helper
   with its own fresh context and get back a ~900-character summary instead of
   everything it read. The helper is offered **twelve tools, every one a read**

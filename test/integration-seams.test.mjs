@@ -232,12 +232,36 @@ test('⭐ a --dir run offers read_skill for the DIRECTORY IT IS WORKING IN', asy
   );
 });
 
-test('⚠️ and a workspace with NO skills is not offered the verb (the gate still shuts)', async (t) => {
+/**
+ * ── ⚠️ THIS TEST'S PREMISE WAS RETIRED BY `builtin-skills.mjs` ───────────────
+ *
+ * It asserted that a workspace with no skills is NOT offered `read_skill` — the
+ * right rule when the shelf could be empty, because a dead button is worse than
+ * no button. Since skills became BUNDLED WITH THE CLI there is no such
+ * workspace: every project inherits our twenty, so the verb is never dead.
+ *
+ * ⚠️ THE RULE IT PROTECTED IS STILL REAL, so it is re-pointed rather than
+ * deleted: the verb must be offered exactly when there is something to open.
+ * Deleting it would leave "never offer a dead button" guarded by nothing.
+ */
+test('⭐ a workspace with no skills of its own still inherits the bundled shelf', async (t) => {
   const root = workspace(t);
   const model = scriptedModel([[]]);
   await runSession({ task: 'do nothing', executor: createLocalExecutor(root), config, maxRounds: 3, callModelImpl: model });
   const offeredNames = (model.seen[0].tools ?? []).map((s) => s.function.name);
-  assert.ok(!offeredNames.includes('read_skill'), 'a project with no skills must not be shown a dead button');
+  assert.ok(
+    offeredNames.includes('read_skill'),
+    'the bundled skills stopped reaching a plain project — the shelf shipped and nobody can open it',
+  );
+});
+
+test('⚠️ and the verb is still withheld when there is genuinely nothing to open', async () => {
+  // The original rule, tested where it can still be true: the prompt block is
+  // null for an empty discovery, and `read_skill` is offered off the back of it.
+  const { skillsPromptBlock } = await import('../lib/skills.mjs');
+  assert.equal(skillsPromptBlock({ ok: true, dir: '.acuvo/skills', skills: [], found: 0 }), null,
+    'an empty shelf still produces a catalogue — that is a dead button and prompt tokens for nothing');
+  assert.equal(skillsPromptBlock({ ok: false, dir: '.acuvo/skills', skills: [], found: 0 }), null);
 });
 
 /* ────────────────────────────────────────────────────────────────────────────
@@ -266,12 +290,48 @@ test('⭐⭐ the skills CATALOGUE is in the system prompt, or the tool is undisc
   assert.match(system, /notes, not permissions|cannot give you a tool/i);
 });
 
-test('⚠️ no skills, no catalogue — the prompt is byte-identical to a project without them', async (t) => {
-  const bare = workspace(t);
-  const model = scriptedModel([[]]);
-  await runSession({ task: 'ship it', executor: createLocalExecutor(bare), config, maxRounds: 3, callModelImpl: model });
-  const system = model.seen[0].messages.find((m) => m.role === 'system').content;
-  assert.ok(!system.includes('SKILLS ('), 'a catalogue of nothing is prompt tokens spent on nothing');
+/**
+ * ── 💰 RE-POINTED: THE CATALOGUE IS NOW PAID BY EVERYONE ────────────────────
+ *
+ * This asserted a bare workspace gets NO `SKILLS (` block — right when the shelf
+ * could be empty ("a catalogue of nothing is prompt tokens spent on nothing").
+ * Bundling twenty skills retired that: every project inherits them, so the block
+ * is always present and the empty-shelf case is now a UNIT question, asserted
+ * directly against `skillsPromptBlock` above.
+ *
+ * ⚠️ WHAT REPLACED IT IS A MONEY RULE, AND A SHARPER ONE. Measured 2026-08-18:
+ * the catalogue costs ~4,565 chars / ~1,141 tokens **in every workspace on every
+ * round** — ~7% of the CLI's ~16,370-token fixed payload (lever 10). That is
+ * only affordable because it sits in the CACHEABLE PREFIX, and it only stays in
+ * the cacheable prefix if it is byte-identical from one project to the next.
+ *
+ * So: two unrelated bare workspaces must produce exactly the same block. Anything
+ * that made it vary per project — a path, a count, a timestamp, a sort by mtime —
+ * would void the prefix for every user while changing nothing they can see.
+ */
+test('💰 the bundled catalogue is byte-identical across projects, or it is not cacheable', async (t) => {
+  const one = workspace(t);
+  const two = workspace(t);
+  const grab = async (root) => {
+    const model = scriptedModel([[]]);
+    await runSession({ task: 'ship it', executor: createLocalExecutor(root), config, maxRounds: 3, callModelImpl: model });
+    const system = model.seen[0].messages.find((m) => m.role === 'system').content;
+    const at = system.indexOf('SKILLS (');
+    assert.ok(at >= 0, 'the bundled catalogue vanished from the system prompt');
+    // ⚠️ The blank-line terminator is written with an ESCAPE, not a real
+    // newline. A heredoc stripped the backslashes on the first attempt and put
+    // two literal newlines inside the string, which is an unterminated literal —
+    // the whole file then failed to parse and reported as "0 pass, 1 fail".
+    const end = system.indexOf('\n\n', at);
+    return system.slice(at, end === -1 ? undefined : end);
+  };
+  const a1 = await grab(one);
+  const b1 = await grab(two);
+  assert.equal(a1, b1,
+    'the skills block differs between two bare projects — it is in the cached prefix, so anything '
+    + 'project-specific in it voids the cache for every user and buys nothing');
+  assert.ok(a1.length < 6_000,
+    `the catalogue is ${a1.length} chars and every round pays it — MAX_CATALOGUE_CHARS is the ceiling, not a target`);
 });
 
 /* ────────────────────────────────────────────────────────────────────────────
@@ -459,8 +519,47 @@ test('⭐ …and the intersection OPENS when the project speaks the installed la
   const lsDir = join(root, 'node_modules', 'typescript-language-server', 'lib');
   mkdirSync(lsDir, { recursive: true });
   writeFileSync(join(lsDir, 'cli.mjs'), '// discoverable\n', 'utf8');
+  /**
+   * ⚠️⚠️ THIS FIXTURE GAINED A `typescript` INSTALL ON 2026-08-17, AND THE OLD
+   * ONE WAS THE THING THAT WAS WRONG.
+   *
+   * It used to assert that `typescript-language-server` ALONE opens the
+   * intersection. It does not, and `workspaceCanBeServed` (lsp.mjs) now says so:
+   * that server DRIVES tsserver, it does not contain one — its own spec records
+   * `needs: 'the typescript package (it drives tsserver; it does not contain
+   * one)'`. Without `typescript/lib/tsserver.js` the server starts and cannot
+   * serve, so the four LSP verbs are dead buttons.
+   *
+   * ⭐ The guard was right and the FIXTURE was unrealistic — no real project has
+   * typescript-language-server without typescript. Loosening the check to keep
+   * this test green would have restored four buttons that answer nothing, which
+   * is the exact failure the intersection exists to prevent.
+   */
+  const tsDir = join(root, 'node_modules', 'typescript', 'lib');
+  mkdirSync(tsDir, { recursive: true });
+  writeFileSync(join(tsDir, 'tsserver.js'), '// the thing the server actually drives\n', 'utf8');
+
   assert.strictEqual(lspAvailable(root, { PATH: '' }), true);
   assert.ok(toolNamesForRounds(5, { env: { PATH: '' }, root }).includes('check_types'));
+});
+
+test('⚠️ a language server with no tsserver beside it is still a dead button', (t) => {
+  /**
+   * The inverse of the test above, and the reason it had to change. This is the
+   * exact fixture that used to assert OPEN. It is pinned CLOSED now, so nobody
+   * can "fix" the intersection by loosening the workspace check without this
+   * going red and explaining why.
+   */
+  const root = workspace(t);
+  writeFileSync(join(root, 'package.json'), '{ "name": "x" }\n', 'utf8');
+  const lsDir = join(root, 'node_modules', 'typescript-language-server', 'lib');
+  mkdirSync(lsDir, { recursive: true });
+  writeFileSync(join(lsDir, 'cli.mjs'), '// discoverable\n', 'utf8');
+
+  assert.strictEqual(
+    lspAvailable(root, { PATH: '' }), false,
+    'typescript-language-server drives tsserver — without the typescript package it can only fail to initialise',
+  );
 });
 
 test('⭐ a manifest one level down counts — that is how real repositories are shaped', (t) => {
@@ -492,10 +591,18 @@ test('⚠️⭐ a plain workspace, no flags: the offer and the prompt are what t
   const outcome = await runSession({ task: 'read it', executor: createLocalExecutor(root), config, maxRounds: 5, callModelImpl: model });
 
   const offered = (model.seen[0].tools ?? []).map((s) => s.function.name);
-  // No .acuvo/skills → no read_skill. No language server for JS here → no lsp.
-  assert.ok(!offered.includes('read_skill'));
+  /**
+   * ⚠️ `read_skill` AND THE CATALOGUE ARE NOW PART OF "WHAT THEY ALWAYS WERE".
+   * Both lines here asserted their ABSENCE, on the premise that a plain project
+   * has no skills. Bundling made that false: a plain project inherits twenty.
+   * The rest of this test — no plan banner, no acceptance, an untouched exit
+   * verdict — is the part that still says "no flags changed anything", and it is
+   * left exactly as it was.
+   */
+  assert.ok(offered.includes('read_skill'), 'a plain project stopped inheriting the bundled shelf');
   const system = model.seen[0].messages.find((m) => m.role === 'system').content;
-  assert.ok(!system.includes('SKILLS ('));
+  assert.ok(system.includes('SKILLS ('), 'the bundled catalogue stopped reaching a plain project');
+  assert.ok(!offered.includes('lsp'), 'no language server here — that half of the rule is unchanged');
   // No plan file → no banner, so the conversation is exactly the old one.
   assert.ok(!model.seen[0].messages.some((m) => typeof m.content === 'string' && m.content.startsWith('plan:')));
   // No criterion anywhere → acceptance is null, and the exit verdict is untouched.

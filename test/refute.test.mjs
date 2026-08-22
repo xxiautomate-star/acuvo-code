@@ -31,6 +31,20 @@ const session = (content, { cost = 0.001 } = {}) => {
   return impl;
 };
 
+/**
+ * ── ⚠️ EVERY `refuteClaim` TEST BELOW NOW HAS TO SUPPLY ONE OF THESE ────────
+ *
+ * The refuter refuses to run without an external signal — a compiler exit code,
+ * a test result or a linter result — because critiquing blind is MEASURED to
+ * make answers worse (down or flat in 6 settings of 6, −37.7 points on one
+ * benchmark in a single round). See `refute-needs-external-signal.test.mjs` for
+ * the gate itself; here it is just the precondition, handed over as the
+ * builder's own run so no command is executed by a unit test.
+ */
+const SIGNAL_IN_HAND = [
+  { name: 'run_command', args: { command: 'npm test' }, result: { ok: true, command: 'npm test', exitCode: 0 } },
+];
+
 test('⭐⭐ a concrete refutation flips the verdict', () => {
   const v = parseRefuteVerdict('I ran the suite.\nREFUTED: npm test still exits 1 — invoice.test.mjs fails on line 14');
   assert.equal(v.refuted, true);
@@ -67,7 +81,7 @@ test('⚠️ an unparseable reply changes NOTHING — the burden is on the refut
 
 test('⚠️⚠️ THE REFUTER CANNOT WRITE — a reviewer that fixes things is not reviewing', async () => {
   const impl = session('NOT REFUTED: checked it');
-  await refuteClaim({ task: 'fix the bug', claim: 'fixed it', executor: {}, config: { apiKey: 'k' }, sessionImpl: impl });
+  await refuteClaim({ task: 'fix the bug', claim: 'fixed it', executor: {}, config: { apiKey: 'k' }, executed: SIGNAL_IN_HAND, sessionImpl: impl });
 
   const offered = impl.lastOpts?.toolNames ?? [];
   for (const w of ['write_file', 'write_files', 'edit_file', 'delete_file', 'git_commit', 'evaluate']) {
@@ -78,7 +92,7 @@ test('⚠️⚠️ THE REFUTER CANNOT WRITE — a reviewer that fixes things is 
 
 test('⭐ it runs with a FRESH context — inheriting the reasoning inherits the blind spot', async () => {
   const impl = session('NOT REFUTED: fine');
-  await refuteClaim({ task: 'fix the bug', claim: 'fixed it', executor: {}, config: { apiKey: 'k' }, sessionImpl: impl });
+  await refuteClaim({ task: 'fix the bug', claim: 'fixed it', executor: {}, config: { apiKey: 'k' }, executed: SIGNAL_IN_HAND, sessionImpl: impl });
   assert.equal(impl.lastOpts?.priorMessages, undefined,
     'the second opinion must not see how the first one thought, or it is not a second opinion');
   assert.match(impl.lastOpts.task, /REFUTE THAT CLAIM/i);
@@ -87,7 +101,7 @@ test('⭐ it runs with a FRESH context — inheriting the reasoning inherits the
 
 test('⭐ its cost comes back so the parent can charge it', async () => {
   const r = await refuteClaim({
-    task: 't', claim: 'c', executor: {}, config: { apiKey: 'k' },
+    task: 't', claim: 'c', executor: {}, config: { apiKey: 'k' }, executed: SIGNAL_IN_HAND,
     sessionImpl: session('NOT REFUTED: ok', { cost: 0.0022 }),
   });
   assert.equal(r.ok, true);
@@ -96,7 +110,7 @@ test('⭐ its cost comes back so the parent can charge it', async () => {
 
 test('⚠️ a crashed refuter does NOT fail work that may be perfectly good', async () => {
   const r = await refuteClaim({
-    task: 't', claim: 'c', executor: {}, config: { apiKey: 'k' },
+    task: 't', claim: 'c', executor: {}, config: { apiKey: 'k' }, executed: SIGNAL_IN_HAND,
     sessionImpl: async () => { throw new Error('the model died'); },
   });
   assert.equal(r.ok, false);

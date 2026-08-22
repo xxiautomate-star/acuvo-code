@@ -30,9 +30,31 @@ import { fileURLToPath } from 'node:url';
 
 const pkg = JSON.parse(readFileSync(fileURLToPath(new URL('../package.json', import.meta.url)), 'utf8'));
 
+/**
+ * ── ⚠️ WHERE THE TIMEOUT LIVES MOVED, AND THE GUARD HAD TO FOLLOW IT ────────
+ *
+ * `npm test` used to be `node --test --test-timeout=180000 test/*.test.mjs`, so
+ * reading `pkg.scripts.test` was the same as reading the flag. It is now
+ * `node scripts/test.mjs` — because a SHELL glob does not expand on cmd.exe, so
+ * an installed copy ran ZERO tests and exited 0 (`SHAKEDOWN.md` §1.2).
+ *
+ * ⭐ THE INTENT OF THIS GUARD IS UNCHANGED: a hang must never be unbounded. Only
+ * its LOOKUP changes — it now follows the delegation instead of asserting on the
+ * string it used to find. ⚠️ Following it is important rather than pedantic: if
+ * `scripts/test.mjs` ever drops the flag, this must go red, and a test that only
+ * ever read package.json would have gone quietly green forever.
+ */
+const effectiveTestCommand = (() => {
+  const script = String(pkg.scripts.test ?? '');
+  const delegated = /node\s+(scripts\/[\w.-]+\.mjs)/.exec(script);
+  if (!delegated) return script;
+  const runner = readFileSync(fileURLToPath(new URL(`../${delegated[1]}`, import.meta.url)), 'utf8');
+  return `${script}\n${runner}`;
+})();
+
 test('⭐⭐ the suite still has a finite timeout — a hang must never be able to wait forever', () => {
-  const m = /--test-timeout=(\d+)/.exec(pkg.scripts.test);
-  assert.ok(m, 'the test script must pass --test-timeout; node --test has NO default and a hang is then unbounded');
+  const m = /--test-timeout=(\d+)/.exec(effectiveTestCommand);
+  assert.ok(m, 'the test script (or the runner it delegates to) must pass --test-timeout; node --test has NO default and a hang is then unbounded');
   const ms = Number(m[1]);
   assert.ok(Number.isFinite(ms) && ms > 0, 'and it must be a real number');
   assert.ok(ms <= 600_000, `${ms}ms is long enough that a hang stops being reported to a human waiting for it`);
@@ -54,7 +76,7 @@ test('⚠️ …and enough headroom that a slow-but-healthy file is not failed',
    * jitter.
    */
   const slowestFileIdleMs = 28_500;
-  const ms = Number(/--test-timeout=(\d+)/.exec(pkg.scripts.test)[1]);
+  const ms = Number(/--test-timeout=(\d+)/.exec(effectiveTestCommand)[1]);
   assert.ok(
     ms >= slowestFileIdleMs * 4,
     `${ms}ms is under 4x the slowest file's idle time (${slowestFileIdleMs}ms). That file already blew a 60s `

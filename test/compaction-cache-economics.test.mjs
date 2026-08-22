@@ -80,7 +80,23 @@ test('⚠️ the loop compares against the HIGH mark and compacts to the LOW one
   // ⭐ Asserting the WIRING, not just the constants: two correct numbers that
   // are never used together are the same bug with better documentation.
   assert.match(turnSource, /estimated > CONTEXT_BUDGET_TOKENS/);
-  assert.match(turnSource, /budgetTokens: COMPACT_TARGET_TOKENS/);
+  /**
+   * ⚠️ THE LOW MARK IS NOW DERIVED, NOT LITERAL, AND THAT IS THE FIX rather than
+   * a regression. This asserted the source text `budgetTokens:
+   * COMPACT_TARGET_TOKENS`, which passed for a whole day while the wiring it
+   * describes was broken: the trigger had learned to count the tool offer and
+   * the target had not, so the real hysteresis gap was `36,000 − offer` and went
+   * negative past a 36,000-token offer. A flat constant here is precisely the
+   * defect — the two marks must be measured in the same currency.
+   *
+   * ⭐ So the assertion now pins the RELATIONSHIP, and `compactionBudget` is
+   * behaviourally covered in test/compaction-hysteresis.test.mjs. A source
+   * regex can only ever check spelling; that file checks that the gap survives
+   * a growing offer, which is the property this test is really about.
+   */
+  assert.match(turnSource, /budgetTokens: messageBudget/);
+  assert.match(turnSource, /compactionBudget\(offerTokens\)/);
+  assert.match(turnSource, /COMPACT_TARGET_TOKENS - offer/);
 });
 
 /* ── the behaviour the numbers are supposed to produce ───────────────────── */

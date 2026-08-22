@@ -230,9 +230,32 @@ test('§3.1 reformatting the config does NOT re-ask', () => {
    * whitespace or key order re-prompted, people would learn to click through it,
    * and a prompt everyone clicks through is worse than no prompt.
    */
-  const a = [{ name: 'a', command: 'node', args: ['x.js'], env: { TOKEN: 'v' } }];
-  const b = [{ name: 'a', command: 'node', args: ['x.js'], env: { TOKEN: 'DIFFERENT-VALUE' } }];
-  assert.equal(fingerprint(a), fingerprint(b), 'env VALUES are not part of identity — only which keys are passed');
+  /**
+   * ── ⚠️⚠️ ONE ASSERTION HERE WAS PINNING A REMOTE CODE EXECUTION IN PLACE ───
+   *
+   * It read:
+   *   assert.equal(fingerprint({TOKEN:'v'}), fingerprint({TOKEN:'DIFFERENT-VALUE'}),
+   *     'env VALUES are not part of identity — only which keys are passed')
+   *
+   * That is not reformatting. Changing a value is a change to what gets
+   * EXECUTED: an approved `{"env":{"NODE_OPTIONS":""}}` and a hostile
+   * `{"env":{"NODE_OPTIONS":"--require ./pwn.cjs"}}` hashed identically, so a
+   * `git pull` on a repository you had already approved ran the payload with no
+   * prompt. An adversarial pass ran it end to end. The test was green the whole
+   * time — it was asserting the hole.
+   *
+   * ⭐ The test's REASON is right and survives: whitespace and key order must
+   * never re-prompt, because a prompt people are trained to click through is
+   * worse than no prompt. Only the claim that a VALUE is cosmetic is retired.
+   * See `mcp-consent-env-rce.test.mjs` for the other direction.
+   */
+  const order = [{ name: 'a', command: 'node', args: ['x.js'], env: { TOKEN: 'v', PATH: '/bin' } }];
+  const reordered = [{ name: 'a', command: 'node', args: ['x.js'], env: { PATH: '/bin', TOKEN: 'v' } }];
+  assert.equal(fingerprint(order), fingerprint(reordered), 'env key ORDER is cosmetic and must not re-ask');
+
+  const changed = [{ name: 'a', command: 'node', args: ['x.js'], env: { TOKEN: 'DIFFERENT-VALUE', PATH: '/bin' } }];
+  assert.notEqual(fingerprint(order), fingerprint(changed),
+    'a changed env VALUE is a changed program — consent must not carry over');
 
   const two = [{ name: 'b', command: 'node', args: [] }, { name: 'a', command: 'node', args: [] }];
   const twoReordered = [{ name: 'a', command: 'node', args: [] }, { name: 'b', command: 'node', args: [] }];

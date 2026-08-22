@@ -365,14 +365,33 @@ test('a single-shot run explains the round budget rather than blaming configurat
   assert.match(byName.read_file.fix, /rounds/i);
 });
 
-test('read_skill and the LSP tools name the missing directory / the install command', () => {
+/**
+ * ── ⚠️ THIS TEST'S PREMISE WAS RETIRED BY BUNDLING THE SKILLS ───────────────
+ *
+ * It asserted that `read_skill` is WITHHELD in a workspace with no
+ * `.acuvo/skills`, and that the reason names that directory. Skills ship with
+ * the CLI now, so a bare workspace has a full shelf and `read_skill` is
+ * OFFERED — `byName.read_skill` was simply undefined, and the test died on a
+ * property of nothing rather than on the thing it was checking.
+ *
+ * ⭐ The half that is still live is the LSP half, and it is the more valuable
+ * one: those tools genuinely are withheld until a language server is installed,
+ * and a reason that does not name the install command is exactly the non-answer
+ * this doctor exists to avoid.
+ */
+test('read_skill is now OFFERED everywhere, and the LSP tools still name the install command', () => {
   const dir = mkdtempSync(join(tmpdir(), 'doctor-offer-'));
   try {
     writeFileSync(join(dir, 'index.ts'), 'export const a = 1;\n');
     const o = toolOffer({ root: dir, env: FULL_ENV, allowRun: true, maxRounds: 8 });
     const byName = Object.fromEntries(o.withheld.map((w) => [w.name, w]));
-    assert.match(byName.read_skill.why, /\.acuvo[/\\]skills/);
+    assert.equal(
+      byName.read_skill,
+      undefined,
+      'read_skill is withheld in a bare workspace — the bundled shelf is not reaching it',
+    );
     if (byName.check_types) {
+      assert.ok(byName.check_types.fix, 'a withheld LSP tool with no fix is the non-answer this doctor exists to avoid');
       assert.ok(/language server|typescript-language-server|manifest|source file/i.test(byName.check_types.why), byName.check_types.why);
     }
   } finally {
@@ -1130,7 +1149,15 @@ test('⭐ the default model reports automatic caching — and admits it is docum
   const report = await runDoctor({ ...BASE, env: {}, fetchImpl: null, maxRounds: 8 });
   const c = find(report, 'cache.model');
   assert.equal(c.state, 'live');
-  assert.equal(c.verified, false, 'no cache-hit telemetry exists yet — a green tick here would be a claim we cannot back');
+  /**
+   * ⚠️ THE ASSERTION IS RIGHT; ITS OLD MESSAGE WAS THE DEFECT. It used to read
+   * "no cache-hit telemetry exists yet", which was the same stale fact the
+   * doctor's own string carried — and BACKLOG.md then cited this line as PROOF
+   * that telemetry did not exist, i.e. quoted the defect as evidence for itself.
+   * Telemetry does exist (cache.hitRate in --json, on every run). What stays
+   * true, and is what this pins, is that THIS check never looked at it.
+   */
+  assert.equal(c.verified, false, 'this check is a table lookup about the MODEL, not a measurement of your run — a green tick here would claim something it never looked at');
   assert.match(c.detail, /deepseek/i);
   assert.match(c.detail, /automatic/i);
 });

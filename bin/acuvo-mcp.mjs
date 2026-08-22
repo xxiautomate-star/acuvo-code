@@ -34,6 +34,28 @@ import { fileURLToPath } from 'node:url';
 
 import { createMcpServer, serve, SERVER_VERSION } from '../lib/mcp-server.mjs';
 
+/**
+ * ── ⚠️ WHY THE ROOT IS AN ARGUMENT AND NOT `process.cwd()` ──────────────────
+ *
+ * A host spawns its MCP servers with whatever working directory it happens to
+ * have — often the user's home, sometimes `/`. Taking cwd as the workspace
+ * would make the containment check in `workspace.mjs` pass for every file on
+ * the machine: a boundary that exists in the code and nowhere in reality. So
+ * the directory is typed by the person editing the host config, exactly the way
+ * they type the server list in `mcp.json`.
+ *
+ * Both spellings, because both appear in real host configs: `--root /path` and
+ * `--root=/path`. `ACUVO_MCP_ROOT` works too and loses to the flag, since an
+ * `args` array is more visible in a config file than an `env` block.
+ */
+function flagValue(argv, flag) {
+  const exact = argv.indexOf(flag);
+  if (exact !== -1 && argv[exact + 1] !== undefined && !argv[exact + 1].startsWith('-')) return argv[exact + 1];
+  const joined = argv.find((a) => a.startsWith(`${flag}=`));
+  if (joined) return joined.slice(flag.length + 1);
+  return null;
+}
+
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
 /**
@@ -78,22 +100,58 @@ async function main() {
       'acuvo-mcp — expose Acuvo\'s browser-backed capabilities over MCP (stdio).',
       '',
       'It speaks JSON-RPC on stdin/stdout and is meant to be spawned by an MCP host,',
-      'not run by hand. Two tools, and only two:',
+      'not run by hand. Four gated groups, and nothing outside them:',
       '',
-      '  see_page       render HTML in a real browser; get the screenshot and the',
-      '                 measured layout/contrast defects back',
-      '  make_document  turn HTML into a real PDF, PNG or PPTX',
+      '  browser (needs a service URL)',
+      '    see_page       render HTML in a real browser; get the measured',
+      '                   layout/contrast defects back',
+      '    make_document  turn HTML into a real PDF, PNG or PPTX',
+      '    Both take the HTML itself, never a file path.',
       '',
-      'It deliberately exposes NO file access and NO command execution — the agent',
-      'calling it already has both, so offering them again would add no capability',
-      'and one more attack surface.',
+      '  workspace reads (needs --root)',
+      '    read_file  read_lines  read_around  list_dir  find_files  search_text',
+      '',
+      '  document reads (needs --root and a reader service)',
+      '    read_document  read_table    PDF / DOCX / XLSX / scans -> text',
+      '',
+      '  workspace writes (needs --root AND --allow-write)',
+      '    write_file  write_files  edit_file  delete_file',
+      '',
+      'NOTHING STARTS A PROCESS. run_command, run_program, evaluate, repl,',
+      'start_process, the acceptance verbs, git and the four LSP verbs are refused',
+      'unconditionally, and there is no flag to turn them on: the calling agent',
+      'already has a shell, and write + run composes into arbitrary code execution.',
+      'generate_image is refused too — it is the one tool that reaches an',
+      'XXIautomate endpoint with no credential set at all, so every call would be',
+      'unmetered GPU on our bill.',
+      '',
+      'Options:',
+      '  --root <dir>         the ONE directory the workspace tools may touch.',
+      '                       Never inferred from the working directory: a host',
+      '                       spawns servers wherever it likes, and a root of / or',
+      '                       ~ makes the containment check meaningless. Without',
+      '                       it, only the browser tools are served.',
+      '  --allow-write        also serve write_file, write_files, edit_file and',
+      '                       delete_file. Off by default; a read-only Acuvo is a',
+      '                       lens, a writing one changes somebody\'s repository.',
       '',
       'Environment:',
+      '  ACUVO_MCP_ROOT       same as --root (the flag wins)',
+      '  ACUVO_MCP_WRITE=1    same as --allow-write (only 1/true/yes/on count)',
       '  RENDER_AUDIT_URL     render service (without it, see_page is not offered)',
       '  MODAL_PRESS_URL      document service (without it, make_document is not offered)',
-      '  MODAL_VIDEO_SECRET   shared secret for both, if the services require one',
-      '  ACUVO_MCP_OUT        where files are written (default: <tmp>/acuvo-mcp)',
-      '  ACUVO_MCP_MAX_CALLS  lifetime call cap (default 200) — renders cost money',
+      '  MODAL_DOC_READ_URL   document reader (without it, read_document is not offered)',
+      '  MODAL_TABLE_READ_URL table reader (without it, read_table is not offered)',
+      '  MODAL_VIDEO_SECRET   shared secret for those services, if they require one',
+      '  ACUVO_MCP_OUT        where rendered files are written (default: <tmp>/acuvo-mcp)',
+      '  ACUVO_MCP_MAX_CALLS  lifetime render cap (default 200) — renders cost money',
+      '',
+      'Example host config:',
+      '  "acuvo": {',
+      '    "command": "npx",',
+      '    "args": ["-y", "acuvo-code", "acuvo-mcp", "--root", "/path/to/project"],',
+      '    "env": { "RENDER_AUDIT_URL": "..." }',
+      '  }',
       '',
     ].join('\n'));
     return 0;
@@ -101,7 +159,12 @@ async function main() {
 
   loadEnv();
 
-  const server = createMcpServer({ env: process.env });
+  // ⚠️ The flag beats the env var: an `args` array is visible in a host config,
+  // an `env` block is the thing people forget they set months ago.
+  const rootArg = flagValue(process.argv, '--root') ?? process.env.ACUVO_MCP_ROOT ?? null;
+  const allowWrite = process.argv.includes('--allow-write') ? true : undefined;
+
+  const server = createMcpServer({ env: process.env, workspaceRoot: rootArg, allowWrite });
 
   /**
    * ⭐ SAY WHAT IS LIVE, ON STDERR, BEFORE THE FIRST MESSAGE. Hosts surface a
@@ -110,7 +173,18 @@ async function main() {
    * one line long.
    */
   const names = server.listTools().map((t) => t.name);
-  log(`v${SERVER_VERSION} · ${names.length ? names.join(', ') : 'NO TOOLS — set RENDER_AUDIT_URL and/or MODAL_PRESS_URL'}`);
+  log(`v${SERVER_VERSION} · ${names.length} tool${names.length === 1 ? '' : 's'}${names.length ? `: ${names.join(', ')}` : ''}`);
+  if (names.length === 0) {
+    log('NO TOOLS. Set RENDER_AUDIT_URL and/or MODAL_PRESS_URL for the browser tools, and/or pass --root <dir> for the workspace tools.');
+  }
+  /**
+   * ⚠️ A REFUSED ROOT IS SHOUTED, NOT SWALLOWED. The operator typed a directory
+   * and got a server without workspace tools; if the reason is only visible by
+   * reading this source, they will conclude the feature does not work.
+   */
+  if (server.workspaceError) log(`WORKSPACE ROOT REFUSED — ${server.workspaceError}`);
+  else if (server.workspaceRoot) log(`workspace: ${server.workspaceRoot} (${server.writeEnabled ? 'read + WRITE' : 'read-only'})`);
+  else log('workspace: none — pass --root <dir> to serve the file tools');
   log(`output directory: ${server.root}`);
 
   /**

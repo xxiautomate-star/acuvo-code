@@ -360,6 +360,19 @@ test('STUCK_PATTERNS names every pattern the detector can return', () => {
    */
   seen.add(detectStuck([round(1, []), round(2, []), round(3, [])]).pattern);
   seen.add(detectStuck([round(1, [editFail('a', 'x', 'no match')]), round(2, [editFail('a', 'y', 'no match')]), round(3, [editFail('a', 'z', 'no match')])]).pattern);
+  /**
+   * ⭐ `long-cycle` — the family the four-round window cannot see. Period 3,
+   * repeated three times, on identical arguments each pass. It has to be built
+   * out of rounds that trigger none of the sharper patterns, because those are
+   * checked first and would (correctly) win.
+   */
+  const cyc = [];
+  for (let i = 0; i < 3; i += 1) {
+    cyc.push(round(i * 3 + 1, [read('a.js')]));
+    cyc.push(round(i * 3 + 2, [write('a.js', `body-${i % 1}`)]));
+    cyc.push(round(i * 3 + 3, [cmd('t', 0, '')]));
+  }
+  seen.add(detectStuck(cyc).pattern);
   assert.equal(seen.has(null), false, 'a scenario meant to trigger a pattern produced none — fix the SCENARIO, not the detector');
   for (const p of seen) assert.ok(STUCK_PATTERNS.includes(p), `${p} is missing from STUCK_PATTERNS`);
   assert.equal(seen.size, STUCK_PATTERNS.length, 'STUCK_PATTERNS lists a pattern nothing produces');

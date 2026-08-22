@@ -294,6 +294,79 @@ test('a session where only SOME rounds report says how many did not', async (t) 
   assert.ok(/1 round unreported/.test(text), `did not disclose the silent round:\n${text}`);
 });
 
+/**
+ * ── ⭐⭐ THE FLOOR IS ROUND 1, AND THE SESSION RATE HIDES IT ─────────────────
+ *
+ * `lib/plan.mjs` sizes the pricing ladder on holding a 90% cache floor. That
+ * floor is a claim about a FRESH invocation's round 1 — the only round prefix
+ * discipline controls. Rounds 2+ append tool results the provider has never seen
+ * by definition, so their miss is arithmetic rather than a defect, and averaging
+ * the two makes the floor unobservable.
+ *
+ * ⚠️⚠️ MEASURED 2026-08-16, two live runs in one workspace on
+ * `deepseek-v4-flash`: 72.0% over 4 rounds, 49.2% over 2. Both numbers are
+ * mostly a function of the round count. Neither answers the question the margin
+ * depends on.
+ */
+test('⭐⭐ round 1 is reported as its own reading — a cold start is invisible in the session rate', async (t) => {
+  const dir = workspace(t);
+  const { outcome } = await driveSession({
+    dir,
+    script: (n) => (n === 1
+      ? {
+        // ⚠️ THE SHAPE THAT MOTIVATES THIS: round 1 stone cold (the prefix moved
+        // since the last invocation), rounds after it nearly perfect.
+        ok: true,
+        content: 'looking',
+        toolCalls: [{ id: 'c1', function: { name: 'list_dir', arguments: JSON.stringify({ path: '.' }) } }],
+        usage: usageWith(8000, 0, 0.0011),
+        finishReason: 'tool_calls',
+      }
+      : {
+        ok: true, content: 'done', toolCalls: [],
+        usage: usageWith(9000, 8704, 0.0002), finishReason: 'stop',
+      }),
+  });
+  const c = outcome.usage.cache;
+  // The session looks healthy…
+  assert.ok(c.hitRate > 0.5, `expected a healthy-looking session rate, got ${c.hitRate}`);
+  // …and the floor, which is what is actually priced, is zero.
+  assert.ok(c.firstRound, 'the floor was not reported at all');
+  assert.equal(c.firstRound.hitRate, 0);
+  assert.equal(c.firstRound.promptTokens, 8000);
+  assert.equal(c.firstRound.cachedTokens, 0);
+});
+
+test('⚠️ a SILENT round 1 leaves the floor null — round 2 is warm from round 1, not a floor', async (t) => {
+  /**
+   * ⚠️⚠️ THE TEMPTING WRONG IMPLEMENTATION IS "THE FIRST ROUND THAT REPORTED".
+   * Here round 1 says nothing about caching and round 2 reports 85%; promoting
+   * round 2 would publish 85% as the floor when round 2's cache was created by
+   * round 1 moments earlier. That is not a partial measurement, it is a
+   * different measurement wearing the floor's name.
+   */
+  const dir = workspace(t);
+  const { outcome } = await driveSession({
+    dir,
+    script: (n) => (n === 1
+      ? {
+        ok: true,
+        content: 'looking',
+        toolCalls: [{ id: 'c1', function: { name: 'list_dir', arguments: JSON.stringify({ path: '.' }) } }],
+        usage: { cost: 0.0005, total_tokens: 9084, prompt_tokens: 9000, completion_tokens: 84 },
+        finishReason: 'tool_calls',
+      }
+      : {
+        ok: true, content: 'done', toolCalls: [],
+        usage: usageWith(3616, 3072, 0.000168), finishReason: 'stop',
+      }),
+  });
+  const c = outcome.usage.cache;
+  assert.equal(c.roundsReported, 1, 'the fixture stopped exercising the silent-round path');
+  assert.ok(c.hitRate > 0.8, `the session rate should still be the measured 85%, got ${c.hitRate}`);
+  assert.equal(c.firstRound, null, 'a later round was promoted to the floor');
+});
+
 /* ────────────────────────────────────────────────────────────────────────────
  * (2) the prompt-prefix contract
  * ──────────────────────────────────────────────────────────────────────────── */

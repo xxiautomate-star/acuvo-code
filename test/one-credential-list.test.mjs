@@ -31,7 +31,7 @@ import { join } from 'node:path';
 
 import { createLocalExecutor } from '../lib/workspace.mjs';
 import { executeToolCall } from '../lib/tools.mjs';
-import { refusedCommitPath } from '../lib/git.mjs';
+import { refusedCommitPath } from '../lib/secret-paths.mjs';
 
 const CANARY = 'CANARY_SECRET_VALUE';
 
