@@ -1,12 +1,58 @@
 # Acuvo Code
 
+[![npm version](https://img.shields.io/npm/v/acuvo-code.svg)](https://www.npmjs.com/package/acuvo-code)
+[![npm downloads](https://img.shields.io/npm/dm/acuvo-code.svg)](https://www.npmjs.com/package/acuvo-code)
+[![license](https://img.shields.io/npm/l/acuvo-code.svg)](./LICENSE)
+[![node](https://img.shields.io/node/v/acuvo-code.svg)](https://www.npmjs.com/package/acuvo-code)
+
 A coding agent for your terminal that **writes code, runs it, reads the failure, and fixes it** — and that can *look at* what it built.
 
 Zero dependencies. One file of Node, no framework, no install-time build step.
 
+<!-- demo: a short terminal recording goes here (see README.md#demo for the current one). -->
+![Acuvo Code demo](./demo-preview.gif)
+
 ```bash
+npm i -g acuvo-code
 acuvo "the invoice test is failing — work out why and fix it"
 ```
+
+### 30-second quickstart
+
+```bash
+npm i -g acuvo-code          # installs the acuvo and acuvo-mcp binaries
+acuvo --doctor                # spends nothing — checks your key, model chain, git, every tool
+acuvo --login                 # optional: one Acuvo account, no provider key, no BYOK
+acuvo "add a health check to src/server.js"
+acuvo rewind                  # undo what the last run changed — no git repo required
+```
+
+### What it can do
+
+- **Writes, runs, and fixes** — executes the code it writes, reads the real exit code and
+  stderr, and iterates on the actual failure instead of guessing.
+- **`acuvo rewind`** — content-addressed checkpoints of every file a run touches; puts the
+  tree back exactly, including deleting files the run created, with no git repo needed.
+- **`delegate`** — read-only subagents with their own context for research, capped depth and
+  rounds so one task can't fan out into dozens of model calls.
+- **`remember` / `forget`** — durable, committable facts in `.acuvo/memory/` so the next run
+  doesn't rediscover your test command.
+- **`--budget` / `--until-done`** — spend caps and run-until-green loops.
+- **MCP client** — connects to any Model Context Protocol server declared in config.
+- **`see_page`** — renders HTML in a real browser and reads back a screenshot.
+- **Voice, documents, images** — `--task-audio`, `make_document`, `transcribe`, `speak`.
+- **Skills** — `.acuvo/skills/*.md`, team procedures with no pull request to change them.
+- **Full audit log** — every run appends a redacted JSON line; `acuvo spend` and `acuvo --replay`
+  read it back.
+
+See [the full README](#why-this-instead-of-the-others) below for what's measured, what's not
+shipped yet, and the honest state of each capability.
+
+**Links:** [acuvo.ai](https://www.acuvo.ai) · [npm package](https://www.npmjs.com/package/acuvo-code) ·
+Discord — coming soon · [report an issue](https://github.com/xxiautomate-star/acuvo-code/issues) ·
+[discussions](https://github.com/xxiautomate-star/acuvo-code/discussions)
+
+---
 
 ## If you already use Claude Code, Codex or Cursor, here is the only reason to add this
 
@@ -85,6 +131,27 @@ It also speaks, transcribes, and turns HTML into PDF/PNG/PPTX — see [Media too
 
 Requires **Node 20+**.
 
+### npm (recommended)
+
+```bash
+npm i -g acuvo-code
+acuvo --version
+```
+
+This installs two binaries, `acuvo` and `acuvo-mcp`. Verified live against the registry
+2026-10-01: `npm view acuvo-code version` answers (latest at time of writing was `0.6.25`),
+`npm view acuvo-code dist.tarball` resolves, and the package's own `bin` field lists both
+binaries — not read off a cached page.
+
+> ⚠️ **This section used to say the package was not published and there was no `npm install -g`
+> route** (the lines below, kept rather than deleted — "docs decay in both directions" is this
+> repo's own rule, two paragraphs down). That was true when it was written. It is not true now:
+> the package is live on npm. ⚠️ **It is also not the same code as this clone.** This public
+> `main` branch currently reflects the `0.3.1` release (2026-08-22); the published package has
+> moved past that. The npm install above is the fastest way to run the CLI; the clone below is
+> the fastest way to read or modify the source, and the two can be a few versions apart until the
+> publish and the public repo are synced in the same push.
+
 **The repository is public.** `https://github.com/xxiautomate-star/acuvo-code` is open and
 clonable — verified 2026-08-11 by cloning it into an empty directory and running both the
 CLI and the test suite out of the result. Clone it with
@@ -107,8 +174,9 @@ immediately on a fresh checkout.
 > The clone and this document are the same commit now, and the numbers here are re-measured
 > rather than remembered.
 >
-> Still true: **neither `acuvo-code` nor `acuvo` is published to npm** (the registry returns
-> 404 for both), so there is no `npm install -g` route.
+> ⚠️ **This also used to say "Still true: neither `acuvo-code` nor `acuvo` is published to
+> npm."** Not true as of 2026-10-01 — see the npm section above, which replaced the 404 this
+> line used to describe.
 
 **Or run it from the source you already have.** The package is self-contained and has no
 dependencies, so there is nothing to install — point Node at the entry file:
@@ -147,7 +215,9 @@ because there is nothing to install.
 > **exactly as expensive as the wrong instruction it replaced**, and this one was worse than
 > most: it told a reader we were broken in a way we were not. Docs decay in both directions.
 
-**Still pending:** `npm install -g acuvo-code` — the package is not published yet.
+**`npm install -g acuvo-code` is live** — see the npm section at the top of Install. The lines
+above describe the no-install alternatives for a source checkout; use whichever matches what
+you have open.
 
 ### Before anything else: `acuvo --doctor`
 

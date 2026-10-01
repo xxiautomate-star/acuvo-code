@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/xxiautomate-star/acuvo-code/security/advisories/new
+    about: Please report security issues privately, not as a public issue — see SECURITY.md.
+  - name: Questions / show-and-tell
+    url: https://github.com/xxiautomate-star/acuvo-code/discussions
+    about: Ask a question or show what you built — use Discussions instead of an issue.
