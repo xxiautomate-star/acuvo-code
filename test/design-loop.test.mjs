@@ -467,11 +467,29 @@ test('⚠️ an envelope we do not understand is refused, not reassured about', 
   assert.match(pass.verdict, /COULD NOT LOOK/);
 });
 
-test('no render service configured is said plainly, and looked is false', async () => {
-  const pass = await designPass(siteWithCss(), 'index.html', { env: {}, dryRun: true });
+/**
+ * ── ⭐⭐ THERE ARE NOW TWO WAYS IN, AND THIS TEST HAD TO LEARN THE SECOND ────
+ *
+ * It used to assert that an empty env produces an error naming
+ * `RENDER_AUDIT_URL`. That was right when our internal Modal URL was the ONLY
+ * way to render — and that was the bug: a paying customer cannot have it, so
+ * `--design` was ours alone. A signed-in account now routes to
+ * `<gateway>/render` with the customer's own token instead.
+ *
+ * ⚠️ AND IT MUST PASS AN ISOLATED HOME. Without one, `renderVia` reads
+ * `~/.acuvo/credentials.json`, so this test would pass or fail depending on
+ * whether the person running it happens to be logged in — and an earlier
+ * version of a sibling test printed a live `xxi_live_…` token into its failure
+ * output for exactly that reason.
+ */
+test('with NO renderer and NO account, it says so plainly and looked is false', async () => {
+  const home = mkdtempSync(join(tmpdir(), 'design-loop-nohome-'));
+  const pass = await designPass(siteWithCss(), 'index.html', { env: {}, dryRun: true, home });
   assert.equal(pass.ok, false);
   assert.equal(pass.looked, false);
+  // Both ways in are named, so the reader knows there are two.
   assert.match(pass.error, /RENDER_AUDIT_URL/);
+  assert.match(pass.error, /--login/);
 });
 
 test('a missing file fails honestly and does not pretend to have looked', async () => {

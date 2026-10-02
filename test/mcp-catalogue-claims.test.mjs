@@ -155,15 +155,35 @@ test('⭐ the verified integration surface is present and opt-in', () => {
     const e = catalogueEntry(name);
     assert.ok(e, `the "${name}" entry is gone — it was verified by running it, not by assuming it`);
     assert.equal(e.verified, true, `"${name}" was demoted to unverified without a note explaining it`);
-    /**
-     * ⚠️ NOT A DEFAULT, AND THIS IS THE LOAD-BEARING HALF. Each needs a
-     * download, and `mcp.mjs` injects `--no` to npx, so an enabled-by-default
-     * download entry is a GUARANTEED 20-second stall before the user's first
-     * prompt. Rule 1 is not bent for the capabilities we most want.
-     */
-    assert.equal(e.enabledByDefault, false, `"${name}" needs a download, so enabling it by default buys a 20s stall`);
-    assert.equal(e.needsDownload, true);
+    assert.equal(e.enabledByDefault, false, `"${name}" is opt-in — see the two different reasons below`);
   }
+  /**
+   * ⚠️ NOT A DEFAULT, AND THIS IS THE LOAD-BEARING HALF. Both browser entries
+   * need a download, and `mcp.mjs` injects `--no` to npx, so an enabled-by-
+   * default download entry is a GUARANTEED 20-second stall before the user's
+   * first prompt. Rule 1 is not bent for the capabilities we most want.
+   */
+  for (const name of ['browser', 'playwright']) {
+    assert.equal(catalogueEntry(name).needsDownload, true, `"${name}" stopped needing a download — re-argue its default`);
+  }
+  /**
+   * ── ⭐⭐⭐ AND `docs` IS OFF FOR A COMPLETELY DIFFERENT REASON SINCE 2026-08-26
+   *
+   * It became HOSTED, so the stall argument no longer applies to it at all: no
+   * download, no npx, connected in 1,803ms with an empty env. It now satisfies
+   * the catalogue's own stated condition for a default — verified &&
+   * !needsDownload && no credentials.
+   *
+   * ⚠️ IT IS STILL OFF, AND THAT IS A DECISION RATHER THAN A CONSTRAINT. The
+   * condition is necessary, not sufficient: enabling a server for every session
+   * spends prefix bytes and a connect on every run, and it sends the user's
+   * problem statement to a third party by default. Pinned separately so the two
+   * reasons can never be confused — if someone later reverts this to npx, the
+   * assertion below fails and they have to say why.
+   */
+  assert.equal(catalogueEntry('docs').needsDownload, false, 'docs is hosted — reverting it to npx re-blocks the knowledge lane');
+  assert.equal(catalogueEntry('docs').command, '');
+  assert.equal(catalogueEntry('docs').install, null, '`install` means "run this first"; a hosted entry has no first');
   // ⭐ docs is the no-signup one; that is why it was chosen over Notion/Supabase.
   assert.deepEqual(catalogueEntry('docs').credentials, [], 'docs earned its slot by needing no account — a credential here changes the argument');
 });
@@ -252,14 +272,24 @@ test('⭐⭐ NEXT.md does not re-introduce a hardcoded inventory count', (t) => 
  * ⭐ THE TOOL COUNT IS THE NUMBER A BUYER REPEATS, so it is the one that must
  * never be typed from memory. It is bound here to `TOOL_NAMES.length` — the
  * registry itself — rather than to another document.
+ *
+ * ── ⚠️⚠️ AND THE DOCUMENT MOVED ON 2026-09-15 WITHOUT THIS GUARD ───────────
+ *
+ * The README shrank from 1,459 lines to an 84-line front door and the whole
+ * engineering record — this sentence included — moved VERBATIM to
+ * `docs/STATUS.md`. `docs-truth.test.mjs` was repointed in that commit and
+ * carries a note about doing exactly that; this guard and the `--allow-install`
+ * one in `allow-install-flag.test.mjs` were missed, so both went red and stayed
+ * red for two days. ⭐ Nothing here is weakened — the same sentence, the same
+ * binding to the registry, at the address it now has.
  */
-test('⭐ the README\'s tool-registry count equals the registry', () => {
-  const readme = read('README.md');
-  const m = /The registry holds \*\*(\d+) tools\*\*/.exec(readme);
-  assert.ok(m, 'README lost its "The registry holds **N tools**" sentence — that is the count everything else is checked against');
+test('⭐ the reference document\'s tool-registry count equals the registry', () => {
+  const doc = read('docs/STATUS.md');
+  const m = /The registry holds \*\*(\d+) tools\*\*/.exec(doc);
+  assert.ok(m, 'docs/STATUS.md lost its "The registry holds **N tools**" sentence — that is the count everything else is checked against');
   assert.equal(
     Number(m[1]),
     TOOL_NAMES.length,
-    `README says the registry holds ${m[1]} tools; TOOL_NAMES.length is ${TOOL_NAMES.length}.`,
+    `docs/STATUS.md says the registry holds ${m[1]} tools; TOOL_NAMES.length is ${TOOL_NAMES.length}.`,
   );
 });

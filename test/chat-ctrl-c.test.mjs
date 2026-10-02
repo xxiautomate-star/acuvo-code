@@ -96,7 +96,14 @@ test('⭐⭐ REACH — a real Ctrl-C keystroke reaches the interrupt path', asyn
   // Let runChat reach its first prompt, then press Ctrl-C.
   await new Promise((r) => setImmediate(r));
   input.write(CTRL_C);
-  await new Promise((r) => setImmediate(r));
+  /**
+   * ⚠️ A REAL WAIT, NOT setImmediate. The keyboard is `input-box.mjs` now, not
+   * readline, and a keypress travels through a stream 'data' event and an async
+   * finish before `onInterrupt` runs. A microtask tick returns before any of
+   * that — which reported "readline swallowed the key" about code that had
+   * already handled it correctly.
+   */
+  await new Promise((r) => setTimeout(r, 50));
 
   assert.deepEqual(seen, ['interrupt'],
     'readline swallowed the key — nothing in bin/acuvo.mjs could ever have seen it');

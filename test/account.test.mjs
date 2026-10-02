@@ -15,7 +15,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert';
-import { mkdtempSync, writeFileSync, mkdirSync, existsSync, readFileSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, mkdirSync, existsSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir, platform } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -92,14 +92,30 @@ test('⚠️ we never claim a file permission we did not get', () => {
    * it did not achieve is worse than one that is absent — it stops the reader
    * looking any further.
    */
+  /**
+   * ── ⭐ UPDATED 2026-08-23: WINDOWS NOW GENUINELY RESTRICTS THE FILE ─────────
+   *
+   * This asserted `restricted === false` on win32, which was correct while the
+   * only tool being used was `chmod` — a documented no-op there. It encoded a
+   * LIMITATION as if it were the rule.
+   *
+   * `icacls /inheritance:r /grant:r USER:F` drops the inherited ACEs and leaves
+   * exactly one principal, which is what `chmod 600` means on NTFS. Verified on
+   * this machine: the file resolves to `DOMAIN\user:(F)` and nothing else.
+   *
+   * ⚠️ THE INVARIANT IS UNCHANGED AND IS WHAT IS ASSERTED NOW: `restricted` and
+   * `note` must agree with each other, and with reality. A control that claims a
+   * success it did not achieve is worse than one that is absent, whichever
+   * platform it is lying on.
+   */
   const home = fakeHome();
   const r = writeAccount({ token: 't' }, {}, home);
   assert.equal(r.ok, true);
-  if (platform() === 'win32') {
-    assert.equal(r.restricted, false, 'win32 must not claim restricted permissions');
-    assert.match(r.note, /not restricted on Windows/i, 'and it must SAY so');
+  assert.equal(typeof r.restricted, 'boolean');
+  if (r.restricted) {
+    assert.equal(r.note, null, 'a restricted file must not also carry a warning');
   } else {
-    assert.equal(r.restricted, true);
+    assert.ok(r.note && /permission/i.test(r.note), 'an unrestricted file must SAY so');
   }
 });
 
@@ -136,4 +152,51 @@ test('⚠️ the stored file contains the token and no provider key ever', () =>
   assert.equal(body.token, 'acuvo_live_xyz');
   assert.equal(body.email, 'a@b.c');
   assert.ok(!('apiKey' in body) && !('OPENROUTER_API_KEY' in body), 'a provider key must never be persisted here');
+});
+
+test('⚠️⚠️ a BYOK fallback nobody opted into is marked `unspoken`', async () => {
+  /**
+   * Measured on Roman's machine 2026-08-23: no account file, so every run fell
+   * through to OPENROUTER_API_KEY and was billed to his personal balance — and
+   * because BYOK never touches our gateway, none of it was metered. The harm is
+   * the SILENCE, not the fallback, so the fallback stays and the caller gets a
+   * flag it can speak with.
+   */
+  const { resolveCredential } = await import('../lib/account.mjs');
+  const home = mkdtempSync(join(tmpdir(), 'acuvo-home-'));
+
+  const stray = resolveCredential({ OPENROUTER_API_KEY: 'sk-or-v1-x', ACUVO_HOME: home }, home);
+  assert.equal(stray.mode, 'byok', 'the fallback must keep working — nobody gets bricked');
+  assert.equal(stray.unspoken, true, 'a key nobody opted into must be announced');
+
+  const chosen = resolveCredential({ OPENROUTER_API_KEY: 'sk-or-v1-x', ACUVO_BYOK: '1', ACUVO_HOME: home }, home);
+  assert.equal(chosen.mode, 'byok');
+  assert.equal(chosen.unspoken, false, 'somebody who opted in should not be nagged');
+
+  rmSync(home, { recursive: true, force: true });
+});
+
+test('⭐⭐ the credentials file is ACTUALLY restricted, on this platform', async () => {
+  /**
+   * Roman's first successful login printed "WARNING: could not restrict
+   * permissions on the credentials file — check it yourself." Honest, and a bad
+   * first thirty seconds: it hands a security problem back to the user with no
+   * way to act on it. Windows can restrict the file; it just cannot do it with
+   * chmod. `icacls /inheritance:r /grant:r USER:F` is the same idea spelled the
+   * way NTFS spells it.
+   *
+   * ⚠️ ASSERTS THE OUTCOME, NOT THE ATTEMPT. `restricted` must mean the
+   * permissions were narrowed — a security control that reports a success it
+   * did not achieve is worse than one that is absent, because it stops people
+   * looking.
+   */
+  const { writeAccount } = await import('../lib/account.mjs');
+  const home = mkdtempSync(join(tmpdir(), 'acuvo-perm-'));
+  const r = writeAccount({ token: 'xxi_live_test' }, { ACUVO_HOME: home }, home);
+
+  assert.equal(r.ok, true);
+  assert.equal(r.restricted, true, `permissions were not narrowed: ${r.note}`);
+  assert.equal(r.note, null, 'a restricted file should carry no warning');
+
+  rmSync(home, { recursive: true, force: true });
 });

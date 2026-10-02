@@ -22,8 +22,8 @@
  * push` would believe it. See `sessionFailed`.
  */
 
-import { resolve, join } from 'node:path';
-import { existsSync, statSync, readFileSync } from 'node:fs';
+import { resolve, join, dirname } from 'node:path';
+import { existsSync, statSync, readFileSync, appendFileSync, mkdirSync } from 'node:fs';
 import { createInterface } from 'node:readline';
 import { randomUUID } from 'node:crypto';
 
@@ -49,11 +49,36 @@ import { runChat } from '../lib/chat.mjs';
  * one was the answer a human reads.
  */
 import { discoverAllSkills, loadAnySkill } from '../lib/builtin-skills.mjs';
+/**
+ * ⭐ ASSEMBLED, NOT WRITTEN. `.acuvo/commands/` is discovered and loaded by the
+ * SAME two functions that own `.acuvo/skills/`, pointed at a different `dir`.
+ * That inherits, for free and already tested: frontmatter parsing, the name
+ * normaliser, the duplicate-name refusal, the binary-file guard, the size cap,
+ * the alphabetical (cache-stable) ordering and the workspace containment check.
+ * A second implementation would have been a second copy of a security boundary.
+ */
+import { discoverSkills, loadSkill } from '../lib/skills.mjs';
+import { USER_COMMANDS_DIR } from '../lib/slash.mjs';
+import { loadHooks, describeHooks, createHookRunner } from '../lib/hooks.mjs';
+import { initProjectMemory, describeMemory, reviewWorkingTree } from '../lib/session-commands.mjs';
+import { initLine, eventLine, resultLine } from '../lib/stream-json.mjs';
+
+/** `--output-format stream-json` sends its `init` line once per process. */
+let streamInitSent = false;
+import { loadAgentDefinitions, describeAgents } from '../lib/agent-definitions.mjs';
 import { routingNote } from '../lib/warm-provider.mjs';
 import { readMcpConfig } from '../lib/mcp.mjs';
 import { readModelConfig, MISSING_KEY_MESSAGE } from '../lib/model.mjs';
-import { executeRunCommand } from '../lib/command.mjs';
+import { executeRunCommand, ALLOW_INSTALL_ENV } from '../lib/command.mjs';
+import { GH_WRITE_ENV } from '../lib/gh.mjs';
 import { createLocalExecutor } from '../lib/workspace.mjs';
+/** ⭐ `acuvo-rules.json` — the paths the project's OWNER says may be written. */
+import { loadProjectRules, describeProjectRules } from '../lib/project-rules.mjs';
+/**
+ * ⭐ The ACCOUNT's cost-unit allowance. `createBudget` debits it at the one place
+ * every round already passes through; see the `meter:` note at its call site.
+ */
+import { processMeter } from '../lib/cost-units.mjs';
 import { runSession, formatSummary, renderEvent, sessionFailed } from '../lib/turn.mjs';
 import { runPool, detectConflicts, formatParallelSummary, shortLabel } from '../lib/parallel.mjs';
 import { detectRepo, findToken, fetchIssue, branchNameFor, issueToTask, createBranch, nextSteps } from '../lib/github.mjs';
@@ -61,12 +86,19 @@ import { detectRepo, findToken, fetchIssue, branchNameFor, issueToTask, createBr
 // `formatSummary`'s job, and importing it here is how the second copy came back.
 import { describeChanges, shortenRoot, toJson } from '../lib/report.mjs';
 import { renderImage } from '../lib/terminal-graphics.mjs';
-import { saveSession, listSessions, resumeMessages, loadSession } from '../lib/session.mjs';
+import { saveSession, listSessions, resumeMessages, loadSession, newSessionId, findCrashedSession, crashOfferLines, markSessionClosed } from '../lib/session.mjs';
 import { recordRun, parseAuditLog } from '../lib/audit.mjs';
 import { runBestOf, formatBestOf } from '../lib/best-of.mjs';
 import { escalate, formatEscalation, outOfRoad } from '../lib/escalate.mjs';
 import { homedir } from 'node:os';
 import { loadEnvFiles as envLoad } from '../lib/env-file.mjs';
+/**
+ * ⚠️ THE NAMES ARE IMPORTED FROM THE MODULES THAT OWN THE GATES, never spelled
+ * as string literals here. A second copy of `'ACUVO_ALLOW_PUSH'` is how a rename
+ * ships a flag that silently stops working.
+ */
+import { ALLOW_PUSH_ENV } from '../lib/git.mjs';
+import { ALLOW_DEPLOY_ENV } from '../lib/vercel.mjs';
 import {
   loadPolicy, invocationDecision, roundBudget, costBudget, filterToolNames, mcpDecision,
   USER_POLICY_FILE, USER_POLICY_ENV, WORKSPACE_POLICY_FILE,
@@ -79,7 +111,11 @@ import {
  * in this file and the test never returned. Pure decisions belong where they can
  * be tested; that is what lib/ is for.
  */
-import { createBudget, remainingForTurn, DEFAULT_BUDGET_USD, bestOfAttemptBudget } from '../lib/budget.mjs';
+import {
+  createBudget, remainingForTurn, DEFAULT_BUDGET_USD, bestOfAttemptBudget,
+  /** ⭐ CRASH SAFETY — the ceiling has to survive losing the process. */
+  openSpendJournal, resumeCeiling, SPEND_JOURNAL_FILE, formatUsd,
+} from '../lib/budget.mjs';
 import { createFleetGate } from '../lib/fleet-budget.mjs';
 import { FLEET_STOP_REASONS } from '../lib/budget.mjs';
 import { refuteClaim, formatRefutation, refutationField } from '../lib/refute.mjs';
@@ -100,13 +136,15 @@ import { createAsker } from '../lib/prompt.mjs';
  * project with no skills and the four LSP verbs on a machine with no language
  * server — the dead buttons tools.mjs spends four hundred lines refusing.
  */
-import { toolNamesForRounds } from '../lib/tools.mjs';
+import { toolNamesForRounds, OFFLINE_ENV, TOOL_NAMES } from '../lib/tools.mjs';
 import {
   runPlanGate, planModeToolNames, planModeRounds, planPhaseTask,
   driftBannerLine, formatReconciliation,
 } from '../lib/plan-coherence.mjs';
 import { summariseSpend, readAuditFiles, formatSpend, parseSince } from '../lib/spend.mjs';
-import { PLANS, formatPlan, allowanceRemaining, usageByModel } from '../lib/plan.mjs';
+import { PLANS, formatPlan, allowanceRemaining, usageByModel, AUD_USD } from '../lib/plan.mjs';
+import { allowanceForPlan } from '../lib/plan-allowance.mjs';
+import { readAccount } from '../lib/account.mjs';
 import { labelForModelId } from '../lib/acuvo-models.mjs';
 /**
  * ⭐ CREATIVE ENGINE CHOICE. `listEngines` asks the gateway what this ACCOUNT
@@ -144,6 +182,33 @@ const asker = createAsker();
  */
 import { runDoctor, formatDoctor } from '../lib/doctor.mjs';
 /**
+ * ── ⭐⭐ THE EXTERNAL-HARNESS BACKEND ────────────────────────────────────────
+ *
+ * `HARNESS_IDS` is imported for the usage strings alone, so the list a user is
+ * shown and the list `resolveHarness` accepts cannot drift — the failure this
+ * package has shipped repeatedly is a help text describing a menu the code no
+ * longer serves.
+ */
+import { HARNESS_IDS } from '../lib/harness.mjs';
+import { runHarness, harnessAuditOutcome } from '../lib/harness-run.mjs';
+
+/**
+ * The package version, readable from anywhere in this file.
+ *
+ * ⚠️ THE LOCAL `pkgVersion` IS DECLARED 300 LINES BELOW ITS FIRST USE and is a
+ * `const`, so reaching for it earlier is a temporal-dead-zone ReferenceError
+ * rather than an undefined — which is how `--render-report` crashed the moment
+ * it was wired in. A second reader is the small fix; hoisting the const would
+ * move a declaration other code depends on being late.
+ */
+function readPkgVersion() {
+  try {
+    return JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
+  } catch {
+    return '';
+  }
+}
+/**
  * ── ⭐ SHELL COMPLETION — built, tested, and reachable from nothing until now ──
  * `lib/completion.mjs` is 509 lines that generate bash, zsh and fish scripts
  * from the real flag list, so the completions cannot drift from the CLI. It had
@@ -153,7 +218,15 @@ import { completionScript, SUPPORTED_SHELLS } from '../lib/completion.mjs';
 import {
   resolveConfig, explicitKeysFromArgv, applyConfigToOptions,
   WORKSPACE_CONFIG_FILE, HOME_CONFIG_FILE, ACUVO_HOME_ENV,
+  describeFourQuestions, resolveFourQuestions,
 } from '../lib/rcfile.mjs';
+/**
+ * ⚠️ THE MODE LIST COMES FROM THE MODULE THAT ENFORCES IT, never retyped here.
+ * `/approve` at the prompt must offer exactly the words `applyWriteApproval`
+ * honours; a second list would be right on the day it was written and wrong the
+ * first time a fourth mode existed.
+ */
+import { APPROVE_MODES } from '../lib/diff-preview.mjs';
 import { replaySession, formatTimeline, diffRuns, formatDiff } from '../lib/replay.mjs';
 import { designPass, formatDesignPass } from '../lib/design-loop.mjs';
 import {
@@ -279,8 +352,17 @@ const LIFECYCLE_USAGE = [
   '                          acuvo --login < key.txt',
   '  --whoami              Which account this machine is using, and whose money it spends.',
   '                        Needs no key and spends nothing.',
-  '  --logout              Forget the stored key. Falls back to OPENROUTER_API_KEY if one',
-  '                        is set, which bills your provider account instead of your credits.',
+  /**
+   * ⚠️ THE SUPPLIER'S NAME CAME OUT OF THIS ROW (2026-08-25). It read "Falls
+   * back to OPENROUTER_API_KEY if one is set" — naming who we buy from in a
+   * string printed on every customer's machine. The variable itself is still
+   * documented once, in USAGE's Environment block, because a user who has
+   * already exported it needs to find it; it does not need saying twice, and
+   * certainly not on the row whose job is "how to sign out".
+   */
+  '  --logout              Forget the stored key. If a provider key is set in your',
+  '                        environment it takes over, and that bills your own provider',
+  '                        account instead of your Acuvo credits.',
   '',
   'Session lifecycle (a run is saved when it ends, so you never re-pay for the gather):',
   '  --sessions            List the runs saved in this workspace, newest first, and exit.',
@@ -308,14 +390,75 @@ const LIFECYCLE_USAGE = [
    * continuation lines belonging to the entry above it. Pure array ordering; no
    * sentence changed.
    */
+  /**
+   * ⚠️⚠️ IT HAPPENED AGAIN, TO THE SAME ENTRY. The comment above records
+   * `completion <shell>` being spliced into the middle of `--doctor`'s six
+   * continuation lines. When that was fixed, `--render-report` was inserted at
+   * exactly the same point — so on 2026-08-25 the rendered help still told the
+   * reader that `--render-report` prints "endpoints, which tools would be
+   * offered, git. Every dark or broken line names the exact variable that fixes
+   * it", which is `--doctor`'s sentence, about `--doctor`'s report.
+   *
+   * ⭐ `--doctor` now owns an unbroken block and `--render-report` follows it.
+   * A row with continuation lines is a paragraph; nothing may be inserted into
+   * one. That is the rule this array keeps breaking, so it is written down here
+   * rather than re-learned a third time.
+   *
+   * ⚠️ THE HOSTNAME ALSO CAME OUT, AND THE DISCLOSURE DID NOT. The sentence used
+   * to name the supplier the key is sent to. Naming who we buy from in shipped
+   * help text is the leak; telling the user their credential leaves the machine
+   * is the obligation, and it is the reason `--offline` exists at all.
+   */
   '  --doctor              Say what is actually working here: key, model chain, media',
   '                        endpoints, which tools would be offered, git. Every dark or',
   '                        broken line names the exact variable that fixes it. Exits 0',
   '                        when nothing is broken. ⚠️ It VERIFIES over the network: your',
-  '                        key is sent to openrouter.ai to check it authenticates, and',
-  '                        each configured endpoint is pinged. Add --offline to skip all',
-  '                        of it — nothing leaves the machine, and no key is sent.',
-  `  completion <shell>    Print a completion script (${SUPPORTED_SHELLS.join(' · ')}) — append it to your shell profile`,
+  '                        key is sent to the service that answers it, to check it really',
+  '                        authenticates, and each configured endpoint is pinged. Add',
+  '                        --offline to skip all of it — nothing leaves the machine,',
+  '                        and no key is sent.',
+  /**
+   * ⚠️ ITS OWN UNBROKEN PARAGRAPH, placed AFTER --doctor's six continuation
+   * lines, per the rule three comments above that this array has broken twice.
+   *
+   * ⚠️⚠️ AND IT DOES NOT SAY "NOTHING LEAVES THE MACHINE". That sentence is
+   * true of --doctor and would be false here: the model chain IS egress, and so
+   * is any MCP server an operator registered. An unscoped absolute in help text
+   * is the defect CLAUDE.md records under that name.
+   */
+  '  --offline             Withhold the three verbs that reach a stranger with no setup:',
+  '                        fetch_url, web_search and generate_image. ⚠️ generate_image is',
+  '                        the one people miss — it needs no key, so on a bare install the',
+  '                        prompt leaves the machine. This does NOT stop the model call',
+  '                        itself, or an MCP server you registered; it stops the tools',
+  '                        Acuvo ships from reaching anything you did not configure.',
+  '                        With --doctor it also skips the network probes.',
+  '  --render-report       Print how this terminal draws the opening screen, to paste back',
+  '                        when something looks wrong. Spends nothing.',
+  /**
+   * ⚠️ A PARAGRAPH. Nothing may be inserted into it — see the rule three
+   * comments above, which this array has broken twice.
+   *
+   * ⭐ THE UNMETERED WARNING IS IN THE HELP TEXT, not only at runtime. A user
+   * deciding whether to use this flag needs to know BEFORE they type it that
+   * one of the two modes spends money Acuvo cannot cap.
+   */
+  `  --harness <name>      Hand the task to an external agent harness as the execution`,
+  '                        backend, with Acuvo still metering and still supplying its own',
+  `                        verbs over MCP. Available: ${HARNESS_IDS.join(', ')}. You install the`,
+  '                        harness yourself — Acuvo bundles nothing and stays dependency-free.',
+  '                          acuvo --harness codex "add a test for parseArgv"',
+  '                        ⚠️ Metered ONLY when Acuvo carries the call: set ACUVO_HARNESS_KEY',
+  '                        (or OPENAI_API_KEY). Without one the harness spends on its own',
+  '                        stored login, --budget cannot stop it, and the run says so.',
+  /**
+   * ⭐ PREFIXED `acuvo `, like every other subcommand row. Spelled bare, it was
+   * one of the three rows teaching "a word with no dashes is a command here" —
+   * and the word that is NOT a command, `doctor`, cost $0.0066 as a task prompt
+   * on 2026-08-25. See `mistypedArgument` in lib/cli-args.mjs.
+   */
+  `  acuvo completion <shell>`,
+  `                        Print a completion script (${SUPPORTED_SHELLS.join(' · ')}) — append it to your shell profile`,
   '  --replay <id>         Step through a saved run: every round, call, result and refusal.',
   '                        Runs NOTHING and writes NOTHING. Add --json for the raw steps.',
   '  --replay <id> --only <what>',
@@ -324,7 +467,29 @@ const LIFECYCLE_USAGE = [
   '                        Compare two runs of the same task and name where they split.',
   '  --design <file.html>  Render the page, look at it, and print a verdict — plus the',
   '                        actual pixels if your terminal speaks kitty or iTerm2. Writes',
-  '                        a screenshot into .acuvo/ and nothing else. Needs RENDER_AUDIT_URL.',
+  /**
+   * ── ⚠️⚠️ "Needs RENDER_AUDIT_URL" WAS FALSE, AND THE SAME `--help` PAGE
+   *          CONTRADICTED IT TWICE ────────────────────────────────────────────
+   *
+   * `--design` runs `seePage`, whose gate is `mediaRoutes(...).render` — open
+   * either by a local `RENDER_AUDIT_URL` **or** by an Acuvo plan over the
+   * gateway. So a paying customer read "Needs RENDER_AUDIT_URL" about a feature
+   * they already have, and the honest answer to "how do I turn this on" was
+   * `acuvo --login`.
+   *
+   * ⚠️ THE CONTRADICTION WAS VISIBLE IN ONE SCREEN OF OUTPUT. The env section
+   * above says *"otherwise --design, --say and --task-audio run on your Acuvo
+   * plan once you `acuvo --login`"*, and the `--task-audio` row eight lines
+   * BELOW this one already used the right phrasing — *"Runs on your plan once
+   * you `acuvo --login`; MODAL_TRANSCRIBE_URL …"*. `--design` was the only
+   * media row that named the self-hosted variable as a requirement instead of
+   * as an alternative.
+   *
+   * ⭐ SAME DEFECT AS `lib/doctor.mjs`'s media section, fixed in the same pass:
+   * a surface reading LOCAL configuration and reporting it as THE gate.
+   */
+  '                        a screenshot into .acuvo/ and nothing else. Runs on your plan',
+  '                        once you `acuvo --login`; RENDER_AUDIT_URL points it at your own.',
 ].join('\n');
 
 /**
@@ -351,14 +516,219 @@ const VALUED_LIFECYCLE_FLAGS = new Map([
 function extractLifecycleFlags(argv) {
   const flags = {
     sessions: false, resume: null, continueLatest: false, save: true, audit: true,
-    doctor: false, replay: null, diff: null, only: null, design: null,
+    doctor: false, renderReport: false, replay: null, diff: null, only: null, design: null,
     login: false, loginToken: null, logout: false, whoami: false,
+    mcpAdd: null, mcpName: null, mcpForce: false, mcpSearch: null,
+    mcpList: false, mcpRemove: null,
+    /** `null` means the word `tunnel` never appeared; '' means it appeared bare. */
+    tunnelPort: null, tunnelMinutes: null,
+    /**
+     * ── ⭐⭐ `--harness <name>` — AN EXTERNAL AGENT AS AN EXECUTION BACKEND ───
+     *
+     * ⚠️ LIFTED HERE, LIKE `--doctor`, FOR A REASON THAT IS ABOUT BYTES. It
+     * never becomes a tool schema and never enters the system prompt, so its
+     * cost against the per-round model payload is exactly zero —
+     * `test/harness-costs-no-model-bytes.test.mjs` proves that rather than
+     * asserting it. A verb would have cost bytes on every task including "hi".
+     */
+    harness: null,
+    /**
+     * ── ⭐⭐ `acuvo lsp <install|status|remove>` ──────────────────────────────
+     *
+     * `null` means the word `lsp` never appeared. See
+     * `lib/managed-language-server.mjs` for why an installer exists at all: the
+     * eight symbol verbs were dark on any project without `node_modules`, and
+     * the fix we had been PRINTING (`npm i -D typescript`) stopped working when
+     * TypeScript 7 dropped `tsserver.js`.
+     */
+    lsp: null,
+    /**
+     * ── ⭐ `acuvo skills [--json]` — the shelf, and which one each came from.
+     *  `null` means the word never appeared. Read-only; see the handler.
+     */
+    skills: null,
   };
   const rest = [];
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
+    /**
+     * `acuvo mcp add <server>` -- a SUBCOMMAND, not a flag, because that is the
+     * shape every other tool uses for this and muscle memory is a feature.
+     */
+    if (arg === 'mcp' && argv[i + 1] === 'add') {
+      flags.mcpAdd = argv[i + 2] ?? '';
+      i += 2;
+      continue;
+    }
+    /**
+     * ⭐⭐ `acuvo mcp search <subject>` — THE OTHER HALF OF `add`.
+     *
+     * `add` has always taken any npm package, so every MCP server on the
+     * registry was already reachable. What was missing is that nobody could
+     * FIND them: you had to already know the package name, which means the
+     * capability existed and could not be used — this repo's oldest defect.
+     */
+    if (arg === 'mcp' && argv[i + 1] === 'search') {
+      flags.mcpSearch = argv.slice(i + 2).join(' ').trim();
+      i = argv.length;
+      continue;
+    }
+    /**
+     * ⭐⭐ `acuvo mcp list` / `acuvo mcp remove <name>` — THE INVERSE OF `add`.
+     *
+     * ⚠️ `mergeServer`'s at-cap error has always instructed the user to
+     * *"Remove one you are not using from your MCP config first"*, and there was
+     * no command that did it. Worse, removal is the UNDO for a trust decision:
+     * `mcp-consent.mjs` makes an approval explicit, and an approval you cannot
+     * revoke without hand-editing JSON is half a control.
+     *
+     * `list` reads and prints; it never spawns anything. That is deliberate —
+     * it is the command you run on a repo you have just cloned, BEFORE the
+     * consent prompt, to see what it wants to start on your machine.
+     */
+    if (arg === 'mcp' && argv[i + 1] === 'list') { flags.mcpList = true; i += 1; continue; }
+    /**
+     * ── ⭐ `acuvo tunnel <port> [--for <minutes>]` ────────────────────────────
+     *
+     * ⚠️ LIFTED HERE, LIKE `--doctor` AND `--harness`, AND FOR THE SAME REASON
+     * PLUS A STRONGER ONE. The byte argument holds — it never becomes a tool
+     * schema, so it costs zero model bytes on every task including "hi".
+     *
+     * ⭐⭐ THE STRONGER REASON: A TOOL SCHEMA IS EXACTLY WHAT THIS MUST NOT HAVE.
+     * Publishing a port on this machine to the open internet is a decision for a
+     * person, not a decision a language model makes mid-task while trying to be
+     * helpful. Lifting it here is what guarantees the model never sees a verb
+     * for it — see the header of `lib/tunnel.mjs`.
+     */
+    if (arg === 'tunnel') {
+      flags.tunnelPort = argv[i + 1] ?? '';
+      i += 1;
+      // `--for <minutes>` is read here rather than by `parseArgv`, because the
+      // whole invocation is lifted before that parser ever runs.
+      if (argv[i + 1] === '--for') { flags.tunnelMinutes = argv[i + 2] ?? ''; i += 2; }
+      continue;
+    }
+    /**
+     * ⭐ `acuvo mcp import` — the servers they already connected somewhere else.
+     * `mcp search` fixed "you had to know the package name"; this fixes the case
+     * where they ALREADY know it, already wrote the JSON, and it happens to live
+     * in Cursor's or VS Code's directory instead of ours.
+     *
+     * ⚠️ IT LISTS. It never writes a config and never starts a server — the
+     * command it prints is someone else's, and running it is the user's decision.
+     */
+    if (arg === 'mcp' && argv[i + 1] === 'import') { flags.mcpImport = true; i += 1; continue; }
+    /**
+     * ⭐⭐⭐ `acuvo mcp install` — the direction none of the other verbs go.
+     *
+     * `list`/`add`/`remove`/`import` all treat Acuvo as the CLIENT of somebody
+     * else's server. This one writes OUR entry into Claude Code, Cursor,
+     * VS Code, Windsurf or Claude Desktop, so a person can reach Acuvo from the
+     * editor they already have open.
+     *
+     * ⚠️ IT EXISTS BECAUSE THE HONEST DEFAULT IS AN EMPTY SERVER. Measured by
+     * running the real binary: `acuvo-mcp` with no flags serves ZERO tools,
+     * `--root` gets 11, and the creative group needs `--root --allow-write
+     * --allow-spend` ALL THREE — because the engines write their output into
+     * the workspace, which nobody would guess from the flag names. Hand-writing
+     * that config correctly on the first try is not a reasonable ask.
+     *
+     * ⚠️ AND IT SHOWS BEFORE IT WRITES, which is `mcp import`'s rule three
+     * lines above ("IT LISTS. It never writes a config") applied to the one
+     * verb here that genuinely has to write. `--yes` is the whole difference,
+     * because these are files the user's other tools depend on.
+     */
+    if (arg === 'mcp' && argv[i + 1] === 'install') { flags.mcpInstall = true; i += 1; continue; }
+    /**
+     * ⚠️ A BARE `acuvo lsp` IS `status`, NOT AN ERROR. It is the answer to the
+     * question somebody typing it is actually asking — "is this working here" —
+     * and it writes nothing, so the safe verb is the one that needs no argument.
+     */
+    if (arg === 'skills') {
+      flags.skills = argv.includes('--json') ? 'json' : 'text';
+      continue;
+    }
+    if (arg === 'lsp') {
+      const next = argv[i + 1];
+      if (next === 'install' || next === 'status' || next === 'remove') { flags.lsp = next; i += 1; continue; }
+      flags.lsp = 'status';
+      continue;
+    }
+    /**
+     * ⚠️⚠️ CONSUMED **HERE**, AND DELIBERATELY NOT IN `lib/cli-args.mjs`.
+     *
+     * That file's own header warns about this exact hazard: two files parse
+     * flags, and a lane that adds the same name to both produces one parser
+     * silently eating an argument before the other is asked. Its guard detects
+     * the mistake by grepping for a SINGLE-QUOTED literal, which is why the
+     * flags this loop owns are listed there inside a backtick string instead.
+     *
+     * ⭐ MY FIRST ATTEMPT PUT THEM IN BOTH LISTS AND HALF-WORKED, which is the
+     * worst outcome available: `--allow-spend` was accepted because it landed
+     * in a real parser table, and `--allow-write` was still rejected as
+     * unknown, so the feature looked configured and served nothing.
+     *
+     * ⚠️ AND THE NAMES MATCH `acuvo-mcp`'s OWN FLAGS on purpose. What you type
+     * here is written verbatim into the host config, so there is nothing to
+     * translate and nothing to mistranslate.
+     */
+    if (arg === '--allow-write') { flags.mcpAllowWrite = true; continue; }
+    if (arg === '--allow-spend') { flags.mcpAllowSpend = argv[i + 1] ?? ''; i += 1; continue; }
+    if (arg === '--host') { flags.mcpHost = argv[i + 1] ?? ''; i += 1; continue; }
+    if (arg === '--hosted') { flags.mcpHosted = true; continue; }
+    if (arg === '--key') { flags.mcpKey = argv[i + 1] ?? ''; i += 1; continue; }
+    /**
+     * ⭐ `acuvo carry <transcript.jsonl>` — distil somebody else's abandoned
+     * session into the part that is worth having.
+     *
+     * ⚠️ NAMED `carry`, NOT `resume`, AND THAT IS A COLLISION NOT A PREFERENCE.
+     * `--resume` already exists and means "continue MY earlier Acuvo session".
+     * A `resume` subcommand beside it would be two different verbs one dash
+     * apart, and the failure would be silent: the user gets somebody else's
+     * transcript when they wanted their own session back.
+     */
+    if (arg === 'carry') { flags.carryFrom = argv[i + 1] ?? ''; i += 1; continue; }
+    /**
+     * ⭐ `acuvo import` — the whole sweep: rules, commands, skills, hooks, MCP.
+     *
+     * ⚠️ ORDER MATTERS AND IT IS ALREADY CORRECT. `mcp import` is matched ABOVE
+     * as a two-token pair, so it consumes both tokens before this bare `import`
+     * is ever tested. Moving this line above that one would make `acuvo mcp
+     * import` run the wrong command.
+     */
+    if (arg === 'import') { flags.sweepImport = true; continue; }
+    if (arg === 'mcp' && argv[i + 1] === 'remove') {
+      flags.mcpRemove = argv[i + 2] ?? '';
+      i += 2;
+      continue;
+    }
+    if (arg === '--name' && flags.mcpAdd !== null) { flags.mcpName = argv[i + 1] ?? null; i += 1; continue; }
+    if (arg === '--replace' && flags.mcpAdd !== null) { flags.mcpForce = true; continue; }
     if (arg === '--sessions') { flags.sessions = true; continue; }
     if (arg === '--doctor') { flags.doctor = true; continue; }
+    /**
+     * ⚠️ THE VALUE IS CONSUMED HERE OR `parseArgv` SEES `codex` AS THE TASK.
+     * `--harness codex "fix the test"` would otherwise run the task "codex"
+     * and silently drop the real instruction — a parser failure that spends
+     * money on the wrong question, which this file treats as the worst
+     * available outcome.
+     */
+    if (arg === '--harness') {
+      const value = argv[i + 1];
+      if (value === undefined || value.startsWith('-')) {
+        return { ok: false, error: `--harness needs the name of an agent harness to drive, e.g. --harness ${HARNESS_IDS[0]}.` };
+      }
+      flags.harness = value;
+      i += 1;
+      continue;
+    }
+    /**
+     * ⭐ THE INSTRUMENT FOR A SCREEN I CANNOT SEE. Five reports, four fixes,
+     * and every one reasoned from bytes that render perfectly on my machine.
+     * This prints the facts that decide the layout so the next round is
+     * arithmetic instead of inference.
+     */
+    if (arg === '--render-report' || arg === '--render') { flags.renderReport = true; continue; }
     if (arg === '--logout') { flags.logout = true; continue; }
     if (arg === '--whoami') { flags.whoami = true; continue; }
     /**
@@ -478,7 +848,21 @@ async function main() {
   if (!voiced.ok) die(`${voiced.error}\n\n${USAGE}${LIFECYCLE_USAGE}${VOICE_USAGE}\n`, EXIT_USAGE);
   const voice = voiced.flags;
   const parsed = parseArgv(voiced.argv);
-  if (!parsed.ok) die(`${parsed.error}\n\n${USAGE}`, EXIT_USAGE);
+  /**
+   * ── ⭐ A "DID YOU MEAN" DOES NOT GET THE HELP DUMP ─────────────────────────
+   *
+   * Printing all of USAGE under a parse error is right when the error is
+   * structural ("--budget and --parallel cannot go together" — the reader needs
+   * the list to pick differently). It is wrong when the parser has already
+   * worked out the answer: `acuvo doctor` → "did you mean `acuvo --doctor`?"
+   * followed by a hundred and fifty lines is the same as not answering, because
+   * the sentence that answers it has scrolled off the top of the terminal.
+   *
+   * ⚠️ THE EXIT CODE IS UNCHANGED (64, EXIT_USAGE). Several tests assert it and
+   * a shell script should not be able to tell the two shapes apart — only a
+   * human reading stderr should.
+   */
+  if (!parsed.ok) die(parsed.terse ? parsed.error : `${parsed.error}\n\n${USAGE}`, EXIT_USAGE);
   const opts = parsed.options;
   /**
    * ── ⭐ THE ENGINE THE USER NAMED, RECORDED ONCE FOR THE WHOLE RUN ──────────
@@ -565,7 +949,16 @@ async function main() {
    * `opts.task` is empty for a command, which is exactly the trap `--task-audio`
    * fell into.
    */
-  const emitsOwnObject = life.sessions || life.doctor || life.login || life.logout || life.whoami
+  /**
+   * ⚠️ `skills` AND `lsp` JOINED THIS LIST THE DAY THEY WERE ADDED, because the
+   * trap above is not hypothetical — `acuvo skills --json` died at "run one task
+   * per invocation" on its first run, which is the flag refusing the exact
+   * shape it can honour. `lsp` is here for symmetry of the OTHER half: it emits
+   * no object, but it is a command with no task, and leaving it out would make
+   * `acuvo lsp --json` die with a sentence about tasks.
+   */
+  const emitsOwnObject = life.sessions || life.doctor || life.login || life.logout || life.whoami || life.mcpAdd || life.mcpSearch
+    || life.skills !== null || life.lsp !== null
     || life.replay !== null || life.design !== null
     || opts.command !== null;
   if (opts.json && !emitsOwnObject && (opts.parallel || (!opts.task && opts.issue === null && !resumeRequested && !voice.taskAudio))) {
@@ -636,6 +1029,81 @@ async function main() {
    * read the filename list — being inline here is why nobody caught it.
    */
   envLoad([root, process.cwd()]);
+
+  /**
+   * ── ⭐⭐ THE OPERATOR'S OWN SWITCHES, APPLIED AFTER THE WORKSPACE LOADER ───
+   *
+   * `--allow-push` / `--allow-deploy` are the discoverable spelling of
+   * `ACUVO_ALLOW_PUSH` / `ACUVO_ALLOW_DEPLOY`. Both gates already read the
+   * environment at the OFFER (`gitPushToolNames`, `vercelToolNames`) and again
+   * at the DISPATCHER (`gitPush`, the vercel case), so setting the variable is
+   * enough and no second code path is created — which is the point. A flag that
+   * needed its own plumbing through six call sites would be a second gate, and
+   * `no-run-holds-at-dispatcher.test.mjs` records what happens when a
+   * capability has two.
+   *
+   * ⚠️⚠️ AFTER `envLoad`, NEVER BEFORE, AND THAT ORDER IS THE SECURITY
+   * PROPERTY. `env-file.mjs` REMOVES these names when a workspace `.env.local`
+   * sets them — one file in a cloned repo used to flip every switch we have
+   * (`workspace-env-cannot-widen.test.mjs`). Setting them before that pass runs
+   * would hand the loader something to strip; setting them after makes the
+   * order literal: **a repository may never widen, an operator at the keyboard
+   * always may, and the operator speaks last.**
+   *
+   * ⚠️ NEVER UNSETS. Absent flag means "say nothing", not "turn it off" — a
+   * person who exported the variable for their whole shell has already named
+   * it, and a flag that silently revoked that would be a third meaning for
+   * "not passed".
+   */
+  if (opts.allowPush === true) process.env[ALLOW_PUSH_ENV] = '1';
+  if (opts.allowDeploy === true) process.env[ALLOW_DEPLOY_ENV] = '1';
+  /**
+   * ⚠️ THE THIRD SWITCH, AND IT MUST SIT WITH THE OTHER TWO — after `envLoad`,
+   * never before. `env-file.mjs` strips `ACUVO_ALLOW_INSTALL` out of a
+   * workspace `.env.local` (a cloned repo turning on a downloader is the exact
+   * attack `workspace-env-cannot-widen.test.mjs` pins), so setting it earlier
+   * would hand the loader something to delete and the flag would silently do
+   * nothing. A repository may never widen; an operator at the keyboard may; the
+   * operator speaks last.
+   *
+   * ⭐ NO SECOND GATE IS CREATED. `executeRunCommand` reads
+   * `installEnabled(process.env)` at the one place `command.mjs` says the
+   * environment is read — "EXACTLY ONCE, HERE, AND NOWHERE DEEPER" — so the
+   * flag's whole implementation is naming the variable that door already reads.
+   */
+  if (opts.allowInstall === true) process.env[ALLOW_INSTALL_ENV] = '1';
+  /**
+   * ⚠️ AFTER `envLoad`, BESIDE ITS THREE NEIGHBOURS, AND FOR THE SAME REASON.
+   * `bin/acuvo.mjs` sets the flag's variable only once the environment files
+   * have been read, so a flag a human typed wins over a file a repository
+   * shipped — and so a cloned repository can never set it, which is the whole
+   * point of the gate. Moving this line above `envLoad` would silently invert
+   * both properties. `allow-install-flag.test.mjs` pins the ordering for the
+   * install gate; `gh-write-has-a-flag.test.mjs` pins it for this one.
+   */
+  if (opts.allowGhWrite === true) process.env[GH_WRITE_ENV] = '1';
+  /**
+   * ── ⭐⭐⭐ THE ONLY NARROWING ONE, AND IT NEEDED NO NEW MACHINERY ──────────
+   *
+   * `--offline` reached exactly one thing — `--doctor`'s network probes — while
+   * its own help text said *"nothing leaves the machine"*. On an ordinary run it
+   * did nothing at all, and `fetch_url`, `web_search` and `generate_image` went
+   * on reaching strangers. `generate_image` is the sharp one: `imageConfig`
+   * defaults to CONFIGURED, so the prompt leaves a bare install with no key, no
+   * account and no configuration.
+   *
+   * ⭐ ONE LINE, BECAUSE THE GATE IS WHERE THE CAPABILITY IS READ. `tools.mjs`
+   * withholds the three from the offer and refuses them at the dispatch, the
+   * same double gate `--no-run` uses — so this flag's whole implementation is
+   * naming the variable that door already reads, exactly as the install gate's
+   * comment above describes.
+   *
+   * ⚠️ IT CAN ONLY EVER TAKE CAPABILITY AWAY, so it needs none of the
+   * `envLoad`-ordering argument its three neighbours carry — a repository that
+   * set this in a `.env.local` would be restricting itself. It sits here anyway
+   * so all four switches read as one block.
+   */
+  if (opts.offline === true) process.env[OFFLINE_ENV] = '1';
 
   /**
    * ── ⚠️⚠️ POLICY: 736 LINES OF ADMIN CONTROL THAT NOTHING EVER CALLED ───────
@@ -744,6 +1212,32 @@ async function main() {
    * and a future call site cannot forget it.
    */
   const costCap = costBudget(policy, opts.budgetUsd);
+
+  /**
+   * ── ⚠️ DEEPSEEK BILLS DOUBLE FOR SEVEN HOURS A DAY, AND NOTHING SAID SO ────
+   *
+   * `directDeepSeek` is off by default because it is 3.7x dearer on output —
+   * measured over 95M tokens as 62.3% margin against 85.6%. But ONE caller turns
+   * it on deliberately: the benchmark, because the OpenRouter balance is for
+   * customers and a benchmark is our cost. That is Roman's call and this does not
+   * argue with it.
+   *
+   * ⭐ IT MEANS OUR BIGGEST SPENDER SITS ON THE PEAK-EXPOSED PATH. A 3.5-hour
+   * bench started at 06:05 UTC pays double for its whole run; the same run at
+   * 10:05 pays half — and nobody was choosing that, they just started it when
+   * they were at the desk. The bench invokes THIS binary with
+   * ACUVO_DEEPSEEK_DIRECT=1, so warning here reaches it.
+   *
+   * ⚠️ STDERR, NOT STDOUT: `--json` callers parse stdout and a warning there
+   * would corrupt the document. And it stays silent off-peak and under $0.50 —
+   * a line that prints every run is one nobody reads.
+   */
+  if (String(process.env.ACUVO_DEEPSEEK_DIRECT ?? '') === '1') {
+    const { peakWarning } = await import('../lib/deepseek-hours.mjs');
+    const note = peakWarning(opts.budgetUsd);
+    if (note) process.stderr.write(`${note}\n`);
+  }
+
   if (costCap.capped) {
     opts.budgetUsd = costCap.usd;
     /**
@@ -839,6 +1333,79 @@ async function main() {
    * published with, and the customer can edit the file. Prices are account facts
    * and they stay on the server.
    */
+  /**
+   * ── ⭐⭐⭐ `acuvo config` — THE FOUR QUESTIONS, AND WHO ANSWERED THEM ────────
+   *
+   * Roman, standing: *"those 4 questions should be determined by the user, our
+   * CLI should be super customisable."* Making them settable is half the job;
+   * the other half is that **a knob nobody can find is not configurable**. Five
+   * layers now decide each answer (flag > env > your config > this repo's config
+   * > built-in default), and without this command the only way to discover which
+   * one won is to change something and watch what happens.
+   *
+   * ⚠️ ABOVE THE KEY CHECK, with `leases`, `spend` and `engines`: it reads files
+   * this machine already has and spends nothing. Refusing it for a missing model
+   * key would be a true statement about the wrong problem.
+   *
+   * ⚠️ `opts` IS PASSED SO A TYPED FLAG SHOWS ITS OWN VALUE. `resolveConfig` is
+   * told WHICH keys were typed but never sees their values, so its `values` still
+   * carry the file's number for a key the flag overrode. Printing that would make
+   * the one command whose job is to explain precedence the one place it is
+   * stated wrongly.
+   */
+  if (opts.command === 'config') {
+    if (opts.json) {
+      process.stdout.write(`${JSON.stringify({
+        precedence: ['flag', 'env', 'home', 'workspace', 'default'],
+        questions: resolveFourQuestions(configLoad, opts),
+        sources: configLoad.sources ?? [],
+        notes: configLoad.notes ?? [],
+      }, null, 2)}\n`);
+      return EXIT_OK;
+    }
+    process.stdout.write(`\n${describeFourQuestions(configLoad, opts).join('\n')}\n\n`);
+    return EXIT_OK;
+  }
+
+  /**
+   * ── ⭐⭐⭐ `acuvo document <page.html> <out.pdf>` — THE PRESS, FROM A SHELL ──
+   *
+   * ⚠️⚠️ THIS IS WHY IT IS NOT A BUILDER TOOL. `make_document` as a tool in the
+   * console builder costs 527 bytes of schema plus a prompt line, against
+   * SIXTEEN characters of headroom in a ceiling that is derived (`oneShot / 3`)
+   * and therefore cannot be ratcheted. The build VM already has this binary on
+   * its PATH and a 45-minute `cli.run` key in `ACUVO_TOKEN`, which
+   * `account.mjs` reads — so a model reaches the press through `run_command`
+   * for zero schema bytes and zero prompt bytes.
+   *
+   * ⭐ NO AGENT SESSION. `acuvo "turn report.html into a PDF"` would already
+   * work and would buy a model turn to perform a mechanical conversion. This
+   * presses the file and exits, which is what a shell caller wants and what a
+   * build round can afford.
+   */
+  if (opts.command === 'document') {
+    const [htmlPath, outPath] = opts.documentArgs ?? [];
+    const format = /\.png$/i.test(outPath) ? 'png' : (/\.pptx$/i.test(outPath) ? 'pptx' : 'pdf');
+    const { makeDocument } = await import('../lib/media.mjs');
+    const result = await makeDocument(root, htmlPath, outPath, format, { dryRun: opts.dryRun });
+    if (opts.json) {
+      process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+      return result?.ok ? EXIT_OK : EXIT_FAILED;
+    }
+    if (!result?.ok) {
+      /**
+       * ⚠️ THE REASON, VERBATIM AND ON stderr. `makeDocument` already answers
+       * "no document service is available" with the two things a caller can do
+       * about it (`acuvo --login`, or `MODAL_PRESS_URL`); rewording it here
+       * would be a second copy to go stale.
+       */
+      process.stderr.write(`\n  ${result?.error ?? 'the document service returned nothing'}\n\n`);
+      return EXIT_FAILED;
+    }
+    process.stdout.write(`\n  wrote ${result.path ?? outPath}${result.bytes ? ` (${result.bytes} bytes)` : ''}\n\n`);
+    return EXIT_OK;
+  }
+
   if (opts.command === 'engines') {
     const result = await listEngines({});
     if (opts.json) {
@@ -1107,6 +1674,790 @@ ${formatBoard(listed)}
    * missing credential cannot be gated on having one. Same reason `--replay`
    * sits above it.
    */
+  /**
+   * -- `acuvo mcp add <server>` -- ONE COMMAND, THE WHOLE MCP ECOSYSTEM -----
+   *
+   * Roman: "the features must be ridiculous, integration-wise."
+   *
+   * `lib/mcp.mjs` already speaks stdio, http and sse and already reads
+   * `.acuvo/mcp.json`. Every MCP server on the internet was ALREADY runnable;
+   * the only thing in the way was that a user had to hand-author JSON.
+   *
+   * Two files in this repo referenced the competitor's version of this command
+   * with open envy -- design-loop.mjs:14 and media.mjs:32, both saying that one
+   * `claude mcp add` is what makes everything else work. We had written the
+   * observation down twice and shipped the unreachable version anyway.
+   *
+   * ABOVE THE CREDENTIAL CHECK, like `--whoami`: configuring a tool must never
+   * require having already paid for a different one.
+   */
+  if (life.mcpSearch !== null) {
+    const { searchServers, formatResults } = await import('../lib/mcp-search.mjs');
+    const out = await searchServers(life.mcpSearch);
+    /**
+     * ⚠️ A FAILED SEARCH IS EXIT 1, A SEARCH WITH NO HITS IS EXIT 0. "npm did
+     * not answer" and "nothing exists for that" are different facts, and a
+     * script that treats them the same retries a query that will never succeed.
+     */
+    process.stdout.write(`${formatResults(out, life.mcpSearch)}
+`);
+    return out.ok ? EXIT_OK : EXIT_USAGE;
+  }
+
+  /**
+   * ⚠️ BOTH SIT ABOVE THE CREDENTIAL CHECK, like `add` and `--whoami`.
+   * Inspecting or revoking what a repo may start on your machine is a SAFETY
+   * action; gating it on having paid for something would mean the one command
+   * that undoes a trust decision is the one an unauthenticated user cannot run.
+   */
+  /**
+   * ── ⭐⭐ `acuvo import` — THE ON-DISK SWEEP (CARRY-OVER.md L3) ──────────────
+   *
+   * ⚠️ READ-ONLY, LIKE `mcp import`. It reports what another tool left here and
+   * copies none of it. Commands and skills carry that tool's own conventions,
+   * and hooks are shell commands — see `lib/tool-import.mjs`.
+   */
+  if (life.sweepImport) {
+    const { collectToolAssets, collectHooks, describeSweep } = await import('../lib/tool-import.mjs');
+    const { collectImportableServers } = await import('../lib/mcp-import.mjs');
+    const { readProjectMemory } = await import('../lib/project-memory.mjs');
+    const { existsSync, readFileSync, readdirSync } = await import('node:fs');
+    const { homedir } = await import('node:os');
+
+    const dirAt = rawArgs.indexOf('--dir');
+    const root = dirAt >= 0 && rawArgs[dirAt + 1] ? rawArgs[dirAt + 1] : process.cwd();
+    const io = {
+      exists: (p) => existsSync(p),
+      readFile: (p) => readFileSync(p, 'utf8'),
+      listDir: (p) => readdirSync(p),
+    };
+
+    const memory = readProjectMemory(root);
+    process.stdout.write(`${describeSweep({
+      assets: collectToolAssets({ root, ...io }),
+      hooks: collectHooks({ root, ...io }),
+      rules: memory?.found ? { file: memory.file, truncated: memory.truncated } : null,
+      mcp: collectImportableServers({
+        root, home: homedir(), platform: process.platform, appDataDir: process.env.APPDATA || '', ...io,
+      }),
+    })}\n`);
+    return EXIT_OK;
+  }
+
+  /**
+   * ── ⭐⭐ `acuvo carry <transcript>` — L4 OF THE CARRY-OVER LADDER ───────────
+   *
+   * ⚠️ WIRED IMMEDIATELY AFTER THE REDUCER LANDED, because a reducer with no
+   * caller is `feedback_wire_it_in_the_same_commit` exactly — and the commit
+   * that added it said so about itself.
+   */
+  if (life.carryFrom !== undefined && life.carryFrom !== null) {
+    if (!life.carryFrom) {
+      process.stderr.write('usage: acuvo carry <transcript.jsonl>\n');
+      return EXIT_USAGE;
+    }
+    const { reduceTranscript, ledgerBrief, reductionRatio } = await import('../lib/transcript-ledger.mjs');
+    const { readFileSync, statSync } = await import('node:fs');
+
+    let raw;
+    try {
+      /**
+       * ⚠️ READ WHOLE, AND THE BOUND IS MEASURED RATHER THAN HOPED FOR. The
+       * largest real transcript on record is 62.3 MB and reduces in 2.4s, so
+       * this is bounded by observation. A streaming reader would be tidier and
+       * is the right change the day someone shows up with a file that is not.
+       */
+      raw = readFileSync(life.carryFrom, 'utf8');
+    } catch (err) {
+      process.stderr.write(`could not read ${life.carryFrom}: ${err?.message ?? err}\n`);
+      return EXIT_FAILED;
+    }
+
+    const reduced = reduceTranscript(raw.split('\n'));
+    const brief = ledgerBrief(reduced);
+    if (!brief) {
+      process.stderr.write(`${life.carryFrom} has no readable session records in it\n`);
+      return EXIT_FAILED;
+    }
+
+    const ratio = reductionRatio(reduced, brief);
+    process.stdout.write(`${brief}\n`);
+    if (ratio) {
+      const mb = (statSync(life.carryFrom).size / 1024 / 1024).toFixed(1);
+      /**
+       * ⚠️ IT ONLY CLAIMS A REDUCTION WHEN THERE WAS ONE. A short session
+       * distils to a brief LARGER than its input — the fixed header and the
+       * honesty footer outweigh four records — and the first version rounded
+       * that to *"1x smaller"*, which is a claim that the output shrank when it
+       * grew. The whole feature is justified by a ratio, so a decorative ratio
+       * on the cases where it does not hold is the one number here that must
+       * never be generous.
+       */
+      process.stdout.write(ratio.ratio >= 2
+        ? `\n[${mb} MB of transcript, ${reduced.records} records -> ${ratio.bytesOut} bytes, ${ratio.ratio.toFixed(0)}x smaller]\n`
+        : `\n[${mb} MB of transcript, ${reduced.records} records -> ${ratio.bytesOut} bytes — short session, nothing to compress]\n`);
+    }
+    return EXIT_OK;
+  }
+
+  /**
+   * ── ⭐⭐ `acuvo skills` — 67 SKILLS SHIPPED AND NOTHING COULD LIST THEM ──────
+   *
+   * ⚠️ A SHELF YOU CANNOT SEE IS A SHELF YOU DO NOT TRUST. `read_skill` is
+   * offered to the MODEL and the catalogue goes into the prompt; a PERSON had
+   * no way to find out what was on it, no way to confirm the skill they wrote
+   * was found, and no way to discover that a repository they cloned had quietly
+   * shadowed one of theirs by reusing the name.
+   *
+   * ⚠️ READ-ONLY, AND IT PRINTS THE DIRECTORY TO WRITE IN. Authoring a skill is
+   * creating a markdown file, which is a thing the user does; a `skills add`
+   * that fetched one from a URL is deliberately absent and
+   * `lib/builtin-skills.mjs` records why at length — a skill is instructions
+   * that enter the model's context and get followed.
+   */
+  if (life.skills) {
+    const { skillShelves, userSkillsPath } = await import('../lib/builtin-skills.mjs');
+    const { SKILLS_DIR } = await import('../lib/skills.mjs');
+    const root = process.cwd();
+    const shelves = skillShelves(root);
+    const out = process.stdout;
+    const NL = '\n';
+
+    if (life.skills === 'json') {
+      out.write(`${JSON.stringify({
+        project: shelves.bySource.project.map((s) => s.name),
+        user: shelves.bySource.user.map((s) => s.name),
+        bundled: shelves.bySource.bundled.map((s) => s.name),
+        userDir: shelves.userDir,
+        projectDir: SKILLS_DIR,
+        projectOverrodeUser: shelves.projectOverrodeUser,
+        overrodeBuiltin: shelves.overrodeBuiltin,
+        total: shelves.found,
+      }, null, 2)}${NL}`);
+      return EXIT_OK;
+    }
+
+    const section = (title, where, list) => {
+      out.write(`${NL}  ${title}  ${where}${NL}`);
+      if (list.length === 0) { out.write(`    (none)${NL}`); return; }
+      for (const s of list) {
+        out.write(`    ${s.name.padEnd(28)} ${String(s.description ?? '').slice(0, 76)}${NL}`);
+      }
+    };
+
+    out.write(`${NL}  ${shelves.found} skills available here — most specific wins.${NL}`);
+    section(`this project (${shelves.bySource.project.length})`, SKILLS_DIR, shelves.bySource.project);
+    /**
+     * ⚠️ THE SHADOWED ONES ARE COUNTED IN THE HEADING, not only in the warning
+     * below it. The first version printed `yours (0)` for a person who has
+     * one skill that this repository happens to have shadowed — a heading
+     * that reads as "you wrote nothing" about the exact case the command
+     * exists to surface.
+     */
+    const shadowedMine = shelves.projectOverrodeUser.length;
+    section(`yours (${shelves.bySource.user.length}${shadowedMine ? ` + ${shadowedMine} shadowed by this project` : ''})`, shelves.userDir, shelves.bySource.user);
+    section(`bundled (${shelves.bySource.bundled.length})`, 'shipped with acuvo-code', shelves.bySource.bundled);
+
+    /**
+     * ⭐ AN OVERRIDE IS REPORTED BY NAME. A shadowed skill nobody is told about
+     * is the silent failure this whole command exists to end — the user
+     * believes a procedure is in force and the model was shown a different one.
+     */
+    if (shelves.projectOverrodeUser.length > 0) {
+      out.write(`${NL}  ⚠ this project is standing in front of ${shelves.projectOverrodeUser.length} of YOUR skills: ${shelves.projectOverrodeUser.join(', ')}${NL}`);
+      out.write(`    If you did not write this repository, read ${SKILLS_DIR}/ before trusting it.${NL}`);
+    }
+    if (shelves.overrodeBuiltin.length > 0) {
+      out.write(`${NL}  overriding the bundled version of: ${shelves.overrodeBuiltin.join(', ')}${NL}`);
+    }
+    if (shelves.capped > 0) out.write(`${NL}  ⚠ ${shelves.capped} more were found and not loaded — the catalogue is sent every round, so it is capped.${NL}`);
+    if (shelves.error) out.write(`${NL}  ⚠ ${shelves.error}${NL}`);
+
+    out.write(`${NL}  Write your own: a markdown file with name/description frontmatter in${NL}`);
+    out.write(`    ${userSkillsPath()}${NL}      for every project on this machine, or${NL}`);
+    // ⚠️ RELATIVE, DELIBERATELY. The user shelf needs an absolute path because it
+    // is somewhere else; the project one is a path INSIDE the directory you are
+    // standing in, and joining it by hand printed `C:\…\ts-bare\.acuvo/skills` —
+    // a separator salad that reads like a bug in the tool printing it.
+    out.write(`    ${SKILLS_DIR}${NL}      for this one, relative to ${root} (committed with the repo).${NL}`);
+    out.write(`  The model reads one with read_skill, by NAME — it can never name a path.${NL}${NL}`);
+    return EXIT_OK;
+  }
+
+  /**
+   * ── ⭐⭐⭐ `acuvo lsp` — THE ONE COMMAND THAT LIGHTS EIGHT VERBS EVERYWHERE ──
+   *
+   * Measured 2026-09-19 with this binary, in a scratch TypeScript project with
+   * no `node_modules`: `--doctor` reported **64 of 87** tools with all eight
+   * symbol verbs dark. The gate is a tsserver being reachable, and nothing in
+   * the product could put one there — the doctor's own fix line said
+   * `npm i -D typescript`, which now installs TypeScript 7 and ships no
+   * tsserver at all. See `lib/managed-language-server.mjs` for the measurements.
+   *
+   * ⚠️ IT ASKS, AND IT FAILS CLOSED WHERE NOBODY CAN ANSWER. `mcp-consent.mjs`:
+   * *"nobody objected is not the same as somebody agreed."* Downloading 23MB
+   * from a registry is a decision a person makes; `--yes` is the documented
+   * escape for the CI that has already read the banner.
+   */
+  if (life.lsp) {
+    const {
+      describeInstall, installManagedTypescript, managedStatus, removeManaged, MANAGED_TYPESCRIPT_SPEC,
+    } = await import('../lib/managed-language-server.mjs');
+    const out = process.stdout;
+    const NL = '\n';
+
+    if (life.lsp === 'status') {
+      const st = managedStatus();
+      out.write(`${NL}  Acuvo-managed language servers${NL}  ${st.dir}${NL}${NL}`);
+      out.write(st.installed
+        ? [
+          `  installed  ${st.spec} — tsserver at ${st.file}`,
+          '             find_definition · find_references · check_types · list_symbols ·',
+          '             rename_symbol · insert_before_symbol · insert_after_symbol ·',
+          '             replace_function_body answer in every TS/JS project on this machine.',
+        ].join(NL) + NL
+        : [
+          '  not installed — the eight symbol verbs answer only in projects that carry',
+          '                  their own TypeScript 5. `acuvo lsp install` fixes that once,',
+          '                  for every project on this machine.',
+        ].join(NL) + NL);
+      /**
+       * ⚠️ IT NAMES THE PROJECT-LOCAL WINNER TOO. A user whose repo has its own
+       * `typescript` is already served and must not be told to install
+       * anything — `findTsserver` prefers the tree, deliberately, because that
+       * is the version their own `tsc` uses.
+       */
+      const { findTsserver } = await import('../lib/tsserver.mjs');
+      const local = findTsserver(process.cwd(), { allowManaged: false });
+      if (local) out.write(`${NL}  This workspace carries its own tsserver and will use that instead:${NL}  ${local}${NL}`);
+      out.write(NL);
+      return EXIT_OK;
+    }
+
+    if (life.lsp === 'remove') {
+      const r = removeManaged();
+      if (!r.ok) { process.stderr.write(`${NL}  ✖ could not remove ${r.dir} — ${r.error}${NL}${NL}`); return EXIT_FAILED; }
+      out.write(r.removed ? `${NL}  ✔ removed ${r.dir}${NL}${NL}` : `${NL}  nothing to remove — ${r.dir} does not exist${NL}${NL}`);
+      return EXIT_OK;
+    }
+
+    const already = managedStatus();
+    if (already.installed) {
+      out.write(`${NL}  ✔ already installed — ${already.file}${NL}  Remove it with \`acuvo lsp remove\`.${NL}${NL}`);
+      return EXIT_OK;
+    }
+
+    out.write(`${NL}${describeInstall()}${NL}${NL}`);
+    /**
+     * ⭐ `createAsker` RETURNS null WHEN THERE IS NOBODY TO ASK — the same
+     * distinction `acuvo tunnel` uses two hundred lines below, and the reason it
+     * is preferred to a hand-rolled `isTTY` check: absence stays absence.
+     */
+    let consented = rawArgs.includes('--yes') || rawArgs.includes('-y');
+    if (!consented) {
+      const { createAsker } = await import('../lib/prompt.mjs');
+      const ask = createAsker();
+      if (!ask) {
+        process.stderr.write(`    Not installed — there is no terminal here to ask. Pass --yes if you have read the above.${NL}${NL}`);
+        return EXIT_FAILED;
+      }
+      const answer = String((await ask('    Install it? [y/N] ')) ?? '').trim().toLowerCase();
+      // ⚠️ ONLY an explicit yes. Enter, EOF (null) and anything else are "no".
+      consented = answer === 'y' || answer === 'yes';
+    }
+    if (!consented) { out.write(`    Not installed.${NL}${NL}`); return EXIT_OK; }
+
+    out.write(`    installing ${MANAGED_TYPESCRIPT_SPEC}…${NL}`);
+    const result = await installManagedTypescript();
+    if (!result.ok) { process.stderr.write(`${NL}  ✖ ${result.error}${NL}${NL}`); return EXIT_FAILED; }
+    out.write(`${NL}  ✔ ${result.spec} installed — tsserver at ${result.file}${NL}`);
+    out.write(`    The eight symbol verbs now answer in every TS/JS project on this machine.${NL}`);
+    out.write(`    Check it with \`acuvo --doctor\`.${NL}${NL}`);
+    return EXIT_OK;
+  }
+
+  /**
+   * ── ⭐⭐ `acuvo mcp import` — WHAT THEY ALREADY CONNECTED ELSEWHERE ─────────
+   *
+   * ⚠️ READ-ONLY BY CONSTRUCTION. There is no write path in this block at all,
+   * which is the point rather than an oversight: an MCP declaration is
+   * `command` + `args`, so importing and starting one is remote code execution
+   * with a friendly name. It prints what it found and stops.
+   */
+  if (life.mcpInstall) {
+    const { IMPORT_SOURCES, resolveSourcePath } = await import('../lib/mcp-import.mjs');
+    const {
+      buildServerEntry, planInstall, describeInstall, ENGINE_ENV_KEYS,
+      buildHostedEntry, ACUVO_SERVER_NAME, ACUVO_HOSTED_NAME, ACUVO_HOSTED_URL,
+      hostedTransportFor, HOSTED_UI_REASON,
+    } = await import('../lib/mcp-install.mjs');
+    const { existsSync, readFileSync, writeFileSync, mkdirSync } = await import('node:fs');
+    const { homedir } = await import('node:os');
+    const { dirname } = await import('node:path');
+
+    const valueAfter = (name) => {
+      const at = rawArgs.indexOf(name);
+      return at >= 0 && rawArgs[at + 1] && !rawArgs[at + 1].startsWith('-') ? rawArgs[at + 1] : null;
+    };
+    const root = valueAfter('--dir') || process.cwd();
+    const apply = rawArgs.includes('--yes');
+    const force = rawArgs.includes('--force');
+    const allowWrite = life.mcpAllowWrite === true;
+    const spendRaw = life.mcpAllowSpend || null;
+    const onlyHost = life.mcpHost || null;
+
+    /**
+     * ⚠️ ONLY VARIABLES THAT ARE ACTUALLY SET TRAVEL. Writing
+     * `"RENDER_AUDIT_URL": ""` would turn a group that is honestly off into a
+     * group that is configured-but-broken, and the server cannot tell the
+     * difference — it would advertise eyes it does not have.
+     */
+    const env = {};
+    for (const k of ENGINE_ENV_KEYS) if (process.env[k]?.trim()) env[k] = process.env[k].trim();
+
+    /**
+     * ── ⭐⭐⭐ `--hosted` INSTALLS THE SERVER THAT ACTUALLY HAS EVERYTHING ─────
+     *
+     * The stdio binary tops out at 19 tools and needs OUR engine URLs to serve
+     * even those, which is fine on our machines and useless to a stranger.
+     * `POST /api/mcp/rpc` is a real Streamable-HTTP MCP server over the SAME
+     * executor as the product — **161 tools**, the account's own key, plan-gated
+     * and audit-rowed — and it has been live in production the entire time
+     * while nothing in this CLI mentioned it existed.
+     *
+     * ⚠️ THE TWO ARE NOT A CHOICE OF ONE, so they take DIFFERENT names and both
+     * can be installed. The hosted server cannot see your files; the local one
+     * cannot reach your account's engines. Naming them the same thing would make
+     * installing the second silently destroy the first — and `planInstall`
+     * would have reported "updated" while doing it.
+     */
+    const hosted = life.mcpHosted === true;
+    const serverName = hosted ? ACUVO_HOSTED_NAME : ACUVO_SERVER_NAME;
+    let built;
+    if (hosted) {
+      let token = String(life.mcpKey || '').trim();
+      if (!token) {
+        /**
+         * ⚠️ THE ACCOUNT TOKEN ONLY — never `OPENROUTER_API_KEY`.
+         * `resolveCredential` can also answer in BYOK mode, and writing a raw
+         * provider key into an editor config would bill the customer directly
+         * and bypass our metering entirely. That exact confusion already cost
+         * us every CLI run being billed off-meter once.
+         */
+        const { resolveCredential } = await import('../lib/account.mjs');
+        const cred = resolveCredential();
+        if (cred && cred.mode === 'account') token = cred.token;
+      }
+      built = buildHostedEntry({ token, url: process.env.ACUVO_MCP_URL?.trim() || ACUVO_HOSTED_URL });
+    } else {
+      built = buildServerEntry({
+        root,
+        allowWrite,
+        allowSpendUsd: spendRaw == null ? null : Number(spendRaw),
+        env,
+      });
+    }
+    if (!built.ok) {
+      process.stderr.write(`acuvo mcp install: ${built.error}\n`);
+      return EXIT_USAGE;
+    }
+
+    const lines = [];
+    const writes = [];
+    for (const source of IMPORT_SOURCES) {
+      if (onlyHost && source.tool.toLowerCase() !== onlyHost.toLowerCase()) continue;
+      const path = resolveSourcePath(source, {
+        root, home: homedir(), platform: process.platform, appDataDir: process.env.APPDATA || '',
+      });
+      /**
+       * ⚠️ A CONFIG FILE THAT DOES NOT EXIST MEANS THAT TOOL IS NOT HERE, and
+       * creating one would litter a stranger's repository with a `.cursor/`
+       * directory for an editor they do not use. Naming a host explicitly is
+       * the deliberate override.
+       */
+      if (!path) continue;
+      if (!existsSync(path) && !onlyHost) continue;
+
+      /**
+       * ── ⚠️⭐ A HOST THAT CANNOT USE THE HOSTED ENTRY IS SKIPPED, NOT "added"
+       *
+       * Found 2026-09-19 by running the real dry run: `--hosted` printed
+       * `Claude Desktop (user): added` while writing an `http` entry into a
+       * file whose documented format has no remote shape at all. That is the
+       * "it connected and there are no tools" failure `mcp-install.mjs` opens
+       * by warning about, shipped by its own installer.
+       *
+       * ⚠️ THE TEST IS ON `hosted` AS WELL AS THE TOOL. The stdio install
+       * writes `command`/`args`, which Claude Desktop documents and uses; only
+       * the REMOTE entry is the one it cannot read. Dropping the `hosted &&`
+       * would break the install that works.
+       */
+      if (hosted && hostedTransportFor(source.tool) === 'ui') {
+        lines.push(`${source.tool} (${source.scope}): skipped — ${HOSTED_UI_REASON}`);
+        lines.push(`  ${built.entry.url}`);
+        continue;
+      }
+
+      let text = '';
+      try { text = existsSync(path) ? readFileSync(path, 'utf8') : ''; }
+      catch (err) { lines.push(`${source.tool} (${source.scope}): skipped — could not read ${path} (${err.code || 'error'})`); continue; }
+
+      const plan = planInstall({
+        configText: text, key: source.key, entry: built.entry, scope: source.scope, force,
+        name: serverName,
+      });
+      lines.push(`${describeInstall(source, plan)}  ${path}`);
+      if (plan.ok && plan.text) writes.push({ path, text: plan.text });
+    }
+
+    if (lines.length === 0) {
+      process.stdout.write('No MCP host configuration was found on this machine. Name one with --host "Claude Code" to create it.\n');
+      return EXIT_OK;
+    }
+
+    process.stdout.write(`${lines.join('\n')}\n`);
+    /**
+     * ⚠️ THE SUMMARY IS THE POINT OF THE COMMAND, so it says what is OFF as
+     * loudly as what is on. An installer that reports success while writing a
+     * server that will serve nothing is the failure this whole verb exists to
+     * end — and it is the shape the empty handshake was already in.
+     */
+    if (hosted) {
+      process.stdout.write(`\n"${serverName}" talks to ${built.entry.url} with your account key.\n`);
+      process.stdout.write('  Every tool your plan allows — metered and audited on your account.\n');
+      process.stdout.write('  ⚠ It cannot see local files. Run it again without --hosted to add those.\n');
+    } else {
+      process.stdout.write(`\n"${serverName}" will run as: ${built.entry.command} ${built.entry.args.join(' ')}\n`);
+      if (!allowWrite) process.stdout.write('  workspace is READ-ONLY — add --allow-write to let it edit files\n');
+      if (spendRaw == null) process.stdout.write('  image and speech are OFF — add --allow-write --allow-spend <usd> to serve them\n');
+      if (!Object.keys(env).length) process.stdout.write('  browser and document press are OFF — set RENDER_AUDIT_URL / MODAL_PRESS_URL first\n');
+      process.stdout.write('  ⚠ Local only. `acuvo mcp install --hosted` adds your account\'s full tool surface.\n');
+    }
+
+    if (!apply) {
+      process.stdout.write(`\nNothing written. Re-run with --yes to apply${writes.length ? ` (${writes.length} file(s))` : ''}.\n`);
+      return EXIT_OK;
+    }
+    for (const w of writes) {
+      try {
+        mkdirSync(dirname(w.path), { recursive: true });
+        writeFileSync(w.path, w.text, 'utf8');
+      } catch (err) {
+        process.stderr.write(`acuvo mcp install: could not write ${w.path} (${err.code || 'error'})\n`);
+        return EXIT_FAILED;
+      }
+    }
+    process.stdout.write(`\nWrote ${writes.length} file(s). Restart the host to pick it up.\n`);
+    return EXIT_OK;
+  }
+
+  if (life.mcpImport) {
+    const { collectImportableServers, describeImport } = await import('../lib/mcp-import.mjs');
+    const { existsSync, readFileSync } = await import('node:fs');
+    const { homedir } = await import('node:os');
+
+    const dirAt = rawArgs.indexOf('--dir');
+    const root = dirAt >= 0 && rawArgs[dirAt + 1] ? rawArgs[dirAt + 1] : process.cwd();
+
+    const found = collectImportableServers({
+      root,
+      home: homedir(),
+      platform: process.platform,
+      // Windows keeps Claude Desktop's config under %APPDATA%; the module falls
+      // back to the XDG/macOS convention when this is empty.
+      appDataDir: process.env.APPDATA || '',
+      exists: (p) => existsSync(p),
+      readFile: (p) => readFileSync(p, 'utf8'),
+    });
+
+    const text = describeImport(found);
+    process.stdout.write(text
+      ? `${text}\n`
+      : 'No MCP configuration from another tool was found on this machine.\n');
+    return EXIT_OK;
+  }
+
+  /**
+   * ── ⭐⭐ `acuvo tunnel <port>` — THE ONLY COMMAND THAT EXPOSES THIS MACHINE ─
+   *
+   * The order below is the safety property and is not cosmetic: every refusal
+   * that can be decided WITHOUT touching the network is decided first, so a
+   * mistyped port, a database port or a missing `cloudflared` costs nothing and
+   * reveals nothing. Only once all of them pass is a person asked, and only
+   * after they say yes does anything leave the machine.
+   */
+  if (life.tunnelPort !== null) {
+    const {
+      checkPort, checkMinutes, isListening, findCloudflared,
+      consentBanner, liveBanner, runTunnel, INSTALL_HINT, TUNNEL_BINARY,
+    } = await import('../lib/tunnel.mjs');
+
+    const port = checkPort(life.tunnelPort);
+    if (!port.ok) { process.stderr.write(`${port.error}\n`); return EXIT_FAILED; }
+
+    const mins = checkMinutes(life.tunnelMinutes);
+    if (!mins.ok) { process.stderr.write(`${mins.error}\n`); return EXIT_FAILED; }
+
+    if (!findCloudflared()) { process.stderr.write(`${INSTALL_HINT}\n`); return EXIT_FAILED; }
+
+    /**
+     * ⭐ NOTHING IS PUBLISHED FOR A PORT THAT IS NOT SERVING. Otherwise the URL
+     * 502s, the person reads it as "tunnels are broken", and tries other port
+     * numbers until one sticks — which is how you publish something you never
+     * looked at. See `isListening`.
+     */
+    if (!(await isListening(port.port))) {
+      process.stderr.write(
+        `nothing is listening on 127.0.0.1:${port.port}, so there is nothing to share.\n`
+        + 'Start your app first, then run this again with the port it printed.\n',
+      );
+      return EXIT_FAILED;
+    }
+
+    process.stdout.write(consentBanner(port.port, mins.minutes));
+
+    /**
+     * ⚠️⚠️ NON-INTERACTIVE MEANS REFUSE, NOT ASSUME YES. A CI job or a piped
+     * invocation cannot read the banner above, so consent was never given — and
+     * "no human was present" is the one situation where publishing a port
+     * silently is least acceptable.
+     *
+     * ⭐ `createAsker` RETURNS null WHEN THERE IS NOBODY TO ASK, which is
+     * exactly the distinction needed here and is why it is used rather than a
+     * hand-rolled `isTTY` check: absence stays absence (`lib/prompt.mjs`).
+     * `--yes` is the deliberate override, typed by somebody who read the banner.
+     */
+    const preApproved = rawArgs.includes('--yes') || rawArgs.includes('-y');
+    let consented = preApproved;
+    if (!consented) {
+      const { createAsker } = await import('../lib/prompt.mjs');
+      const ask = createAsker();
+      if (!ask) {
+        process.stderr.write('     Not published — there is no terminal here to ask, and a tunnel is never opened without somebody saying so. Pass --yes if you really mean it.\n');
+        return EXIT_FAILED;
+      }
+      const answer = String((await ask('     Publish it? [y/N] ')) ?? '').trim().toLowerCase();
+      // ⚠️ ONLY an explicit yes. Enter, EOF (null) and anything else are "no".
+      consented = answer === 'y' || answer === 'yes';
+    }
+    if (!consented) {
+      process.stderr.write('     Not published.\n');
+      return EXIT_FAILED;
+    }
+
+    const result = await runTunnel({
+      port: port.port,
+      minutes: mins.minutes,
+      onEvent: (e) => {
+        if (e.type === 'registering') {
+          // ⭐ Said out loud, because the wait is ~12s and silence reads as a hang.
+          process.stdout.write(`\n  … ${TUNNEL_BINARY} published ${e.url} — checking it actually serves before handing it to you\n`);
+        } else if (e.type === 'live') {
+          process.stdout.write(liveBanner(e.url, port.port, mins.minutes, e.expiresAt));
+          if (!e.ready) {
+            // ⚠️ Announced anyway, but never as if it were confirmed.
+            process.stdout.write('      ⚠️  it did not answer within the check window — it may still be registering\n\n');
+          }
+        } else if (e.type === 'stopping') {
+          process.stdout.write(`\n  closing the tunnel: ${e.why}\n`);
+        }
+      },
+    });
+
+    if (!result.ok) { process.stderr.write(`${result.error}\n`); return EXIT_FAILED; }
+    process.stdout.write(`  the tunnel is closed — ${result.url} no longer resolves to this machine.\n`);
+    return EXIT_OK;
+  }
+
+  if (life.mcpList || life.mcpRemove !== null) {
+    const { removeServer, describeConfiguredServers } = await import('../lib/mcp-add.mjs');
+    const { readFileSync, writeFileSync } = await import('node:fs');
+    const { join } = await import('node:path');
+
+    const dirAt = rawArgs.indexOf('--dir');
+    const root = dirAt >= 0 && rawArgs[dirAt + 1] ? rawArgs[dirAt + 1] : process.cwd();
+
+    /**
+     * ⚠️ THE FILE WE READ IS THE FILE WE WRITE. `add` always writes
+     * `.acuvo/mcp.json`, which is fine because it is the loader's FIRST
+     * candidate. `remove` cannot copy that: if the entry lives in a repo's
+     * committed `.mcp.json`, writing a pruned copy to `.acuvo/mcp.json` would
+     * leave the original in place, shadow it, and report success while the
+     * server the user just revoked still loads on the next run. So the source
+     * path is tracked and edited in place.
+     *
+     * ⚠️ AND UNPARSEABLE IS NOT EMPTY. `readMcpConfig` makes the same
+     * distinction and `slash.mjs` records why: telling someone whose JSON has a
+     * trailing comma that they have no servers sends them to fix the wrong
+     * problem in the wrong file.
+     */
+    let source = null;
+    let existing = null;
+    let parseError = null;
+    for (const rel of ['.acuvo/mcp.json', '.mcp.json']) {
+      const abs = join(root, rel);
+      let text;
+      try { text = readFileSync(abs, 'utf8'); } catch { continue; }
+      try {
+        existing = JSON.parse(text);
+        source = rel;
+      } catch (err) {
+        parseError = `${rel} is not valid JSON: ${err?.message ?? err}`;
+      }
+      break;
+    }
+
+    if (parseError) {
+      process.stderr.write(`${parseError}\n`);
+      return EXIT_USAGE;
+    }
+
+    if (life.mcpList) {
+      process.stdout.write(`${describeConfiguredServers(existing, { source }).join('\n')}\n`);
+      return EXIT_OK;
+    }
+
+    if (!life.mcpRemove) {
+      process.stderr.write('usage: acuvo mcp remove <name>\n');
+      return EXIT_USAGE;
+    }
+
+    const pruned = removeServer(existing, life.mcpRemove);
+    if (!pruned.ok) {
+      process.stderr.write(`${pruned.error}\n`);
+      return EXIT_USAGE;
+    }
+
+    try {
+      writeFileSync(join(root, source), `${JSON.stringify(pruned.config, null, 2)}\n`, 'utf8');
+    } catch (err) {
+      process.stderr.write(`could not write ${source}: ${err?.message ?? err}\n`);
+      return EXIT_FAILED;
+    }
+
+    process.stdout.write(`removed "${pruned.removed}" from ${source}\n`);
+    /**
+     * ⭐ THE CONSENT FINGERPRINT COVERS THE WHOLE SERVER LIST, so removing one
+     * changes it and the next run re-prompts for what remains. Said out loud
+     * because a silent re-prompt looks like a bug rather than the gate working.
+     */
+    process.stdout.write('  the remaining servers will be re-confirmed on the next run\n');
+    return EXIT_OK;
+  }
+
+  if (life.mcpAdd) {
+    const { resolveServer, mergeServer } = await import('../lib/mcp-add.mjs');
+    const { readFileSync, writeFileSync, mkdirSync } = await import('node:fs');
+    const { join, dirname } = await import('node:path');
+
+    /**
+     * Read straight from argv rather than from parsed options: lifecycle
+     * handlers run BEFORE `parseArgv`, deliberately, so that configuring a
+     * tool never depends on the rest of the command line being valid.
+     */
+    const dirAt = rawArgs.indexOf('--dir');
+    const root = dirAt >= 0 && rawArgs[dirAt + 1] ? rawArgs[dirAt + 1] : process.cwd();
+    const resolved = resolveServer(life.mcpAdd, { workspace: root, name: life.mcpName });
+    if (!resolved.ok) {
+      process.stderr.write(`${resolved.error}\n`);
+      return EXIT_USAGE;
+    }
+
+    /**
+     * Written to `.acuvo/mcp.json` -- the first path `MCP_CONFIG_FILES` looks
+     * at, so what we write is what the loader reads. An existing `.mcp.json` is
+     * read and preserved so we never silently start a second, competing file.
+     */
+    const target = join(root, '.acuvo', 'mcp.json');
+    let existing = {};
+    for (const candidate of [target, join(root, '.mcp.json')]) {
+      try { existing = JSON.parse(readFileSync(candidate, 'utf8')); break; } catch { /* none yet */ }
+    }
+
+    const merged = mergeServer(existing, resolved.name, resolved.entry, { force: life.mcpForce });
+    if (!merged.ok) {
+      process.stderr.write(`${merged.error}\n`);
+      return EXIT_USAGE;
+    }
+
+    /**
+     * ── ⚠️⚠️⭐ TYPING `acuvo mcp add` IS THE CONSENT ACT, AND IT USED TO COUNT
+     *            FOR NOTHING ─────────────────────────────────────────────────
+     *
+     * Measured end to end 2026-09-19: `acuvo mcp add docs`, then a run in the
+     * same workspace. `checkMcpConsent` refused with *"this workspace ships an
+     * MCP config that has not been approved"*, `cfg.servers` was emptied, and
+     * the model wrote — in its own words — *"the `docs` MCP server is not in my
+     * tool list, so I'll fall back to web_search"*. The person asked for the
+     * server BY NAME through our own command, read the line saying exactly
+     * where their query text goes, and got it switched off anyway.
+     *
+     * ⚠️ THE GATE IS STILL RIGHT; IT IS AIMED AT A DIFFERENT THING. It exists
+     * for a `.mcp.json` that arrived INSIDE A CLONED REPOSITORY, which nobody
+     * chose. This is the opposite case, and it is the stronger consent of the
+     * two: a typed command naming one server, whose destination the person either
+     * typed themselves (a URL) or was shown in the catalogue note ("your query
+     * text goes to <url>").
+     *
+     * ⚠ THAT NOTE PRINTS *AFTER* THE FILE IS WRITTEN, NOT BEFORE. An earlier
+     * wording here said otherwise and was simply false. It is not a hole — writing
+     * a config executes nothing and the server only runs on a later turn — but a
+     * security comment that overstates its own ordering is exactly the sentence a
+     * reader ticks off instead of checking.
+     *
+     * ⭐ REVIEWED 2026-09-19 (second pair of eyes, as this lane asked for):
+     * `mergeServer` writes `servers[name] = entry` over a spread of the existing
+     * ones, so `after` is ALWAYS `before` plus exactly the one named. That is what
+     * makes the pre-condition below sufficient rather than merely plausible.
+     *
+     * ⛔ SO THE TRUST IS CARRIED ONLY WHEN IT ESCALATES NOTHING. The
+     * fingerprint covers the WHOLE server list, so blindly trusting the result
+     * would launder every entry that was already in the file — clone a hostile
+     * repo, add one harmless server, and its binary is approved too. The
+     * pre-condition is therefore: the config BEFORE this add was empty, or was
+     * already trusted. Anything else is left to the prompt, exactly as now.
+     *
+     * ⚠️ NEVER FATAL. Failing to remember means being asked, which is safe.
+     */
+    let carryTrust = false;
+    try {
+      const { readMcpConfig } = await import('../lib/mcp.mjs');
+      const { fingerprint, isTrusted, loadTrust } = await import('../lib/mcp-consent.mjs');
+      const before = readMcpConfig(root);
+      const beforeServers = before?.ok ? (before.servers ?? []) : [];
+      carryTrust = beforeServers.length === 0 || isTrusted(fingerprint(beforeServers), loadTrust());
+    } catch { carryTrust = false; }
+
+    try {
+      mkdirSync(dirname(target), { recursive: true });
+      writeFileSync(target, `${JSON.stringify(merged.config, null, 2)}\n`, 'utf8');
+    } catch (err) {
+      process.stderr.write(`could not write ${target}: ${err?.message ?? err}\n`);
+      return EXIT_FAILED;
+    }
+
+    if (carryTrust) {
+      try {
+        const { readMcpConfig } = await import('../lib/mcp.mjs');
+        const { fingerprint, recordTrust } = await import('../lib/mcp-consent.mjs');
+        const after = readMcpConfig(root);
+        if (after?.ok && (after.servers ?? []).length > 0) {
+          recordTrust(fingerprint(after.servers), { root, servers: after.servers });
+        }
+      } catch { /* being asked next run is the safe failure */ }
+    }
+
+    process.stdout.write(`added "${resolved.name}" to .acuvo/mcp.json\n`);
+    if (resolved.note) process.stdout.write(`  ${resolved.note}\n`);
+    /**
+     * Tells them how to CHECK it, because a config that was written is not a
+     * server that connects -- and `/mcp` is the command that knows the
+     * difference.
+     */
+    process.stdout.write(`  run "/mcp" inside acuvo to see whether it connects\n`);
+    return EXIT_OK;
+  }
+
   if (life.whoami) {
     const { describeAuth } = await import('../lib/login.mjs');
     const { resolveCredential } = await import('../lib/account.mjs');
@@ -1185,11 +2536,125 @@ ${formatBoard(listed)}
     return EXIT_OK;
   }
 
+  /**
+   * ⚠️ BEFORE `--doctor`, AND BEFORE ANYTHING THAT PRINTS. This report is about
+   * how the terminal DRAWS, so nothing may have written to the screen ahead of
+   * it — a banner above the ruler would be measuring a screen we had already
+   * disturbed.
+   */
+  if (life.renderReport) {
+    const { renderReport, formatRenderReport } = await import('../lib/render-report.mjs');
+    const rep = await renderReport({ input: process.stdin, output: process.stdout, env: process.env, version: readPkgVersion() });
+    if (opts.json) process.stdout.write(`${JSON.stringify(rep, null, 2)}
+`);
+    else process.stdout.write(`${formatRenderReport(rep)}
+`);
+    return EXIT_OK;
+  }
+
   if (life.doctor) {
     const report = await runDoctor({ root, allowRun: opts.allowRun, maxRounds: opts.maxRounds, skipNetwork: opts.offline === true });
     if (opts.json) process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
     else process.stdout.write(`${formatDoctor(report, { paint: createPainter(colourEnabled()) })}\n`);
     return report.ok ? EXIT_OK : EXIT_FAILED;
+  }
+
+  /**
+   * ── ⭐⭐⭐ `--harness <name>` — HAND THE TASK TO AN EXTERNAL AGENT ─────────
+   *
+   * Roman: *"the only way we are going to make an exceptional product … is by
+   * integrating and wrapping."* Acuvo remains the thing that was run, the thing
+   * that meters, and the thing that supplies the verbs; the external harness is
+   * an execution backend.
+   *
+   * ⚠️ ABOVE THE KEY CHECK, for the reason `--replay` gives two blocks down: an
+   * unmetered harness run needs no OPENROUTER_API_KEY at all, and demanding one
+   * would refuse a command that does not spend our money. In metered mode the
+   * key it needs is `ACUVO_HARNESS_KEY`/`OPENAI_API_KEY`, which `runHarness`
+   * checks for itself and reports in one line.
+   *
+   * ⚠️ AND BELOW `--doctor`, so `acuvo --doctor` still answers on a machine
+   * where the harness is missing — the doctor is the tool you reach for when
+   * something is missing, so it must never depend on the thing being present.
+   */
+  if (life.harness !== null) {
+    if (!opts.task) {
+      die(`--harness ${life.harness} needs a task to hand over, e.g. acuvo --harness ${life.harness} "add a test for parseArgv".`, EXIT_USAGE);
+    }
+    /**
+     * ── ⭐⭐⭐ THE GOVERNOR IS CONSTRUCTED HERE OR METERING DOES NOT HAPPEN ───
+     *
+     * ⚠️⚠️ THIS IS THE LINE THE FEATURE DIES WITHOUT, and its absence would be
+     * invisible: `runHarness` takes `budget` as an OPTIONAL argument, so a
+     * dispatch that forgot it would still print "metered", still start the
+     * proxy, still read every usage block — and record none of it against any
+     * ceiling. That is precisely the shape of `unitAllowance`, the meter this
+     * package built and then set from nowhere, which 40 green tests missed and
+     * one real $0.0012 run found. `test/harness-cli-wires-the-budget.test.mjs`
+     * pins it by construction.
+     *
+     * ⭐ THE SAME GOVERNOR OUR OWN ROUNDS USE — not a parallel one. A harness
+     * round is repriced, cache-ledgered and ceiling-checked identically,
+     * because it goes through the identical object.
+     */
+    const harnessBudget = createBudget({
+      limitUsd: opts.budgetUsd,
+      limitIsDefault: opts.budgetExplicit !== true,
+      limitSource: opts.budgetSource ?? null,
+    });
+    const outcome = await runHarness({
+      harness: life.harness,
+      task: opts.task,
+      cwd: root,
+      model: opts.model ?? null,
+      budget: harnessBudget,
+      paint: createPainter(colourEnabled()),
+      write: (s) => (opts.json ? process.stderr : process.stdout).write(s),
+    });
+    if (outcome.message) {
+      /**
+       * ⚠️ A REFUSAL IS `EXIT_USAGE`, A FAILED RUN IS `EXIT_FAILED`. "You have
+       * not installed codex" and "codex tried and failed" are different
+       * problems, and a script that retries on one must not retry on the other.
+       */
+      process.stderr.write(`${outcome.message}\n`);
+      if (outcome.mode === 'refused') return EXIT_USAGE;
+    }
+    /**
+     * ── ⭐⭐⭐ THE RECEIPT. WITHOUT THIS LINE THE SPEND IS INVISIBLE ──────────
+     *
+     * ⚠️⚠️ MEASURED: `--harness` metered every round through `harnessBudget`
+     * above, and then exited without filing a record — so `acuvo spend` showed
+     * nothing and `--fleet-budget`, whose whole ledger IS this audit directory,
+     * counted it as zero. A governor that stops a run and a book that cannot
+     * see it are two different products, and we had been shipping the first
+     * while describing the second.
+     *
+     * ⚠️ THE SAME TWO OPT-OUTS AS `persistRun`, and for the same reasons:
+     * `--dry-run` promises to touch nothing, `--no-audit` promises the
+     * workspace is left alone. A spend record is not an exception to either.
+     *
+     * ⚠️ AND IT CAN NEVER FAIL THE RUN. Codex's work is already on disk; an
+     * unwritable `.acuvo/` costs the receipt, never the result.
+     */
+    if (!opts.dryRun && life.audit) {
+      const audited = harnessAuditOutcome({
+        harness: life.harness,
+        result: outcome,
+        model: opts.model ?? null,
+        budget: harnessBudget,
+      });
+      if (audited) {
+        try {
+          const logged = recordRun({ root, outcome: audited, changes: [], task: opts.task });
+          if (!logged.ok) process.stderr.write(`  · ${logged.error}\n`);
+        } catch (e) {
+          process.stderr.write(`  · could not write the audit record: ${e?.message ?? e}\n`);
+        }
+      }
+    }
+    if (opts.json) process.stdout.write(`${JSON.stringify(outcome, null, 2)}\n`);
+    return outcome.ok ? EXIT_OK : EXIT_FAILED;
   }
 
   /**
@@ -1384,10 +2849,34 @@ ${formatBoard(listed)}
     ? openJournal(root, { task: opts.task || null })
     : null;
 
+  /**
+   * ── ⭐⭐⭐ THE PROJECT'S OWN WRITE POLICY ───────────────────────────────────
+   *
+   * `acuvo-rules.json` (committed, reviewable) or `.acuvo/rules.json` (private).
+   * Absent in almost every workspace, in which case this is `{kind:'none'}` and
+   * the executor behaves exactly as it did.
+   *
+   * ⚠️ READ ONCE, HERE, NOT PER WRITE. A policy that were re-read on every call
+   * could change halfway through a run — so a file locked when the agent
+   * planned its work could be unlocked by the time it got there, which is the
+   * one thing a lock may never do. One read, one policy, one run.
+   */
+  const projectRules = loadProjectRules((name) => {
+    try { return readFileSync(join(root, name), 'utf8'); } catch { return null; }
+  });
+  {
+    // ⭐ SAID OUT LOUD. A guard nobody knows is running becomes "why did it
+    // refuse that" twenty minutes later; the model gets the refusal, the person
+    // gets this line, and neither has to guess.
+    const line = describeProjectRules(projectRules);
+    if (line) process.stderr.write(`${line}\n`);
+  }
+
   const executor = createLocalExecutor(root, {
     dryRun: opts.dryRun,
     claimPath: claimer ? (p) => claimer.claim(p) : null,
     journal,
+    rules: projectRules,
     /**
      * ⭐ WHO THIS TERMINAL IS — and the plan ledger keys on it. Measured with
      * two terminals in one checkout: terminal 2 could not plan at all (the
@@ -1420,8 +2909,17 @@ ${formatBoard(listed)}
    * while the unsafe thing happened. A mode that removes a guarantee has to be
    * impossible to have forgotten you enabled.
    */
+  /**
+   * ⚠️⚠️ THE BANNER SAID "nothing written, nothing run" AND THE SECOND HALF WAS
+   * FALSE — the same wrong sentence as the `--help` line, printed at the one
+   * moment the user is deciding whether to let this proceed. `--dry-run` gates
+   * the EXECUTOR; the model runs and the run is billed. The comment directly
+   * above demands exactly this standard of the banner — *"a mode that removes a
+   * guarantee has to be impossible to have forgotten you enabled"* — and cost
+   * is the guarantee people assumed this mode gave them.
+   */
   const mode = opts.dryRun
-    ? 'DRY RUN (nothing written, nothing run)'
+    ? 'DRY RUN (nothing written) · ⚠ the model still runs and this is still billed'
     : canRun
       ? (opts.shell
         ? `${opts.maxRounds} rounds · ⚠ SHELL MODE — may run ANY program, with your privileges`
@@ -1440,9 +2938,231 @@ ${formatBoard(listed)}
    * exactly the fact a banner exists to state, so it stays, shortened and with
    * any elision marked. See `shortenRoot`.
    */
-  const banner = `acuvo · ${config.model} · ${shortenRoot(executor.root)}\n       · ${mode}\n`;
+  /**
+   * ── ⭐⭐⭐ WHO IS PAYING FOR THIS, ON THE LINE ABOVE THE FIRST SPEND ────────
+   *
+   * Roman opened a terminal, typed `acuvo`, and got a working prompt without
+   * ever logging in — because a stray `OPENROUTER_API_KEY` in the project's
+   * `.env.local` was picked up automatically. `resolveCredential` has the right
+   * PRECEDENCE (an Acuvo account beats BYOK), but nothing on screen said which
+   * one had won.
+   *
+   * ⚠️ THAT IS A BILLING FAILURE, NOT A COSMETIC ONE. A paying customer with a
+   * leftover provider key in a project directory burns THEIR OWN credits while
+   * believing their plan covers it, and the first evidence is somebody else's
+   * invoice. The banner already states what the tool may RUN before it runs it;
+   * stating what it will CHARGE before it charges is the same obligation.
+   */
+  let billing = 'no key — run `acuvo --login`';
+  let byokUnspoken = false;
+  try {
+    const { resolveCredential } = await import('../lib/account.mjs');
+    const cred = resolveCredential();
+    billing =
+      cred.mode === 'account' ? 'your Acuvo plan'
+      /**
+       * ⚠️ THE SUPPLIER'S NAME CAME OUT, THE WARNING DID NOT WEAKEN. This read
+       * "YOUR OWN OpenRouter key (not your Acuvo plan)" — a brand we buy from,
+       * printed in the banner of every run on every customer's machine. The
+       * clause that has to survive is "not your Acuvo plan": that is the whole
+       * disclosure, and `test/cli-success-path.test.mjs` matches it verbatim
+       * because a paying customer with a stray key in a `.env.local` otherwise
+       * learns about it from somebody else's invoice.
+       */
+      : cred.mode === 'byok' ? 'YOUR OWN provider key (not your Acuvo plan)'
+      : billing;
+    byokUnspoken = cred.mode === 'byok' && cred.unspoken === true;
+  } catch {
+    // Never let a banner stop a run.
+  }
+
+  /**
+   * ⚠️ THE SAFETY LINE SURVIVED THE REDESIGN, DELIBERATELY. Roman read
+   * "may run: node, npm test, …" as the product describing itself and disliked
+   * it — but a tool that can execute programs on your machine has to say so
+   * above the first one it runs, and moving that into a README is how it stops
+   * being read. It is relabelled `can run`, not removed.
+   */
+  const pkgVersion = (() => {
+    try {
+      return JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
+    } catch {
+      return '';
+    }
+  })();
+
+  /**
+   * ⚠️ `interactive: false` EVEN IN THE REPL, because `runChat` prints its own
+   * "Type what you want done" line. Setting it here as well produced the
+   * instruction twice, three lines apart — the banner owns the identity, the
+   * chat loop owns the invitation, and neither should own both.
+   */
+  const { openingScreen } = await import('../lib/banner.mjs');
+  /**
+   * ── ⭐⭐⭐ ASK THE TERMINAL, DO NOT ASSUME IT ────────────────────────────────
+   *
+   * The half-block mark is only correct if this terminal renders ▀ ▄ █ at ONE
+   * cell. They are East-Asian-Ambiguous, so that is a property of the font and
+   * the emulator, not of the character — and where they come out double-width
+   * the mark TEARS: the padding spaces stay narrow while the blocks do not, so
+   * every row shifts by a different amount and the right-hand column is pushed
+   * off the screen.
+   *
+   * ⚠️ THIS IS THE FOURTH ATTEMPT AT THIS SCREEN AND THE FIRST THAT MEASURES.
+   * The previous three reasoned from byte sequences that were correct on my
+   * machine and wrong on Roman's, which is the only machine that counts.
+   * `measureCellWidth` prints the glyph and asks the terminal where the cursor
+   * landed — not an inference about fonts, the terminal describing itself.
+   * Unknown falls back to the ASCII mark: a plainer logo on a capable terminal
+   * costs a little beauty, torn blocks on an incapable one cost a first
+   * impression.
+   */
+  const { measureCellWidth, bannerStyle } = await import('../lib/glyph-width.mjs');
+  const cellWidth = await measureCellWidth({ input: process.stdin, output: process.stdout });
+  const bannerLook = bannerStyle({ cellWidth, env: process.env });
+  /**
+   * ── ⭐⭐ THE BRAND NAME, NOT THE VENDOR'S ────────────────────────────────────
+   *
+   * Roman: *"the model shouldn't say deepseek, it should say like Acuvo."*
+   *
+   * ⭐ AND THE WHOLE MAPPING ALREADY EXISTED. `lib/acuvo-models.mjs` has shipped
+   * `Acuvo Flash`, `Acuvo Pro`, `Acuvo Review` and `Acuvo Vision` for days, with
+   * `labelForModelId` written specifically for this — and the banner, the first
+   * thing every user reads, asked nothing and printed the raw vendor slug. One
+   * caller in the whole package used it. Built, correct, and unreached.
+   *
+   * ⚠️ It falls back to the raw id for a model we did not ship, deliberately:
+   * printing "Acuvo Something" over a model somebody chose themselves would be
+   * a lie in the one place that has to be true.
+   */
+  const banner = openingScreen({
+    version: pkgVersion,
+    workspace: shortenRoot(executor.root),
+    model: labelForModelId(config.model),
+    billing,
+    canRun: mode,
+    interactive: false,
+    /**
+     * ⚠️ THE PAINTER IS BUILT HERE, WHERE THE STREAM IS KNOWN. `colourEnabled`
+     * owns NO_COLOR, FORCE_COLOR, TERM=dumb and TTY detection — so a redirected
+     * run gets a plain banner and nobody has to remember an `if` at the call
+     * site.
+     */
+    paint: createPainter(colourEnabled()),
+    style: bannerLook,
+    /**
+     * ⚠️ THE REAL WIDTH, NOT A CONSTANT. The banner used to build to a fixed
+     * 80 columns and never ask, so in any narrower terminal — a split pane, a
+     * side panel — every row wrapped. `columns` is undefined off a TTY, which
+     * the banner reads as "assume 80": right for a pipe, wrong for nothing.
+     */
+    columns: process.stdout.columns ?? null,
+  });
   if (opts.json) process.stderr.write(banner);
-  else process.stdout.write(banner);
+  else {
+    /**
+     * ── ⭐⭐⭐ THE SESSION STARTS AT THE TOP OF THE SCREEN ──────────────────────
+     *
+     * Roman, three times now: *"it's not spouting text beneath the top, it's
+     * doing it at the bottom"* … *"make sure when I type, my first prompt goes to
+     * the top, then the reply under it."*
+     *
+     * ⚠️ AND HE IS DESCRIBING THE SHELL, NOT US. `acuvo` is normally typed into a
+     * terminal that already has a screenful of history in it, so the banner lands
+     * wherever the cursor happened to be — usually two-thirds down — and the
+     * conversation then grows into the last few rows. It reads as though the
+     * product renders from the bottom up.
+     *
+     * ⭐ SCROLLED, NOT CLEARED, AND THAT DISTINCTION IS THE WHOLE POINT. Printing
+     * a screenful of newlines pushes the previous content UP into scrollback
+     * exactly as any long command would — their shell history is still there, one
+     * scroll away. `ESC[2J`/`ESC[3J` would have achieved the same look by
+     * DESTROYING it, which is the thing this file spent four attempts removing.
+     */
+    const rows = Number(process.stdout.rows) || 0;
+    if (process.stdout.isTTY && rows > 6) process.stdout.write('\n'.repeat(rows - 1));
+    process.stdout.write(banner);
+  }
+
+  /**
+   * ── ⚠️⚠️ SAY IT OUT LOUD WHEN NOBODY CHOSE TO BE BILLED ────────────────────
+   *
+   * Measured on Roman's own machine 2026-08-23: **no account file at all**, so
+   * every CLI run he had ever made fell through to `OPENROUTER_API_KEY` and was
+   * charged to his personal balance — and, because BYOK never touches our
+   * gateway, none of it was metered. `console.cli_usage` held exactly ONE CLI
+   * row for that reason: the owner of the product was not using the metered
+   * path, so the meter could not have been validated even in principle.
+   *
+   * ⭐ THE HARM IS THE SILENCE, NOT THE FALLBACK. Somebody who deliberately
+   * exports a key and gets billed for it has no complaint. Somebody with a stray
+   * key in a shell profile never learns why their Acuvo credits are untouched —
+   * and the first evidence is somebody else's invoice.
+   *
+   * ⚠️ I TRIED GATING IT FIRST AND THE GATE WAS THE WRONG SHAPE: requiring an
+   * opt-in to use a key at all turned 12 tests red, and the first to fail was
+   * the guard that exists to stop exactly that — "BYOK still works, nobody using
+   * it today gets broken." It was right. So the fallback stays and this line
+   * closes the gap instead. `ACUVO_BYOK=1` silences it for anyone who meant it.
+   */
+  if (byokUnspoken && !opts.json) {
+    process.stderr.write(
+      // ⚠️ Supplier name removed, same reasoning as the banner clause above:
+      // the fact that has to land is "not an Acuvo plan", not who we buy from.
+      '⚠  Billing to YOUR OWN provider key, not an Acuvo plan — nothing here counts against your Acuvo credits.\n'
+      + '   Run `acuvo --login` to use them, or set ACUVO_BYOK=1 to keep using your own key quietly.\n\n',
+    );
+  }
+
+  /**
+   * ── ⭐⭐⭐ THE ONE THING THAT HAS NEVER SUGGESTED AN MCP SERVER ─────────────
+   *
+   * Six MCP modules, a 19-entry curated catalogue and sixteen test files — and
+   * MCP has reached **one build, ever**: `deepwiki`, disconnected four seconds
+   * later. The capability was never the missing part. A person had to know MCP
+   * exists, know which server answers their problem, know its npm name, and
+   * hand-write JSON before anything happened, and each of those is a place to
+   * stop.
+   *
+   * ⚠️ IT SUGGESTS, IT NEVER CONNECTS. `mcp-consent.mjs` exists because booting
+   * a server runs someone else's code or ships the workspace's text to someone
+   * else's host. The register's wording was "boot a Postgres/browser MCP
+   * silently" — silence is exactly what consent forbids, so the line ends with
+   * "nothing runs until you do".
+   *
+   * ⭐ AND IT ADDS NOTHING TO THE MODEL'S PROMPT OR TOOL OFFER. This is a
+   * sentence for the person reading the terminal, so it cannot touch the
+   * builder's byte ceiling — the constraint that governs every other verb.
+   *
+   * ⚠️ NEVER FATAL, LIKE EVERY OTHER LINE IN THIS BLOCK. A suggestion that can
+   * crash a run is worse than no suggestion at all.
+   */
+  if (!opts.json) {
+    try {
+      const [{ detectServers, detectionNote, configuredServerNames }, { catalogueEntry }] = await Promise.all([
+        import('../lib/mcp-detect.mjs'),
+        import('../lib/mcp-defaults.mjs'),
+      ]);
+      /**
+       * ⚠️ THIS LINE WAS `Object.keys(readMcpConfig(root)?.servers ?? {})` AND
+       * IT NEVER WORKED. `servers` is an ARRAY of `{name, …}`, so `Object.keys`
+       * returned its indices — `["0"]` — and a server the user had already added
+       * was suggested again on every single run. Reproduced end to end
+       * 2026-08-29: `acuvo mcp add convex`, and the next run still recommended
+       * convex. `configuredServerNames` owns the shape and is tested against
+       * what `readMcpConfig` actually returns; see its header.
+       */
+      const configured = configuredServerNames(readMcpConfig(root));
+      const note = detectionNote(detectServers(
+        {
+          exists: (p) => existsSync(join(root, p)),
+          read: (p) => readFileSync(join(root, p), 'utf8'),
+        },
+        { already: configured, entryFor: catalogueEntry },
+      ));
+      if (note) process.stderr.write(`${note}\n\n`);
+    } catch { /* a hint that fails is a hint nobody needed */ }
+  }
 
   /**
    * ── ⭐⭐ `--resume` / `--continue` — THE RECOVERY THE ROUND CAP NEEDS ───────
@@ -1534,6 +3254,84 @@ ${formatBoard(listed)}
     process.on('exit', () => { try { if (claimed?.lease) releaseAll([claimed.lease]); } catch { /* exiting anyway */ } });
   }
 
+  /**
+   * ── ⭐⭐⭐ "IF MY LAPTOP CRASHES, THE CHAT HISTORY IS GONE" ─────────────────
+   *
+   * ⚠️ IT WAS. MEASURED 2026-08-22: a run killed with SIGKILL after two
+   * completed rounds and two files written left `.acuvo/sessions/` NON-EXISTENT.
+   * `saveSession` only ever ran after the loop, so the run you most want back
+   * was the only kind that left nothing behind. The checkpoint wiring in
+   * `oneTurn` fixed the WRITE half; this is the READ half, and without it the
+   * recovery only exists for someone who already knows to type `--continue` —
+   * which is not the person who just lost their work.
+   *
+   * ⚠️⚠️ IT MUST NEVER FIRE FOR A RUN THAT IS STILL GOING. Seven terminals in
+   * one workspace is the documented normal case for this tool, and each one
+   * holds an open live record. `findCrashedSession` refuses any record whose pid
+   * still answers — see its header for the other two conditions.
+   *
+   * ⭐ ACCEPTING IT REUSES `--resume` WHOLE. The offer sets an id and the
+   * existing block below does the rest, so the restored conversation, the sticky
+   * routing key and the budget subtraction are the same code on both doors. A
+   * second copy of that block is how one of the two would end up without the
+   * budget guard.
+   *
+   * ⚠️ THE PROMPT IS TTY-ONLY. A CI job, a `| jq` pipeline or a cron entry must
+   * never block on a question nobody is there to answer — those get the lines
+   * and the command, and carry on with the fresh run they asked for.
+   */
+  let crashOfferId = null;
+  /**
+   * ⚠️ `opts.bestOf < 2` FOR THE SAME REASON `--best-of` REFUSES `--resume`
+   * outright: it forks the task into independent attempts and keeps one, so
+   * accepting a restored conversation here would silently discard the history
+   * the user had just said yes to. Offering something we would then throw away
+   * is worse than not offering.
+   */
+  if (!resumeRequested && !opts.parallel && opts.issue === null && !opts.dryRun && life.save && opts.bestOf < 2) {
+    let found = { ok: false };
+    try { found = findCrashedSession(root); } catch { /* a recovery hint may never break a run */ }
+    if (found.ok && found.crashed) {
+      const say = (t) => (opts.json ? process.stderr : process.stdout).write(t);
+      say(`${crashOfferLines(found.crashed).join('\n')}\n`);
+      const askable = process.stdin.isTTY === true && process.stdout.isTTY === true && !opts.json;
+      if (askable) {
+        const rl = createInterface({ input: process.stdin, output: process.stderr, terminal: true });
+        const answer = await new Promise((r) => rl.question('    continue that conversation instead of starting fresh? [Y/n] ', (l) => { rl.close(); r(l); }));
+        /**
+         * ⚠️ ENTER MEANS YES HERE, WHICH IS THE OPPOSITE OF `--task-audio`'s
+         * default, and the difference is deliberate: that prompt guards an
+         * ACTION taken on a possibly mis-heard instruction, so silence must
+         * cancel. This one guards CONTEXT the user already paid for, and
+         * nothing is executed by restoring it — the expensive mistake is
+         * throwing the conversation away, not keeping it.
+         */
+        if (!/^\s*n(o)?\s*$/i.test(answer)) crashOfferId = found.crashed.id;
+        else say('    starting fresh. That run stays on disk — `acuvo --sessions` lists it.\n');
+      }
+      /**
+       * ⚠️⚠️ ANSWERED IS ANSWERED — INCLUDING "I ONLY PRINTED IT". The marker
+       * lives in the record, so without this line the same warning fires on
+       * every subsequent run in this workspace, for ever, and a warning that
+       * fires when nothing is wrong is one people learn to read past. That would
+       * cost the real one.
+       *
+       * ⚠️ NOT ON ACCEPT, AND THE ORDER IS THE REASON. `resumeMessages` reads
+       * `closedCleanly` to tell the model "that run was KILLED mid-round, its
+       * last round may be missing but its work may be on disk". Closing the
+       * record here would erase that sentence a few lines before it is written.
+       * The resume block below marks it once it has been read.
+       *
+       * ⭐ NOTHING IS DELETED EITHER WAY. The record stays listable, replayable
+       * and `--resume <id>`-able; it just stops volunteering — exactly what the
+       * decline message above promises.
+       */
+      if (!crashOfferId) {
+        try { markSessionClosed(root, found.crashed.id); } catch { /* the offer already did its job */ }
+      }
+    }
+  }
+
   let priorMessages = null;
   /**
    * ── ⭐⭐⭐ ONE STICKY KEY FOR THIS WHOLE CONVERSATION, ACROSS PROCESSES ────
@@ -1551,7 +3349,7 @@ ${formatBoard(listed)}
    * the conversation being resumed had already paid to build.
    */
   let stickyKey = `acuvo-${randomUUID()}`;
-  if (resumeRequested) {
+  if (resumeRequested || crashOfferId) {
     if (life.resume !== null && life.continueLatest) {
       die('--resume <id> and --continue both name a run to carry on, and they disagree. Pass one: --continue takes the most recent, --resume takes the id you name.', EXIT_USAGE);
     }
@@ -1562,7 +3360,10 @@ ${formatBoard(listed)}
       die('--issue starts a fresh branch and a fresh conversation, so there is nothing to resume. Drop one of --issue / --resume.', EXIT_USAGE);
     }
 
-    let id = life.resume;
+    // ⚠️ `crashOfferId` is only ever set when NEITHER flag was given (the guard
+    // above requires `!resumeRequested`), so this cannot silently outrank a
+    // `--resume <id>` the user typed.
+    let id = life.resume ?? crashOfferId;
     if (life.continueLatest) {
       const listed = listSessions(root, { limit: 50 });
       if (!listed.ok) die(listed.error, EXIT_FAILED);
@@ -1585,6 +3386,16 @@ ${formatBoard(listed)}
     // ⭐ The saved id IS the conversation, so it is the routing key too. This
     // line is what makes stickiness survive closing the terminal.
     stickyKey = `acuvo-${resumed.id ?? id}`;
+    /**
+     * ⚠️ AFTER `resumeMessages`, NEVER BEFORE — it reads the crash marker to
+     * tell the model that run was killed mid-round. Carrying the conversation
+     * forward is what closes the book on the old record: this run now owns the
+     * history, so the old one must stop announcing itself as unfinished on every
+     * future `acuvo` in this workspace.
+     */
+    if (resumed.crashed) {
+      try { markSessionClosed(root, resumed.id ?? id); } catch { /* the resume already succeeded */ }
+    }
     if (!task) task = resumed.task;
     if (!task) {
       die(`run ${resumed.id} recorded no task text, so "carry on" has nothing to carry. Say what to do next: acuvo --resume ${resumed.id} "<the next step>"`, EXIT_USAGE);
@@ -1594,6 +3405,24 @@ ${formatBoard(listed)}
     (opts.json ? process.stderr : process.stdout).write(
       `  · resuming ${resumed.id} — ${priorMessages.length} messages restored, nothing re-run${warn}\n`,
     );
+    /**
+     * ── ⚠️ SAY IT WHEN THE DISCOUNT IS GONE ──────────────────────────────────
+     *
+     * The first two messages ARE the cacheable prefix. A record whose head was
+     * clipped resumes into a prompt that differs from the original at message
+     * ZERO, so prefix caching misses on every token — measured at 60.8%
+     * byte-identical before `MAX_HEAD_CHARS` gave the head its own ceiling, i.e.
+     * the whole restored conversation re-bought at full price.
+     *
+     * ⚠️ It is silent on every ordinary resume, which is what makes it worth
+     * printing at all: this fires only on a head above 60,000 characters, and
+     * somebody seeing it needs to know the resume is honest but not cheap.
+     */
+    if (resumed.headTruncated) {
+      (opts.json ? process.stderr : process.stdout).write(
+        '    ⚠ that record\'s opening message was too large to store whole, so the prompt cache cannot hit on this resume — expect it to cost like a fresh run.\n',
+      );
+    }
 
     /**
      * ── ⚠️⚠️ A RESUMED RUN USED TO GET A WHOLE FRESH BUDGET ──────────────────
@@ -1672,6 +3501,83 @@ ${formatBoard(listed)}
    * for the turn loop, using the same pure helper, so the two cannot drift.
    */
   let sessionSpentUsd = 0;
+
+  /**
+   * ⚠️ WHAT `/approve` SET, KEPT SEPARATELY FROM THE VALUE IT SET. `opts` is
+   * where the mode LIVES — `oneTurn` reads it on every turn — but `opts` alone
+   * cannot say whether a mode came from a flag, a config file or this prompt,
+   * and `/config` has to name the source. `null` means nobody typed `/approve`.
+   */
+  let approveSetAtPrompt = null;
+
+  /**
+   * ── ⭐⭐⭐ THE CEILING HAS TO SURVIVE THE CRASH THAT LOST THE PROCESS ───────
+   *
+   * `sessionSpentUsd` above is the WITHIN-process half, and it was the only
+   * half. Kill the terminal mid-round and the next `acuvo --continue` built a
+   * brand-new meter at $0.00 against the same stated ceiling — so `--budget
+   * 0.50` meant "fifty cents per surviving process", and the ceiling got looser
+   * the worse things went. This is the ACROSS-process half.
+   *
+   * ⭐ KEYED ON `stickyKey`, WHICH IS ALREADY THE CONVERSATION. A resumed run
+   * reuses the saved id (see the block above — that is what makes the prompt
+   * cache survive closing the terminal), so the journal matches by construction
+   * and a genuinely fresh task gets a fresh key and starts at zero. Nothing new
+   * had to be invented to identify a run across a crash; the identifier already
+   * existed for a different reason.
+   *
+   * ⚠️ THE `fs` LIVES HERE AND NOWHERE ELSE. `budget.mjs` takes the reader and
+   * the appender as arguments — the same discipline `readPolicySources` uses —
+   * which is why the whole resume rule is provable in a test without a disk.
+   *
+   * ⚠️ AND AN UNREADABLE JOURNAL STOPS THE RUN. `policy.mjs`'s rule verbatim:
+   * absent is "nothing spent yet", present-but-unreadable is a broken control,
+   * and reading it as $0.00 is fail-open on a permissions error.
+   */
+  const spendJournalPath = join(root, SPEND_JOURNAL_FILE);
+  const spendJournal = openSpendJournal({
+    runKey: stickyKey,
+    ceilingUsd: opts.budgetUsd,
+    read: () => readFileSync(spendJournalPath, 'utf8'),
+    append: (line) => {
+      /**
+       * ⚠️ A RUN THAT OPTED OUT OF WRITING MUST NOT WRITE. `--help` promises a
+       * dry run "touches nothing", and `--no-audit --no-session` promises the
+       * workspace is left untouched — filing a spend record breaks both, and
+       * `test/lifecycle-wiring.test.mjs` is the guard that says so.
+       *
+       * The cost: with persistence off, a crash cannot carry the tighter
+       * earlier ceiling forward. That is the user's own trade, made explicitly
+       * by passing the flag — not a hole we opened for them.
+       */
+      if (opts.dryRun || !life.audit) return;
+      try {
+        mkdirSync(dirname(spendJournalPath), { recursive: true });
+        appendFileSync(spendJournalPath, line, 'utf8');
+      } catch { /* an unwritable journal must never stop a paid run mid-flight */ }
+    },
+  });
+  if (!spendJournal.ok) die(spendJournal.error, EXIT_FAILED);
+  /**
+   * ⚠️⚠️ AND A CRASH MUST NOT BE A WAY TO SPEND MORE. If an earlier process of
+   * this same run was capped tighter than this one, the tighter number stands —
+   * unless the user typed `--budget` this time, which is them deliberately
+   * saying "that job needs more". `resumeCeiling` is that rule, pure and
+   * separately tested, rather than an inline `Math.min` nobody can review.
+   */
+  const resumed = resumeCeiling({
+    limitUsd: opts.budgetUsd,
+    priorCeilingUsd: spendJournal.priorCeilingUsd,
+    explicit: opts.budgetExplicit === true,
+  });
+  if (resumed.carriedOver) {
+    opts.budgetUsd = resumed.usd;
+    process.stderr.write(`  · ${resumed.reason}\n`);
+  }
+  if (spendJournal.priorUsd > 0) {
+    process.stderr.write(`  · carrying ${formatUsd(spendJournal.priorUsd)} already spent by an earlier process of this run\n`);
+  }
+
   /**
    * ── ⭐ WHAT ACTUALLY SERVED, FOR `/model` ─────────────────────────────────
    *
@@ -1726,7 +3632,14 @@ ${formatBoard(listed)}
      * starve rung three of a budget it was correctly allocated.
      */
     if (over.budgetUsd === undefined) {
-      const room = remainingForTurn(opts.budgetUsd, sessionSpentUsd, { limitIsDefault: opts.budgetExplicit !== true, limitSource: opts.budgetSource ?? null });
+      /**
+       * ⚠️ `+ spendJournal.priorUsd` — THE TURN GATE HAS TO SEE THE SAME TOTAL
+       * THE ROUND GATE DOES. `createBudget` counts the resumed spend against the
+       * ceiling; if this one did not, a resumed session would be waved past the
+       * per-turn check and refused a round later by the governor — the same
+       * money judged twice, with two different answers.
+       */
+      const room = remainingForTurn(opts.budgetUsd, sessionSpentUsd + spendJournal.priorUsd, { limitIsDefault: opts.budgetExplicit !== true, limitSource: opts.budgetSource ?? null });
       if (!room.ok) {
         const sentence = room.message;
         (opts.json ? process.stderr : process.stdout).write(`\n  ⛔ ${sentence}\n`);
@@ -1766,6 +3679,22 @@ ${formatBoard(listed)}
         (opts.json ? process.stderr : process.stdout).write(`\n  ⏹ ${notice}\n`);
       },
     });
+
+    /**
+     * ── ⭐⭐⭐ THE ID THIS TURN WILL BE SAVED UNDER, DECIDED BEFORE IT STARTS ──
+     *
+     * ⚠️ MEASURED, WHICH IS WHY IT IS HERE: a run SIGKILLed mid-round left NO
+     * `.acuvo/sessions/` directory at all — every save happened after the loop,
+     * so the run whose conversation you would most want back was the only kind
+     * that left none. The checkpoints below write the same record the end of the
+     * turn writes, under this id, marked `live` until the turn closes it.
+     *
+     * ⚠️ `--dry-run` AND `--no-session` MUST BE HONOURED HERE TOO, not only in
+     * `persistRun`. A dry run that scattered eight session files while promising
+     * to "touch nothing" is the same broken promise, arrived at from a new door.
+     */
+    const turnSessionId = newSessionId();
+    const checkpointing = life.save && !opts.dryRun && !over.quiet;
 
     let result;
     try {
@@ -1809,6 +3738,38 @@ ${formatBoard(listed)}
        * bypass every caller.
        */
       allowRun: over.allowRun ?? (opts.allowRun && !opts.dryRun),
+      /**
+       * ⭐ THE OVERLAP CEILING. `--no-parallel-tools` resolves this to 1, which
+       * is the strict one-call-at-a-time loop. `over` wins so a caller that has
+       * already decided (the unattended window, a scripted run) is not
+       * second-guessed by the flag.
+       */
+      parallelTools: over.parallelTools ?? opts.parallelTools,
+          /**
+       * ── ⭐⭐⭐ THE FOUR QUESTIONS, HANDED TO THE LOOP ────────────────────
+       *
+       * DONE · COST · ASK-or-ACT · STUCK. `opts` already carries the
+       * winner of  flag > env > ~/.acuvo/config.json > .acuvo/config.json >
+       * default, resolved once at the top of this file by `rcfile.mjs`, so
+       * every call site passes the same four values and none of them can
+       * re-decide the precedence. (COST is `budgetUsd`, below.)
+       */
+      doneWhen: opts.doneWhen,
+      onStuck: opts.onStuck,
+      maxQuestions: opts.maxQuestions,
+      /**
+       * ⚠️ ONLY WHEN SOMEBODY CHOSE IT. `approvalMode` ranks an explicit
+       * argument above its own `ACUVO_APPROVE` read, so passing the default
+       * unconditionally would disable that variable for everyone.
+       */
+      approveMode: opts.approveMode ?? null,
+      /**
+       * ⭐ CRASH SAFETY. `sessionSpentUsd` covers turns inside this process;
+       * these two cover a process that died. Both are subtracted from the SAME
+       * ceiling, so "at most fifty cents" cannot become "fifty cents per crash".
+       */
+      resumedUsd: spendJournal.priorUsd,
+      budgetJournal: spendJournal,
       ...(Array.isArray(over.toolNames) ? { toolNames: over.toolNames } : {}),
       shell: opts.shell,
       commandTimeoutMs: opts.commandTimeoutMs,
@@ -1869,6 +3830,26 @@ ${formatBoard(listed)}
       untilDone: opts.untilDone,
       // ⭐ The admin layer reaches the loop. OPEN_POLICY when no file exists.
       policy,
+      /**
+       * ── ⭐⭐⭐ THE WIRE THAT MAKES A KILLED RUN RECOVERABLE ──────────────────
+       *
+       * `runSession` calls this at every round boundary with the same shape it
+       * returns at the end, so `saveSession` is the whole implementation —
+       * there is one definition of a session record, not a live one and a final
+       * one that drift apart the first time either grows a field.
+       *
+       * ⚠️ IT SWALLOWS ITS OWN FAILURES ON PURPOSE, and this is the one place in
+       * this file that does so silently. `persistRun` announces a failed save
+       * because that is the last word on a finished run; announcing a failed
+       * CHECKPOINT would print the same line once per round for the rest of a
+       * long run, which is how people learn to read past the line that matters.
+       * The end-of-turn save hits the same disk and will say so.
+       */
+      onCheckpoint: checkpointing
+        ? (partial) => {
+            try { saveSession(root, partial, { task: turnTask, id: turnSessionId, live: true }); } catch { /* the work outranks the record */ }
+          }
+        : null,
       // ⚠️ STREAMED, NOT BUFFERED. A bounded loop that prints only at the end is
       // indistinguishable from a hang for however long it takes, and the whole
       // value of watching a fix land is watching it land.
@@ -1878,6 +3859,22 @@ ${formatBoard(listed)}
        * into stdout makes the flag useless while appearing to work.
        */
       onEvent: (event) => {
+        /**
+         * ⭐ `--output-format stream-json`: every event of the run the person is
+         * watching, as one JSON line on stdout, BEFORE any early return below —
+         * a consumer must see what the terminal saw. Quiet runs (best-of
+         * attempts, ladder rungs) are skipped for the same reason they print
+         * nothing to the terminal. See lib/stream-json.mjs for the contract.
+         */
+        if (opts.streamJson && !over.quiet) {
+          if (!streamInitSent) {
+            streamInitSent = true;
+            let version = null;
+            try { version = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version; } catch { /* unknown */ }
+            process.stdout.write(initLine({ version, task: turnTask, cwd: root }));
+          }
+          process.stdout.write(eventLine(event));
+        }
         /**
          * ── ⭐⭐ THE ROUND BOUNDARY IS WHERE A STEER IS PICKED UP ───────────
          *
@@ -2002,7 +3999,13 @@ ${formatBoard(listed)}
        */
       gate.dispose();
     }
-    persistRun(turnTask, result);
+    /**
+     * ⚠️ THE SAME ID THE CHECKPOINTS USED — this call is what flips
+     * `closedCleanly` to true. Passing a fresh id here would leave the live
+     * record open forever, and the next `acuvo` in this workspace would offer to
+     * recover a run that finished perfectly well.
+     */
+    persistRun(turnTask, result, turnSessionId);
     /**
      * ── ⭐ `--say` — NARRATE THE VERDICT ──────────────────────────────────────
      *
@@ -2138,11 +4141,26 @@ ${formatBoard(listed)}
    *    dry run that creates two files in the workspace has broken that promise
    *    to save a record of a run that did not happen.
    */
-  const persistRun = (turnTask, result) => {
+  /**
+   * ── ⭐⭐⭐ ONE ID PER TURN, SHARED BY THE LIVE SAVES AND THE FINAL ONE ──────
+   *
+   * ⚠️ WITHOUT THIS THE CRASH RECOVERY WOULD LITTER. `saveSession` mints a fresh
+   * id whenever it is not given one, so checkpointing each round would leave
+   * eight files for one turn and the finished record would be a ninth — and the
+   * eight orphans would all still carry `closedCleanly: false`, so every one of
+   * them would look like a crash to the startup check. Handing the same id to
+   * every write means one file per turn, exactly as before, whose only new
+   * content is a boolean that flips true when the turn ends.
+   *
+   * ⚠️ MINTED PER TURN, NOT PER PROCESS: interactive mode runs many turns and
+   * has always written one record each. Sharing one id across a conversation
+   * would collapse the whole history into a single overwritten file.
+   */
+  const persistRun = (turnTask, result, id = null) => {
     if (opts.dryRun) return;
     if (life.save) {
       try {
-        const saved = saveSession(root, result, { task: turnTask });
+        const saved = saveSession(root, result, { task: turnTask, ...(id ? { id } : {}) });
         if (!saved.ok) process.stderr.write(`  · the run was not saved: ${saved.error}\n`);
       } catch (e) {
         process.stderr.write(`  · the run was not saved: ${e?.message ?? e}\n`);
@@ -2514,6 +4532,24 @@ ${formatBoard(listed)}
           shell: opts.shell,
           commandTimeoutMs: opts.commandTimeoutMs,
           /**
+           * ── ⭐⭐⭐ THE FOUR QUESTIONS, HANDED TO THE LOOP ────────────────────
+           *
+           * DONE · COST · ASK-or-ACT · STUCK. `opts` already carries the
+           * winner of  flag > env > ~/.acuvo/config.json > .acuvo/config.json >
+           * default, resolved once at the top of this file by `rcfile.mjs`, so
+           * every call site passes the same four values and none of them can
+           * re-decide the precedence. (COST is `budgetUsd`, below.)
+           */
+          doneWhen: opts.doneWhen,
+          onStuck: opts.onStuck,
+          maxQuestions: opts.maxQuestions,
+          /**
+           * ⚠️ ONLY WHEN SOMEBODY CHOSE IT. `approvalMode` ranks an explicit
+           * argument above its own `ACUVO_APPROVE` read, so passing the default
+           * unconditionally would disable that variable for everyone.
+           */
+          approveMode: opts.approveMode ?? null,
+          /**
            * ── ⚠️⚠️ THE PROMISE WAS MADE IN THE REFUSAL AND KEPT NOWHERE ─────
            *
            * `cli-args.mjs` REFUSES `--budget` with `--parallel`, and its stated
@@ -2585,6 +4621,14 @@ ${formatBoard(listed)}
       runOne: steerable,
       render: (result, out) => out.write(formatSummary(result).join(String.fromCharCode(10)) + String.fromCharCode(10)),
       /**
+       * ⭐⭐⭐ WHAT MAKES `@src/app.ts` A FILE AND NOT A WORD. Without this the
+       * expansion is built, exported, tested and reached by nothing — the
+       * "wire it in the same commit" rule this repo has broken four times in a
+       * day. `executor.root` is the same boundary every tool obeys, so an `@`
+       * can never read a file `read_file` could not.
+       */
+      root: executor.root,
+      /**
        * ── ⭐ WHAT THE `/` COMMANDS REPORT ON ────────────────────────────────
        *
        * ⚠️ THIS OBJECT IS THE WHOLE FEATURE. `lib/slash.mjs` is pure and knows
@@ -2599,8 +4643,32 @@ ${formatBoard(listed)}
        * report $0.000000 for the whole session.
        */
       slashContext: {
-        skills: () => (discoverAllSkills(root)?.skills ?? []).map((s) => ({ name: s.name, description: s.description })),
+        skills: () => (discoverAllSkills(root)?.skills ?? []).map((s) => ({ name: s.name, description: s.description, when: s.when, triggers: s.triggers, version: s.version, appliesTo: s.appliesTo })),
         loadSkill: (name) => loadAnySkill(root, name),
+        /**
+         * ⚠️ THE PROJECT'S DIRECTORY ONLY — there is deliberately no bundled
+         * shelf here, unlike skills. A command is something a TEAM decided to
+         * type; shipping six of our own would put words in their `/help` that
+         * nobody in their repo wrote, and would make `/deploy` mean whatever we
+         * guessed rather than whatever they run.
+         */
+        commands: () => (discoverSkills(root, { dir: USER_COMMANDS_DIR })?.skills ?? [])
+          .map((c) => ({ name: c.name, description: c.description })),
+        loadCommand: (name) => loadSkill(root, name, { dir: USER_COMMANDS_DIR }),
+        /** `/agents` and `/hooks` — read at the moment they are typed, like every provider here. */
+        agents: () => describeAgents(loadAgentDefinitions({ root })),
+        hooks: () => describeHooks(loadHooks({ root, knownTools: TOOL_NAMES })),
+        /** ⭐ The parity set — `lib/session-commands.mjs` owns all four. */
+        init: ({ force = false } = {}) => initProjectMemory(root, { force }),
+        memory: () => describeMemory(root),
+        review: (args) => reviewWorkingTree(root, { args }),
+        onCompact: async (phase, info) => {
+          const loaded = loadHooks({ root, knownTools: TOOL_NAMES });
+          if (!loaded?.ok || !Array.isArray(loaded.hooks) || loaded.hooks.length === 0) return;
+          const runner = createHookRunner({ hooks: loaded.hooks, root });
+          if (phase === 'pre') await runner.preCompact(info);
+          else await runner.postCompact({ ...info, trigger: 'manual' });
+        },
         mcp: () => {
           const cfg = readMcpConfig(root);
           // ⚠️ A BROKEN CONFIG IS REPORTED AS ITSELF. `{ servers: [] }` here
@@ -2633,6 +4701,195 @@ ${formatBoard(listed)}
           limitUsd: opts.budgetUsd,
           limitIsDefault: opts.budgetExplicit !== true,
         }),
+        /**
+         * ── ⭐⭐ `/config` ─ THE SAME BLOCK `acuvo config` PRINTS ───────────
+         *
+         * ⚠️ `configLoad` AND `opts`, EXACTLY AS LINE ~1352 PASSES THEM. The
+         * four questions have one renderer and it is `describeFourQuestions`;
+         * building a shorter version for the prompt would be a second opinion
+         * about the precedence, which is the one thing that block exists to
+         * state unambiguously.
+         *
+         * ⚠️ AND IT IS CALLED WHEN THE COMMAND IS TYPED, so a `/approve`
+         * earlier in the session shows up here — `opts.approveMode` is read
+         * live. The ORIGIN is corrected below for the same reason: a value the
+         * user set at this prompt must not be labelled "built-in default".
+         */
+        config: () => {
+          const changed = approveSetAtPrompt !== null;
+          const view = changed
+            ? {
+              ...configLoad,
+              origins: {
+                ...(configLoad.origins ?? {}),
+                /**
+                 * ⚠️ `layer: 'flag'` IS NOT COSMETIC — `resolveFourQuestions`
+                 * only reads the VALUE out of `options` when the origin is a
+                 * flag. Labelling it anything else would print the number the
+                 * config file holds beside a mode the session is not in.
+                 */
+                approve: { layer: 'flag', label: 'set with /approve, this session' },
+              },
+            }
+            : configLoad;
+          return describeFourQuestions(view, opts);
+        },
+        /**
+         * ── ⭐⭐⭐ `/approve` ─ THE ONE PROVIDER THAT WRITES ─────────────
+         *
+         * ⭐ IT NEEDED NO MECHANISM. `oneTurn` builds its options object fresh on
+         * every turn and passes `approveMode: opts.approveMode ?? null`, so the
+         * mode was ALREADY re-read per turn — it simply had nothing that could
+         * change it after launch. Mutating `opts` is therefore the whole switch.
+         *
+         * ⚠️ IT VALIDATES AGAINST `APPROVE_MODES` AND REFUSES ANYTHING ELSE.
+         * A typo silently accepted here would read to the user as "I widened the
+         * gate" while the run kept the old mode — the failure this repo calls a
+         * dead button wearing a working button's coat.
+         */
+        approve: (next) => {
+          const modes = [...APPROVE_MODES];
+          const current = opts.approveMode ?? null;
+          if (next === undefined) {
+            return {
+              modes,
+              mode: current,
+              source: approveSetAtPrompt !== null
+                ? 'set with /approve, this session'
+                : (configLoad?.origins?.approve?.label ?? 'built-in default'),
+              note: current === 'never'
+                ? 'nothing is reviewed before it is written.'
+                : (current === 'always' ? 'every write is shown to you first.' : null),
+            };
+          }
+          if (!APPROVE_MODES.includes(next)) {
+            return { ok: false, modes, error: `/approve ${next} is not a mode.` };
+          }
+          const previous = current;
+          opts.approveMode = next;
+          approveSetAtPrompt = next;
+          return {
+            ok: true,
+            modes,
+            mode: next,
+            previous,
+            note: next === 'never'
+              ? 'nothing will be reviewed before it is written.'
+              : (next === 'always' ? 'every write will be shown to you first.' : null),
+          };
+        },
+        /**
+         * ── ⭐⭐ `/rewind` ─ `acuvo rewind`, WITHOUT LEAVING THE CONVERSATION ─
+         *
+         * ⚠️ THE SAME THREE CALLS THE COMMAND MAKES, IN THE SAME ORDER, and the
+         * same two formatters. `--force` is deliberately unreachable from here;
+         * `renderRewind` states why.
+         */
+        rewind: (id) => {
+          const journal = readJournal(root);
+          if (!journal.ok) return { lines: [`the checkpoint journal could not be read: ${journal.error}`] };
+          if (!id) {
+            const runs = groupRuns(journal.entries);
+            return { lines: formatCheckpoints(runs, checkpointSize(root)) };
+          }
+          const plan = planRewind(journal.entries, id);
+          if (!plan.ok) return { lines: [plan.error] };
+          return { lines: formatRewind(applyRewind(root, plan, { dryRun: false, force: false })) };
+        },
+        /**
+         * ── ⭐ `/spend` ─ `acuvo spend`, WITHOUT LEAVING THE CONVERSATION ───
+         *
+         * ⚠️ THE SAME TWO CALLS AND THE SAME FORMATTER the command at line
+         * ~1416 uses, in the same order. `/cost` beside it reads a counter this
+         * PROCESS keeps; this reads `.acuvo/audit/` — every run ever made in
+         * this directory. Re-deriving the layout here would put a second
+         * opinion about the same audit log behind a `/`.
+         *
+         * ⚠️ NO `--since`. The flag exists on the command and is deliberately
+         * not reachable here: a date expression typed at a prompt that silently
+         * fails to parse would print a smaller number and look like an answer.
+         */
+        spend: () => {
+          const summary = summariseSpend(readAuditFiles(root), { since: null });
+          return { lines: formatSpend(summary, { since: null }) };
+        },
+        /**
+         * ── ⭐⭐⭐ `/resume` ─ THE COMMAND THAT USED TO REQUIRE QUITTING ────
+         *
+         * ⚠️ BARE IT LISTS, exactly as `acuvo --sessions` does and with the same
+         * `summary` strings, so the ids a person reads here are the ids they
+         * would read there.
+         *
+         * ⚠️⚠️ AND IT IS HONEST ABOUT THE ONE THING IT CANNOT CARRY. `--resume`
+         * at launch also adopts the saved run's id as `stickyKey`, which is the
+         * provider routing key AND the spend-journal key — both are built once,
+         * above `runChat`, and are already in use by this session. So the
+         * CONVERSATION is restored and the warm prefix is not. Saying so costs
+         * one line; discovering it as an unexplained bill does not.
+         */
+        resume: (id) => {
+          if (!id) {
+            const listed = listSessions(root, { limit: 20 });
+            if (!listed.ok) return { lines: [`the saved runs could not be read: ${listed.error}`] };
+            if (listed.sessions.length === 0) {
+              return { lines: ['no runs saved in this workspace yet — one is written each time a task finishes.'] };
+            }
+            return {
+              lines: [
+                ...listed.sessions.map((sn) => sn.summary),
+                ...(listed.unreadable > 0
+                  ? [`(${listed.unreadable} unreadable session file${listed.unreadable === 1 ? '' : 's'} skipped)`]
+                  : []),
+                'carry one on:  /resume <id>',
+              ],
+            };
+          }
+          const resumedHere = resumeMessages(root, id);
+          if (!resumedHere.ok) return { lines: [resumedHere.error] };
+          /**
+           * ⚠️ THE CRASH MARKER IS CLOSED HERE TOO. This session now owns that
+           * history, so leaving the record announcing itself as unfinished
+           * would offer the same conversation back on every future `acuvo` in
+           * this workspace — the launch path clears it for that reason and a
+           * second door into the same act must not behave differently.
+           */
+          if (resumedHere.crashed) {
+            try { markSessionClosed(root, resumedHere.id ?? id); } catch { /* the resume already succeeded */ }
+          }
+          return {
+            messages: resumedHere.messages,
+            lines: [
+              `resumed ${resumedHere.id ?? id} — ${resumedHere.messages.length} messages restored, nothing re-run.`,
+              ...(resumedHere.rootChanged ? ['⚠️ it was recorded in a DIFFERENT workspace.'] : []),
+              ...(resumedHere.headTruncated
+                ? ['⚠ that record\'s opening message was too large to store whole, so the prompt cache cannot hit on it.']
+                : []),
+              'the turns already taken in THIS session are gone; the next message continues that run instead.',
+              '⚠ this session keeps its own routing key, so expect the next turn to cost like a fresh one.',
+            ],
+          };
+        },
+        /**
+         * ── ⭐⭐ `/doctor` ─ THE ONLY ASYNC PROVIDER, AND THE ONLY ONE THAT
+         *    LEAVES THE MACHINE ───────────────────────────────────────────────
+         *
+         * ⚠️ `slash.mjs` NEVER CALLS THIS. It returns `effect: 'doctor'` and the
+         * loop in `chat.mjs` — already async — awaits it, which is why that
+         * module stayed synchronous and pure for the other eleven commands.
+         *
+         * ⚠️ THE SAME FOUR ARGUMENTS `--doctor` PASSES. `allowRun` and
+         * `maxRounds` shape the tool offer, so dropping them would print a
+         * withheld-tool report about a run this session is not going to make.
+         */
+        doctor: async () => {
+          const report = await runDoctor({
+            root,
+            allowRun: opts.allowRun,
+            maxRounds: opts.maxRounds,
+            skipNetwork: opts.offline === true,
+          });
+          return formatDoctor(report, { paint: createPainter(colourEnabled()) });
+        },
         model: () => ({
           name: config.model,
           /**
@@ -2672,6 +4929,39 @@ ${formatBoard(listed)}
   if (opts.bestOf >= 2 && !opts.untilDone) {
     if (resumeRequested) {
       die('--best-of starts several independent attempts; --resume carries one conversation forward. Pick one.', EXIT_USAGE);
+    }
+    /**
+     * ── ⚠️⚠️⚠️ THE MONEY BUG: `--best-of 3 --dry-run` CHARGED THREE REAL RUNS ─
+     *
+     * `--dry-run` suppresses the WRITES, not the thinking — `cli-args.mjs` says
+     * so in its own words two hundred lines up: *"`--dry-run` prints the writes
+     * it would have made — AFTER the model has already decided what they are."*
+     * So the flag most likely to be read as "this one is free" is the one that
+     * costs exactly as much as a real run.
+     *
+     * ⭐⭐ AND UNDER `--best-of` IT IS NOT MERELY EXPENSIVE, IT IS GUARANTEED
+     * WASTE. Every attempt runs with the executor's `dryRun` on, so no attempt
+     * writes anything; `pickWinner` then ranks N workspaces that are all
+     * byte-identical to the original, and `applyAttempt` copies nothing back.
+     * The user pays N full model runs for a result that cannot differ from
+     * doing nothing at all. There is no reading of `--best-of --dry-run` under
+     * which the second through Nth calls buy the user anything.
+     *
+     * ⚠️ REFUSED RATHER THAN SILENTLY NARROWED TO ONE ATTEMPT. Quietly running
+     * `--best-of 3` as one attempt would be a second surprise stacked on the
+     * first, and this file already has the right precedent immediately above:
+     * two flags whose meanings collide are a usage error the user resolves, not
+     * a preference the CLI guesses at. ⭐ The refusal costs zero and the run it
+     * prevents is the whole bill.
+     */
+    if (opts.dryRun) {
+      die(
+        '--best-of runs the task n times and keeps the best result; --dry-run suppresses every write, '
+        + 'so all n attempts would be discarded and you would still be charged for all n model runs. '
+        + 'Use --dry-run on its own to preview the writes (one run, still billed), or --plan to approve '
+        + 'the intent before anything is spent.',
+        EXIT_USAGE,
+      );
     }
     const best = await runBestOf({
       root,
@@ -2714,6 +5004,24 @@ ${formatBoard(listed)}
           allowRun: opts.allowRun && !opts.dryRun,
           shell: opts.shell,
           commandTimeoutMs: opts.commandTimeoutMs,
+          /**
+           * ── ⭐⭐⭐ THE FOUR QUESTIONS, HANDED TO THE LOOP ────────────────────
+           *
+           * DONE · COST · ASK-or-ACT · STUCK. `opts` already carries the
+           * winner of  flag > env > ~/.acuvo/config.json > .acuvo/config.json >
+           * default, resolved once at the top of this file by `rcfile.mjs`, so
+           * every call site passes the same four values and none of them can
+           * re-decide the precedence. (COST is `budgetUsd`, below.)
+           */
+          doneWhen: opts.doneWhen,
+          onStuck: opts.onStuck,
+          maxQuestions: opts.maxQuestions,
+          /**
+           * ⚠️ ONLY WHEN SOMEBODY CHOSE IT. `approvalMode` ranks an explicit
+           * argument above its own `ACUVO_APPROVE` read, so passing the default
+           * unconditionally would disable that variable for everyone.
+           */
+          approveMode: opts.approveMode ?? null,
           /**
            * ── ⚠️⚠️ THE CEILING WAS MISSING ON THE MODE THAT SPENDS THE MOST ──
            *
@@ -2776,7 +5084,54 @@ ${formatBoard(listed)}
     const ladder = await escalate({
       root,
       task,
-      budget: createBudget({ limitUsd: opts.budgetUsd, limitIsDefault: opts.budgetExplicit !== true, limitSource: opts.budgetSource ?? null, fleetGate: createFleetGate(root, { fleetLimitUsd: opts.fleetBudgetUsd, since: opts.budgetWindow }) }),
+      budget: createBudget({
+        limitUsd: opts.budgetUsd,
+        limitIsDefault: opts.budgetExplicit !== true,
+        limitSource: opts.budgetSource ?? null,
+        fleetGate: createFleetGate(root, { fleetLimitUsd: opts.fleetBudgetUsd, since: opts.budgetWindow }),
+        /**
+         * ── ⭐⭐⭐ THE ACCOUNT'S ALLOWANCE, AS OPPOSED TO THIS RUN'S BUDGET ────
+         *
+         * ⚠️ AND THIS LINE IS THE WHOLE REASON THE METER EXISTS. Without it
+         * `lib/cost-units.mjs` is reachable from no entry point — which is
+         * exactly what `test/wiring-reach.test.mjs` caught: *"a capability
+         * nobody can reach has not shipped."* The seam was wired into
+         * `budget.record` and nothing constructed the thing that fills it.
+         *
+         * ⭐ `granted` COMES FROM THE PLAN, and is `null` for everybody today —
+         * all 17 tenants are `operated · unmetered`, and `unitGate` returns
+         * `allowed` for null. So this changes nothing for anyone now, and is
+         * already counting for the day a plan grants a real allowance.
+         *
+         * ⚠️ ONE METER PER RUN, not per round. It accumulates across the whole
+         * session so a velocity reading has something to measure against — a
+         * meter rebuilt each round would report every burst as its first.
+         */
+        /**
+         * ⚠️⚠️ THIS BUILT ITS OWN METER AND THAT WAS TWO BUGS AT ONCE.
+         *
+         * 1. It read `granted: opts.unitAllowance ?? null` and **nothing in the
+         *    package ever set `unitAllowance`** — grepped 2026-08-28, the name
+         *    appeared exactly once, here. So `granted` was permanently null,
+         *    `unitGate` returns `allowed` for null, and every gate was dead.
+         * 2. This is the ESCALATION LADDER's budget. `runSession` builds its
+         *    own, which took no meter at all — so ordinary runs were unmetered
+         *    even once (1) was fixed. Measured: `ACUVO_UNIT_ALLOWANCE=10` still
+         *    completed three rounds and spent $0.001163.
+         *
+         * ⭐ ONE METER FOR THE PROCESS, so the ladder and every `runSession`
+         * inside it draw down the SAME allowance. Two meters would each hold a
+         * partial view of one account's spend, which is worse than one — a
+         * `--best-of 3` run would under-count by design.
+         */
+        /**
+         * ⚠️ THE DEPS ARE THE WHOLE POINT. `processMeter()` with no arguments
+         * cannot resolve a plan, and that is precisely how the derived ladder
+         * shipped dark. Injected rather than imported inside `cost-units.mjs`
+         * so that module stays free of a cycle through the rate card.
+         */
+        meter: processMeter(process.env, { readAccount, allowanceForPlan, audUsd: AUD_USD }),
+      }),
       // ⭐ Tier 0, and the only tier unless ACUVO_MODEL_TIERS is configured.
       baseModel: config.model,
       /**
@@ -3041,7 +5396,8 @@ ${formatBoard(listed)}
     const refutation = refutationField(opts.refute === true, opinion, alreadyFailed);
 
     const doc = jsonDoc(outcome, { task, fields: { refutation } });
-    process.stdout.write(`${JSON.stringify(doc, null, 2)}\n`);
+    // ⭐ stream-json ends on the SAME document, as one `result` line.
+    process.stdout.write(opts.streamJson ? resultLine(doc) : `${JSON.stringify(doc, null, 2)}\n`);
     /**
      * ⚠️ A REFUTED RUN MUST FAIL UNDER --json TOO. The human path returns
      * EXIT_FAILED when the second opinion refutes the claim; without this the
@@ -3066,7 +5422,21 @@ ${formatBoard(listed)}
    * paths after a price. Deleting the other one would have been "fixing" the
    * duplicate by keeping the worse half.
    */
-  const lines = formatSummary(outcome);
+  /**
+   * ── ⭐⭐ THE ROUND-CAP RECOVERY, NAMED WHERE IT IS NEEDED ───────────────────
+   *
+   * `--continue` has carried a conversation on since it landed and the only
+   * people who could use it were the people who already knew it existed — this
+   * package's oldest defect, restated. A capped run is precisely the moment it
+   * is wanted, and `roundCapWarning` prints it there.
+   *
+   * ⚠️ THE CONDITIONS ARE THE ONES THAT DECIDE WHETHER A RECORD EXISTS, and they
+   * are the same two `persistRun` uses. Without them the line would tell a
+   * `--no-session` or `--dry-run` user to type a command that answers "nothing
+   * to continue — no run in this workspace saved a conversation".
+   */
+  const resumeCommand = life.save && !opts.dryRun ? 'acuvo --continue' : null;
+  const lines = formatSummary(outcome, { resumeCommand });
   process.stdout.write(`${lines.join('\n')}\n`);
 
   /**

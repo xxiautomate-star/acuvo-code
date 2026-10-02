@@ -197,28 +197,47 @@ test('MUTATION: put a U+FFFD back and the mojibake check goes red', () => {
 test('⚠️ --help does not present OPENROUTER_API_KEY as the only way in', () => {
   const help = renderedHelp();
 
+  /**
+   * ── ⚠️⚠️ INVERTED 2026-08-25. THIS REQUIRED THE SUPPLIER'S NAME IN `--help` ──
+   *
+   * It asserted `help.includes('OPENROUTER_API_KEY')` — "the BYOK fallback still
+   * exists and must still be documented". Reasonable as engineering, wrong as a
+   * shipped surface: `--help` is read by everyone deciding whether to subscribe,
+   * and that line named our supplier and described a way not to pay us.
+   *
+   * Roman: *"we don't want to sound unprofessional nor advertise our business
+   * mechanics — we might as well say: don't pay for us, just pay directly to
+   * these guys!!!"* An outside reader has already reached exactly that
+   * conclusion once, in writing, from the website's install block.
+   *
+   * ⭐ THE SUPPORT NEED IT PROTECTED IS SERVED ELSEWHERE. Someone who already has
+   * the variable exported still needs to know it is in force — `--doctor` and
+   * `--whoami` both report the credential actually being used. The person who
+   * needs the answer gets it; the person deciding whether to buy is not handed a
+   * workaround. Behaviour is unchanged: `lib/model.mjs` still reads the variable.
+   */
   assert.ok(
-    help.includes('OPENROUTER_API_KEY'),
-    'the BYOK fallback still exists and must still be documented',
+    !/OPENROUTER_API_KEY/.test(help),
+    'the supplier key is advertised in --help, which is a shipped surface',
   );
   assert.ok(
-    !/OPENROUTER_API_KEY\s+required — the only one/.test(help),
-    'the help text still calls the BYOK key the only way to write code',
+    !/openrouter\.ai/i.test(help),
+    '--help links to our supplier',
+  );
+  assert.ok(
+    /--login/.test(help),
+    'the way IN must still be named, or removing the fallback just leaves a hole',
   );
 
   /**
-   * ⚠️ NOT A POSITIONAL ASSERTION. My first version demanded `--login` appear
-   * before `OPENROUTER_API_KEY` in the byte stream, which is an accident of
-   * which array is concatenated first and would fire on any reordering. What
-   * actually matters is that the person reading the BYOK entry — the one about
-   * to go export a provider key — is told there is another way, right there.
+   * ⭐ WHEN A DOOR IS REMOVED, ITS TEST GOES WITH IT. What stood here found the
+   * `OPENROUTER_API_KEY` block and asserted `--login` appeared within 400 chars
+   * of it, so the person about to export a provider key was told there was
+   * another way right there. It was a good guard, and its precondition — "the
+   * BYOK variable is documented" — is now deliberately false.
+   *
+   * Keeping a guard whose precondition can never hold again is how a suite
+   * stops defending the product and starts defending a decision against the
+   * person who reversed it.
    */
-  const keyAt = help.indexOf('OPENROUTER_API_KEY');
-  assert.notEqual(keyAt, -1, 'precondition: the BYOK variable is documented');
-
-  const entry = help.slice(keyAt, keyAt + 400);
-  assert.ok(
-    entry.includes('--login'),
-    `the OPENROUTER_API_KEY entry never names the way off BYOK. It reads:\n${entry.split('\n').slice(0, 6).join('\n')}`,
-  );
 });

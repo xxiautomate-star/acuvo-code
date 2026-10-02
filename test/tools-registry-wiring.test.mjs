@@ -30,6 +30,17 @@ import {
   TOOL_SCHEMAS, TOOL_NAMES, toolNamesForRounds, toolSchemasFor,
   executeToolCall, skillsAvailable, lspAvailable,
 } from '../lib/tools.mjs';
+// ⚠️ HERMETIC HOME (2026-09-26). `acuvo lsp install` puts a managed TypeScript under
+// ~/.acuvo/language-servers, and `findTsserver` falls back to it — so on a machine where the
+// developer has run it, "no typescript here" cases found one and chose the tsserver backend.
+// Measured with a fake home holding that install: 'an lsp tool with no server installed' went red. Nothing here is about the managed
+// install; `symbol-tools-are-not-dark-on-a-fresh-install.test.mjs` is.
+{
+  const noManagedInstall = mkdtempSync(join(tmpdir(), 'acuvo-no-managed-ts-'));
+  process.env.HOME = noManagedInstall;
+  process.env.USERPROFILE = noManagedInstall;
+  delete process.env.ACUVO_HOME;
+}
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const TOOLS_SOURCE = readFileSync(join(HERE, '..', 'lib', 'tools.mjs'), 'utf8');

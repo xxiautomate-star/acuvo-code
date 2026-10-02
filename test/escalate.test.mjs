@@ -41,6 +41,19 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { after } from 'node:test';
 
+/**
+ * ⚠️⚠️ SIGNED OUT, STATED EXPLICITLY. `...process.env, ACUVO_HOME: SIGNED_OUT_HOME` carries the developer's
+ * real HOME, so on a machine where somebody has run `acuvo --login` the spawned
+ * CLI gets a REAL account — and a signed-in run routes to our production gateway,
+ * deliberately outranking the loopback test seam. The child then talks to
+ * production instead of the stub and the assertions fail for a reason that has
+ * nothing to do with the code.
+ *
+ * Measured 2026-08-23: seventeen tests went red the moment the product was used
+ * for the first time.
+ */
+const SIGNED_OUT_HOME = join(tmpdir(), `acuvo-signed-out-${process.pid}`);
+
 const CLI = fileURLToPath(new URL('../bin/acuvo.mjs', import.meta.url));
 const made = [];
 after(() => { for (const d of made) { try { rmSync(d, { recursive: true, force: true }); } catch { /* best effort */ } } });
@@ -456,10 +469,25 @@ test('the wired predicate escalates a budget-stopped run, and BOTH halves now ca
    * ceiling was turned on by default and this stopped being a path you had to
    * opt into.
    *
-   * ⚠️ `outOfRoad` IS STILL LOAD-BEARING and is not now redundant: it also covers
-   * 'round-cap' and 'stuck', which `sessionFailed` deliberately does not treat as
-   * process failures. Two predicates, two questions — "did this attempt finish"
-   * and "did this run succeed" — and the ladder needs the first one.
+   * ⚠️ `outOfRoad` IS STILL LOAD-BEARING and is not now redundant: it covers
+   * 'round-cap' and 'stuck' UNCONDITIONALLY, and `sessionFailed` does not. Two
+   * predicates, two questions — "did this attempt finish" and "did this run
+   * succeed" — and the ladder needs the first one.
+   *
+   * ⭐ AMENDED 2026-08-29, AND THE SPLIT SURVIVED THE AMENDMENT. This note used
+   * to read "which `sessionFailed` deliberately does not treat as process
+   * failures", full stop. It now treats ONE HALF of them as failures: a capped
+   * or stuck run **with nothing proven**, in the same conditional shape
+   * `truncated` uses. A capped run whose command ran and PASSED is still not a
+   * process failure — measured, from the 139-document archive: doing it
+   * unconditionally would have caught 0 runs that lied and failed 1 the
+   * benchmark scored as a pass. So the two predicates still disagree, on
+   * purpose, exactly where the evidence says they should:
+   *
+   *     capped + verified   outOfRoad true  · sessionFailed false  ← climb, exit 0
+   *     capped + nothing    outOfRoad true  · sessionFailed true   ← climb, exit 1
+   *
+   * `test/round-cap-is-not-a-finish.test.mjs` pins both rows.
    */
   assert.equal(sessionFailed(cutOff), true, 'the process verdict catches it now too');
   assert.equal(outOfRoad(cutOff), true, 'and the ladder still sees a wall rather than a finish');
@@ -499,7 +527,7 @@ test('the real binary reaches the ladder and reports a skipped rung', () => {
   made.push(root);
   writeFileSync(join(root, 'package.json'), '{"name":"demo","version":"1.0.0"}\n');
 
-  const env = { ...process.env, NO_COLOR: '1', OPENROUTER_API_KEY: 'x' };
+  const env = { ...process.env, ACUVO_HOME: SIGNED_OUT_HOME, NO_COLOR: '1', OPENROUTER_API_KEY: 'x' };
   const r = spawnSync(
     process.execPath,
     [CLI, '--dir', root, '--until-done', '--budget', '0.0000001', '--json', 'make the tests pass'],
@@ -523,7 +551,7 @@ test('a run that does not use the ladder is unchanged', () => {
   made.push(root);
   writeFileSync(join(root, 'package.json'), '{"name":"demo","version":"1.0.0"}\n');
 
-  const env = { ...process.env, NO_COLOR: '1', OPENROUTER_API_KEY: 'x' };
+  const env = { ...process.env, ACUVO_HOME: SIGNED_OUT_HOME, NO_COLOR: '1', OPENROUTER_API_KEY: 'x' };
   const r = spawnSync(
     process.execPath,
     [CLI, '--dir', root, '--budget', '0.0000001', '--json', 'make the tests pass'],
@@ -607,7 +635,7 @@ test('⚠️ --until-done and --best-of collided on the same flag', () => {
   made.push(root);
   writeFileSync(join(root, 'package.json'), '{"name":"demo","version":"1.0.0"}\n');
 
-  const env = { ...process.env, NO_COLOR: '1', OPENROUTER_API_KEY: 'x' };
+  const env = { ...process.env, ACUVO_HOME: SIGNED_OUT_HOME, NO_COLOR: '1', OPENROUTER_API_KEY: 'x' };
   const r = spawnSync(
     process.execPath,
     [CLI, '--dir', root, '--until-done', '--budget', '0.0000001', '--best-of', '4', '--json', 'do the thing'],
@@ -661,8 +689,30 @@ test('with no tiers configured, the ladder escalates the MODEL as well as the ef
     maxTier: 'fresh',
     runOne: async ({ tier, model }) => { seen.push({ tier, model }); return outcome({ verified: false, cost: 0.001 }); },
   });
-  // rung 0 stays the user's model; rung 1 escalates. That IS the change.
-  assert.deepEqual(seen.map((s) => s.model), ['deepseek/deepseek-v4-flash-0731', 'deepseek/deepseek-v4-pro-0813']);
+  /**
+   * ⭐⭐⭐ REVERSED 2026-09-01, AND WRITTEN DOWN RATHER THAN QUIETLY EDITED —
+   * which is the rule the comment above this test states for exactly this moment.
+   *
+   * The premise that retired the old inert-default guard was: *"escalation fires
+   * only on a task that has ALREADY FAILED … five points of margin to put a
+   * materially better model on the tasks that failed once."* The words doing the
+   * work there are MATERIALLY BETTER, and that was never measured. The repo's own
+   * note said so — *"How much pro actually BUYS is still unmeasured"* — and the
+   * one datapoint that looked like evidence (pro 5/13) is recorded in
+   * WHAT-NEEDS-TO-HAPPEN.md item 13 as a BUDGET ARTIFACT: every pro failure was
+   * one round at 0% cache, because the default budget affords exactly one.
+   *
+   * ⭐ Roman, 2026-09-01: *"we never switch to pro, pro is worse on benchmarks
+   * dude. the model is 82.7 on benchmark run."*
+   *
+   * ⚠️ THE EFFORT LADDER IS UNTOUCHED: solo → fresh context → best-of-N still
+   * runs, and that is where its measured value was in the first place.
+   */
+  assert.deepEqual(
+    seen.map((s) => s.model),
+    ['deepseek/deepseek-v4-flash-0731', 'deepseek/deepseek-v4-flash-0731'],
+    'an unconfigured ladder must run every rung on the model the user chose',
+  );
 });
 
 test('configured tiers give each rung a stronger model', async () => {
@@ -743,8 +793,10 @@ test('model tiers: the parser is bounded and tolerant', async () => {
   // ⚠️ Unset now means TWO tiers — the base plus the escalation model. The old
   // 'unset means one tier' assertion is retired with the inert default; see the
   // reasoning on the escalation test above.
-  assert.deepEqual(parseTiers('base', {}), ['base', 'deepseek/deepseek-v4-pro-0813'], 'unset escalates');
-  assert.deepEqual(parseTiers('base', { ACUVO_MODEL_TIERS: '   ' }), ['base', 'deepseek/deepseek-v4-pro-0813'], 'blank is not a configuration');
+  // ⚠️ CHANGED 2026-09-01 — an unset ladder no longer switches model. The default
+  // paid 11.2x for a benefit this repository never measured; see lib/model-tier.mjs.
+  assert.deepEqual(parseTiers('base', {}), ['base'], 'unset must NOT change model');
+  assert.deepEqual(parseTiers('base', { ACUVO_MODEL_TIERS: '   ' }), ['base'], 'blank is not a configuration');
   assert.deepEqual(parseTiers('base', { ACUVO_MODEL_TIERS: 'a, b ,a,' }), ['a', 'b'], 'trimmed and de-duplicated');
   assert.equal(parseTiers('base', { ACUVO_MODEL_TIERS: 'a,b,c,d,e,f' }).length, MAX_TIERS, 'bounded');
   assert.equal(modelForRung(99, ['a', 'b']), 'b', 'past the end reuses the strongest');

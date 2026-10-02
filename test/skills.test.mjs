@@ -378,7 +378,8 @@ test('the directory scan itself is bounded', () => {
 test('frontmatter parsing: quotes, unknown keys, comments, CRLF and a BOM', () => {
   const p = parseFrontmatter('---\r\nname: "deploy"\r\ndescription: \'ship it\'\r\n# a comment\r\nauthor: roman\r\nversion: 3\r\n---\r\nthe body\r\n');
   assert.equal(p.hadFrontmatter, true);
-  assert.deepEqual(p.meta, { name: 'deploy', description: 'ship it' });
+  // `version` is a KNOWN key since the one skill format (2026-09-30); `author` is still ignored.
+  assert.deepEqual(p.meta, { name: 'deploy', description: 'ship it', version: '3' });
   assert.equal(p.body, 'the body');
 
   const bom = parseFrontmatter('\ufeff---\nname: x\n---\nbody');
@@ -607,11 +608,27 @@ test('⚠️⚠️ MAX_SKILLS entries at the size we really ship all fit in the 
 test('⚠️ when the catalogue does overflow, it reports shown-of-found, not the wrong cap', () => {
   const long = 'x'.repeat(MAX_DESCRIPTION_CHARS);
   const when = 'y'.repeat(MAX_WHEN_CHARS);
-  // ⚠️ MORE than MAX_SKILLS, and deliberately so. The budget is now derived from
-  // MAX_SKILLS x the per-entry maximum, so a legal shelf can no longer overflow
-  // it — which is the intended design, and means the only way to exercise the
-  // overflow MESSAGE is a list longer than discovery would ever hand it.
-  const OVERSIZED = MAX_SKILLS * 2;
+  /**
+   * ⚠️ MORE than any legal shelf, and deliberately so. The budget is derived
+   * from a per-entry maximum times a count cap, so a legal shelf can no longer
+   * overflow it — which is the intended design, and means the only way to
+   * exercise the overflow MESSAGE is a list longer than discovery would ever
+   * hand it.
+   *
+   * ⚠️⚠️ IT USED TO BE `MAX_SKILLS * 2` AND THAT ROTTED THE DAY THE BUDGET MOVED.
+   * `MAX_CATALOGUE_CHARS` was re-derived from `MAX_BUILTIN_SKILLS` (40 → 64 on
+   * 2026-08-25, because the shelf had grown to exactly the cap), the budget rose
+   * to 18,496, and forty maximal entries — 11,560 chars — stopped overflowing
+   * anything. The test then failed with "this fixture was meant to overflow and
+   * did not": loud, correct, and pointing at the fixture rather than at a real
+   * defect.
+   *
+   * ⭐ SO IT IS DERIVED FROM THE BUDGET ITSELF NOW. Whatever `MAX_CATALOGUE_CHARS`
+   * becomes, this fixture is guaranteed to exceed it, and nobody has to remember
+   * that these two constants were ever related.
+   */
+  const perEntry = 2 + MAX_NAME_CHARS + 3 + MAX_DESCRIPTION_CHARS + ' · use it when: '.length + MAX_WHEN_CHARS;
+  const OVERSIZED = Math.ceil(MAX_CATALOGUE_CHARS / perEntry) + 2;
   const skills = Array.from({ length: OVERSIZED }, (_, i) => ({
     name: `n${String(i).padStart(2, '0')}`.padEnd(MAX_NAME_CHARS, 'z'),
     description: long,

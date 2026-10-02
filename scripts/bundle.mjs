@@ -52,7 +52,7 @@
  * is ever written.
  */
 
-import { readFileSync, writeFileSync, mkdirSync, chmodSync } from 'node:fs';
+import { readFileSync, readdirSync, writeFileSync, mkdirSync, chmodSync } from 'node:fs';
 import { join, dirname, resolve, posix } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
@@ -526,7 +526,7 @@ function assetPrelude(assets) {
     ' * a file that drops a folder next to itself the first time you run it is not',
     ' * one file. The directory is removed on exit.',
     ' */',
-    'const __acuvo_asset = (name) => {',
+    'const __acuvo_ensureAssetDir = () => {',
     '  if (__acuvo_assetDir === null) {',
     "    __acuvo_assetDir = __node_fs.mkdtempSync(__node_path.join(__node_os.tmpdir(), 'acuvo-bundle-'));",
     '    try {',
@@ -535,12 +535,42 @@ function assetPrelude(assets) {
     '      });',
     '    } catch {}',
     '  }',
+    '  return __acuvo_assetDir;',
+    '};',
+    'const __acuvo_asset = (name) => {',
+    '  __acuvo_ensureAssetDir();',
     '  const target = __node_path.join(__acuvo_assetDir, name);',
     '  if (!__node_fs.existsSync(target)) {',
     '    __node_fs.mkdirSync(__node_path.dirname(target), { recursive: true });',
     '    __node_fs.writeFileSync(target, __acuvo_assets[name]);',
     '  }',
     '  return __node_url.pathToFileURL(target);',
+    '};',
+    /**
+     * ── ⭐⭐ A WHOLE DIRECTORY, FOR THE SHELF THE ONE-FILE CLAIM KEPT DROPPING ─
+     *
+     * `__acuvo_asset` answers "give me THIS file". `skills/` is a directory the
+     * runtime SCANS — `discoverSkills` does a `readdirSync` and decides what is
+     * there — so materialising one named file cannot serve it, and neither can a
+     * list of 44 literals: the 45th skill anyone writes would not be in the list
+     * and would vanish from the bundle in silence. That is the failure this
+     * whole feature exists to end, one layer down.
+     *
+     * ⚠️ THE TRAILING SLASH IS THE ONLY MARKER. `new URL('../skills/', …)` is a
+     * directory; `new URL('../skills', …)` is a file. Nothing else distinguishes
+     * them, and `bundle()` refuses a directory reference that contains no files
+     * so that a rename cannot quietly ship an empty shelf.
+     */
+    'const __acuvo_assetDirUrl = (prefix) => {',
+    '  for (const name of Object.keys(__acuvo_assets)) {',
+    '    if (name.startsWith(prefix)) __acuvo_asset(name);',
+    '  }',
+    // ⚠️ The directory is created even when it holds nothing, so the caller's own
+    // path arithmetic yields a real path rather than throwing. `bundle()` already
+    // refuses an empty directory reference at BUILD time; this is the belt to it.
+    '  const dir = __node_path.join(__acuvo_ensureAssetDir(), prefix);',
+    '  __node_fs.mkdirSync(dir, { recursive: true });',
+    '  return __node_url.pathToFileURL(dir + __node_path.sep);',
     '};',
   ].join('\n');
 }
@@ -560,8 +590,17 @@ const META_PRELUDE = [
  *
  * Returns `{ code, assets, moduleIds }`. `assets` is every file inlined because
  * a module named it through `new URL(…, import.meta.url)`.
+ *
+ * ⚠️ `readDir` IS INJECTED FOR THE SAME REASON `readFile` IS — this function
+ * must not know what a filesystem is, so the tests can bundle an in-memory tree.
+ * It is only ever called for a specifier that ENDS IN A SLASH, so a bundler with
+ * no directory references never touches it, and a caller that does not supply
+ * one gets a build error naming the reference rather than a crash.
+ *
+ * @param {{ entry: string, readFile: (id: string) => string | null,
+ *           readDir?: (id: string) => string[] | null }} opts
  */
-export function bundle({ entry, readFile }) {
+export function bundle({ entry, readFile, readDir = () => null }) {
   const { order, modules } = buildGraph({ entry, readFile });
 
   const builtins = new Set();
@@ -621,6 +660,39 @@ export function bundle({ entry, readFile }) {
     for (const meta of parsed.metaUrls) {
       if (meta.kind === 'new-url') {
         const assetId = resolveSpecifier(id, meta.specifier);
+        /**
+         * ── ⚠️⚠️ A TRAILING SLASH MEANS A DIRECTORY, AND THE SHELF NEEDED ONE ──
+         *
+         * `lib/builtin-skills.mjs` names `../skills/` and then SCANS it — the
+         * runtime does a `readdirSync` and decides what is on the shelf from
+         * what it finds. Inlining one file cannot serve that, and inlining a
+         * hand-written list of the 44 files on the shelf today would drop the
+         * 45th in silence, which is the failure this whole mechanism exists to
+         * end. So the directory is inlined WHOLE, by listing it at build time.
+         *
+         * ⚠️ REFUSED WHEN EMPTY, deliberately. `dist/skills/` never existed and
+         * nothing said so for weeks; a build that quietly emits a bundle whose
+         * shelf is empty is the same defect with a newer date on it.
+         */
+        if (meta.specifier.endsWith('/')) {
+          const dirId = assetId.endsWith('/') ? assetId : `${assetId}/`;
+          const names = readDir(dirId.replace(/\/$/, ''));
+          if (!names || names.length === 0) {
+            throw new Error(
+              `'${id}' references the directory '${dirId}', which has no files — `
+              + 'a bundle whose shelf is empty is worse than one that refuses to build',
+            );
+          }
+          for (const name of [...names].sort()) {
+            const fileId = `${dirId}${name}`;
+            if (assets.has(fileId)) continue;
+            const contents = readFile(fileId);
+            if (contents === null || contents === undefined) continue;
+            assets.set(fileId, contents);
+          }
+          edits.push({ start: meta.start, end: meta.end, text: `__acuvo_assetDirUrl(${q(dirId)})` });
+          continue;
+        }
         if (!assets.has(assetId)) {
           const contents = readFile(assetId);
           if (contents === null || contents === undefined) {
@@ -739,8 +811,24 @@ function main(argv) {
       return null;
     }
   };
+  /**
+   * ⚠️ FILES ONLY, AND NEVER RECURSIVE. A directory asset materialises into a
+   * temp dir at runtime; a nested tree would need the runtime to recreate the
+   * shape, and `skills/` is documented as flat ("one `.md` per skill, no
+   * subdirectories") so the bundle must not invent a depth the loader does not
+   * read. A subdirectory here is skipped, not flattened.
+   */
+  const readDir = (id) => {
+    try {
+      return readdirSync(join(root, id), { withFileTypes: true })
+        .filter((d) => d.isFile())
+        .map((d) => d.name);
+    } catch {
+      return null;
+    }
+  };
 
-  const { code, assets, moduleIds } = bundle({ entry, readFile });
+  const { code, assets, moduleIds } = bundle({ entry, readFile, readDir });
 
   const leaks = scanForSecrets(code);
   if (leaks.length) {

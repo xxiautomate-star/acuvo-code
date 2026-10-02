@@ -1,7 +1,7 @@
 ---
 name: planning-and-delegating
 description: Multi-deliverable work — declare the plan, track it honestly, delegate to save context
-when: When a task has more than one deliverable, when the user names commands that must pass, or when a subtask would flood your context
+when: More than one deliverable, a command the user says must pass, or a subtask that would flood context
 ---
 
 # Planning And Delegating
@@ -60,6 +60,23 @@ brief needs three paragraphs of background, you are better off doing it.
 
 ⭐ **It only READS by default.** That is the safe setting and it should stay the
 default in your head: send it to find out, come back to decide.
+
+## ⭐⭐ Several sub-tasks at once — `acuvo --parallel`
+
+When the plan has independent deliverables that touch DIFFERENT files (the API
+and the tests, the README and the migration), do not run them one after the
+other. On a machine with the `acuvo` agent on it:
+
+```sh
+acuvo --parallel "add the /api/orders route with validation" "write tests for lib/totals.js" --unattended --yes --max-rounds 6
+```
+
+Each task is its own fresh agent with its own context; two run at a time (up to
+`--concurrency 4`). The report names what each one changed and, loudly, any file
+two of them both wrote — that run is marked conflicted and nothing is silently
+lost. So: give each task a disjoint set of files in its wording, and read the
+summary before you touch those files yourself. Sequential is the default for a
+reason; parallel is for work you have already split.
 
 ## ⭐ `remember` for what a future session would otherwise get WRONG
 

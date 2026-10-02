@@ -38,7 +38,14 @@ test('⚠️ names the SPECIFIC mistake rather than saying "invalid"', () => {
   // Each of these is a real thing a person does, and each needs a different
   // next action. "Invalid token" would leave all four users equally stuck.
   const cases = [
-    ['', /paste the key|pipe it/i],
+    /**
+     * ⚠️ This read `/paste the key|pipe it/i` and pinned the wording of the
+     * five-step manual path. What the case is really about is that an EMPTY
+     * token names a way to supply one — on a terminal that is the browser
+     * flow, in a pipe it is `--login < key.txt`. Both must be reachable from
+     * this sentence; neither spelling is the property.
+     */
+    ['', /browser|pipe/i],
     [`Bearer ${GOOD}`, /whole authorization header/i],
     ['sk-or-v1-abc123', /provider key|acuvo key/i],
     ['nope', /starts `xxi_live_`/i],
@@ -141,9 +148,16 @@ test('⭐ BYOK is reported as a WARNING, not as success', () => {
 test('unconfigured tells you exactly what to do next', () => {
   const d = describeAuth({ mode: 'unconfigured' });
   assert.equal(d.ok, false);
-  assert.match(d.line, /Settings → API keys/);
+  assert.match(d.line, /API keys/);
   assert.match(d.line, /cli\.run/);
   assert.match(d.line, /--login/);
+  /**
+   * ⚠️ THIS ASSERTED `/Settings → API keys/` — a page it never located. "Tells
+   * you exactly what to do next" was satisfied by a phrase that cannot be
+   * acted on by anyone who has not already seen the console, which is every
+   * reader this line exists for.
+   */
+  assert.match(d.line, /https:\/\/acuvo\.xxiautomate\.com/, 'and says where that page is');
 });
 
 // ── ⚠️⚠️ REACH: the module must be WIRED, not merely written ────────────────

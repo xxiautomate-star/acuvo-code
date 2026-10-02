@@ -52,7 +52,14 @@ test('⚠️ a lead with nothing after it is prose — "just make it pass"', () 
   assert.deepEqual(commands('make'), []);
 });
 
-test('the other leads are untouched — only make and go are English verbs', () => {
+/**
+ * ⚠️ THIS TITLE WAS "the other leads are untouched — only make and go are English
+ * verbs", AND THE SECOND HALF WAS WRONG. It reasoned about VERBS; the hole was a
+ * NOUN. `python` is also the name of a language and it produced five phantom
+ * criteria across the Terminal-Bench archive — see `acceptance-python-lead.test.mjs`.
+ * The assertions below are still correct; the doctrine sentence was not.
+ */
+test('the other leads still extract exactly what was typed', () => {
   assert.deepEqual(commands('npm test must pass'), ['npm test']);
   assert.deepEqual(commands('pytest -q must pass'), ['pytest -q']);
   assert.deepEqual(commands('cargo test must pass'), ['cargo test']);

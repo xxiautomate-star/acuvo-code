@@ -34,6 +34,19 @@ import { createLocalExecutor } from '../lib/workspace.mjs';
 import { declareAcceptance } from '../lib/acceptance.mjs';
 import { acquire } from '../lib/lease.mjs';
 
+/**
+ * ⚠️⚠️ SIGNED OUT, STATED EXPLICITLY. `...process.env, ACUVO_HOME: SIGNED_OUT_HOME` carries the developer's
+ * real HOME, so on a machine where somebody has run `acuvo --login` the spawned
+ * CLI gets a REAL account — and a signed-in run routes to our production gateway,
+ * deliberately outranking the loopback test seam. The child then talks to
+ * production instead of the stub and the assertions fail for a reason that has
+ * nothing to do with the code.
+ *
+ * Measured 2026-08-23: seventeen tests went red the moment the product was used
+ * for the first time.
+ */
+const SIGNED_OUT_HOME = join(tmpdir(), `acuvo-signed-out-${process.pid}`);
+
 const CLI = fileURLToPath(new URL('../bin/acuvo.mjs', import.meta.url));
 const EXIT_OK = 0;
 const EXIT_FAILED = 1;
@@ -41,7 +54,7 @@ const EXIT_USAGE = 64;
 
 /** Spawn the real binary with a scrubbed environment. Never reaches a model. */
 function runCli(args, { key = null, cwd = undefined } = {}) {
-  const env = { ...process.env, NO_COLOR: '1' };
+  const env = { ...process.env, ACUVO_HOME: SIGNED_OUT_HOME, NO_COLOR: '1' };
   for (const v of ['OPENROUTER_API_KEY', 'MODAL_TTS_URL', 'MODAL_TRANSCRIBE_URL', 'MODAL_PRESS_URL', 'RENDER_AUDIT_URL', 'MODAL_VIDEO_SECRET', 'PERCHANCE_IMAGE_URL']) {
     delete env[v];
   }

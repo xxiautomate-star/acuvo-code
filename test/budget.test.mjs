@@ -16,8 +16,13 @@
  *     tests pin it: tokens-only rounds are priced from tokens, and rounds with
  *     NOTHING are charged the current projection.
  *   · A CHECK THAT FAILS CORRECT WORK IS WORSE THAN NO CHECK. A free model
- *     legitimately reports `cost: 0`. That must be recorded as zero, not
- *     "helpfully" inflated into an estimate — `honoursAnExplicitZero` pins it.
+ *     legitimately costs $0.00, and a run that never left the machine costs
+ *     $0.00 too. Both must be recorded as zero, not "helpfully" inflated into
+ *     an estimate. ⚠️ BUT THE NUMBER `0` IS NOT WHAT IDENTIFIES THEM: a silent
+ *     provider reporting `cost: 0` beside 2,000 moved tokens made the whole
+ *     dollar ceiling inert (measured 2026-08-29). So a zero is believed when it
+ *     is CORROBORATED — no tokens moved, or the leg declares itself free — and
+ *     priced from tokens when it is not. Four tests pin the four cases.
  *
  * ⚠️ THE EXACT-FIT BOUNDARY IS TESTED WITH `safetyFactor: 1` ON PURPOSE. The
  * shipped default carries a 10% margin, so with it on there is no arithmetic
@@ -46,6 +51,9 @@ import {
   DEFAULT_SAFETY_FACTOR,
   USD_EPSILON,
   BUDGET_REASONS,
+  RATE_USD_PER_MILLION,
+  freeLegDeclaration,
+  tokensMoved,
 } from '../lib/budget.mjs';
 
 /** A clock you drive by hand. Nothing in this module may reach for the wall. */
@@ -333,15 +341,101 @@ test('unknown rounds cannot run forever — the budget still exhausts', () => {
   assert.ok(b.stats().spentUsd <= 0.01 + USD_EPSILON);
 });
 
-test('honours an explicit zero — a free model is free, not an estimate', () => {
+/**
+ * ── ⚠️⚠️⭐ THE REPORTED ZERO. This test used to read `honours an explicit zero
+ * — a free model is free, not an estimate` and assert that `{costUsd: 0,
+ * tokens: 900}` was believed. `test/spend-ceiling-stops-a-runaway.test.mjs`
+ * then measured what that bought: twelve rounds, `$0.00` metered, zero
+ * budget-stops, the dollar ceiling inert.
+ *
+ * ⭐ THE OLD TEST WAS NOT WRONG ABOUT FREE MODELS — it was wrong that the NUMBER
+ * `0` identifies one. A free leg is identified by SAYING it is free, and the
+ * four cases below are the whole rule.
+ */
+test('a DECLARED free leg is free, not an estimate — lever 3 survives', () => {
+  for (const decl of [{ free: true }, { tier: 'free' }, { model: 'z-ai/glm-4.5-air:free' }]) {
+    const b = createBudget({ limitUsd: 1 });
+    const rec = b.record({ costUsd: 0, tokens: 900, ...decl });
+    assert.equal(rec.costUsd, 0, `${JSON.stringify(decl)} was charged`);
+    assert.equal(rec.source, 'free');
+    assert.equal(rec.estimated, false, 'a stated fact is not an estimate');
+    assert.equal(b.stats().spentUsd, 0);
+    assert.equal(b.stats().estimated, false);
+    assert.equal(b.stats().freeRounds, 1);
+    assert.equal(b.stats().repricedZeroRounds, 0);
+    assert.doesNotMatch(b.report(), /estimate/i);
+  }
+});
+
+test('⚠️⚠️ a SILENT zero beside real tokens is priced from those tokens, not believed', () => {
+  const b = createBudget({ limitUsd: 1, usdPerMillionTokens: 0.3 });
+  const rec = b.record({ cost: 0, total_tokens: 16000 });
+  assert.equal(rec.source, 'zero-unpriced');
+  assert.equal(rec.estimated, true);
+  assert.equal(Number(rec.costUsd.toFixed(10)), 0.0048, 'priced at tokens x the rate in force');
+  assert.equal(b.stats().repricedZeroRounds, 1);
+  assert.ok(b.stats().spentUsd > 0, 'the meter must move, or the ceiling is inert');
+  assert.match(b.report(), /priced from those tokens/, 'the user must be told why they were charged');
+  assert.match(b.report(), /--budget none/, 'and what to type if the model really is free');
+});
+
+test('a zero with NO tokens is still believed — a failed call must not be charged', () => {
   const b = createBudget({ limitUsd: 1 });
-  const rec = b.record({ costUsd: 0, tokens: 900 });
+  // The exact shape escalate.test.mjs pins: no API key, nothing left the machine.
+  const rec = b.record({ cost: 0 });
   assert.equal(rec.costUsd, 0);
   assert.equal(rec.source, 'reported');
-  assert.equal(rec.estimated, false);
   assert.equal(b.stats().spentUsd, 0);
-  assert.equal(b.stats().estimated, false);
-  assert.doesNotMatch(b.report(), /estimate/i);
+  assert.equal(b.stats().repricedZeroRounds, 0);
+});
+
+test('the free-leg reader says YES only to a declaration, never to a shape that looks like one', () => {
+  for (const yes of [
+    { free: true }, { isFree: true }, { is_free: true }, { freeTier: true }, { free_tier: true },
+    { tier: 'FREE' }, { tier: ' free ' },
+    { model: 'z-ai/glm-4.5-air:free' }, { modelId: 'meta/llama:free' }, { model_id: 'x/y:Free' },
+  ]) {
+    assert.equal(freeLegDeclaration(yes).free, true, `${JSON.stringify(yes)} should read as declared free`);
+    assert.ok(freeLegDeclaration(yes).why, 'a believed zero must be able to say WHY it was believed');
+  }
+  for (const no of [
+    null, undefined, {}, { free: 'true' }, { free: 1 }, { tier: 'paid' }, { tier: 'freemium' },
+    // ⚠️ `:free\b` — the word boundary is the whole point. A model called
+    // `:freedom` is not a free tier, and a template-literal `\b` (BACKSPACE)
+    // would match neither and quietly pass this loop while failing the one above.
+    { model: 'deepseek/deepseek-v4-flash-0731' }, { model: 'vendor/model:freedom' }, { model: 'freeform/model' },
+  ]) {
+    assert.equal(freeLegDeclaration(no).free, false, `${JSON.stringify(no)} must NOT read as declared free`);
+  }
+});
+
+test('tokensMoved is the corroboration, and it fails towards "yes"', () => {
+  assert.equal(tokensMoved({ total_tokens: 2000 }), true);
+  assert.equal(tokensMoved({ tokens: 1 }), true);
+  assert.equal(tokensMoved({ prompt_tokens: 10, completion_tokens: 0 }), true);
+  // Inconsistent payload: the split says nothing moved, the total says 2,000.
+  // The safe reading of an inconsistent bill is the expensive one.
+  assert.equal(tokensMoved({ prompt_tokens: 0, completion_tokens: 0, total_tokens: 2000 }), true);
+  for (const nothing of [null, undefined, {}, { total_tokens: 0 }, { prompt_tokens: 0, completion_tokens: 0 }]) {
+    assert.equal(tokensMoved(nothing), false, `${JSON.stringify(nothing)} moved no tokens`);
+  }
+});
+
+test('a zero is priced from the SPLIT when there is one, at the real per-token rates', () => {
+  const b = createBudget({ limitUsd: 1 });
+  // No total_tokens at all: the split is the only evidence that work happened.
+  const rec = b.record({
+    cost: 0,
+    prompt_tokens: 20_000,
+    completion_tokens: 500,
+    prompt_tokens_details: { cached_tokens: 16_000 },
+  });
+  assert.equal(rec.source, 'zero-unpriced');
+  const expected = (4_000 / 1e6) * RATE_USD_PER_MILLION.input
+    + (16_000 / 1e6) * RATE_USD_PER_MILLION.cachedInput
+    + (500 / 1e6) * RATE_USD_PER_MILLION.output;
+  assert.equal(rec.costUsd, expected, 'a cached round must not be repriced at the fresh rate');
+  assert.ok(rec.costUsd > 0);
 });
 
 test('a nonsense cost is not trusted, and never reduces the spend', () => {
@@ -547,10 +641,52 @@ test('a parsed budget drives createBudget directly', () => {
 
 // ── the constants are the measured ones ─────────────────────────────────────
 
+/**
+ * ── ⚠️⚠️ INVERTED 2026-08-27/28: `$0.223/M` WAS BILLED THROUGH A ROUTING
+ * DEFECT, NOT A LIST PRICE ────────────────────────────────────────────────
+ *
+ * `$0.223/M` is a real invoice figure — `test/price-from-split.test.mjs`
+ * traces it to one specific round (1,036 tokens, $0.000231) — and until now
+ * `DEFAULT_USD_PER_MILLION_TOKENS` (`blendedPerMillion(ratesFor(FLASH), 0)`)
+ * had always priced ABOVE it, so "must sit above the measured rate" read as
+ * a sane safety margin: the fallback should never look cheaper than what we
+ * have actually been charged.
+ *
+ * ⭐ `lib/rate-card.mjs` was corrected on 2026-08-27/28 after we discovered it
+ * had recorded a ROUTING DEFECT as a list price: for nine days the "peak"
+ * row was Novita's price ($0.44 in / $1.32 out), not DeepSeek's own list —
+ * `warm-provider.mjs` had silently locked onto a reseller charging a 4x
+ * markup on cache reads. The live OpenRouter endpoint feed for this exact
+ * model shows **29 providers with a 14.7x spread**, and the pin now leads
+ * with DeepInfra fp8 at $0.08 in / $0.18 out / $0.016 cache-read — the
+ * cheapest fp8 endpoint in the pin list, not the reseller we had drifted
+ * onto.
+ *
+ * That drops `DEFAULT_USD_PER_MILLION_TOKENS` to **$0.0809/M** (cold, i.e.
+ * `blendedPerMillion(peak, 0)`), which now sits BELOW $0.223/M rather than
+ * above it. ⚠️ THE DIRECTION FLIP IS THE FINDING, NOT A REGRESSION: $0.223/M
+ * was measured on a card that predates even the 2026-08-16 restructure, and
+ * the corrected pinned endpoint is genuinely cheaper per token than what we
+ * were billed back then — the fallback constant getting cheaper as the pin
+ * gets more honest is exactly the property this file exists to protect.
+ *
+ * ⚠️ INVERTED RATHER THAN DELETED. If `DEFAULT_USD_PER_MILLION_TOKENS` ever
+ * climbs back above $0.223/M, that means either the pin drifted onto a
+ * dearer provider again or DeepSeek repriced upward — either way it is the
+ * same class of event the old assertion was built to catch, just from the
+ * other side.
+ */
 test('the defaults are the measured numbers, not vibes', () => {
   assert.equal(typeof DEFAULT_FIRST_ROUND_USD, 'number');
   assert.ok(DEFAULT_FIRST_ROUND_USD > 0.000231, 'must sit ABOVE the measured $0.000231 round');
-  assert.ok(DEFAULT_USD_PER_MILLION_TOKENS > 0.223, 'must sit ABOVE the measured $0.223/M');
+  /**
+   * ⚡ RESTATED 2026-09-28. This asserted the cold default sat BELOW the $0.223/M once billed through
+   * a reseller markup. The owner moved every plan to v4.1 for speed (pin Together → Makora → Modal,
+   * $0.30 / $1.20 on the live feed), and the cold default is now $0.3081/M — ABOVE that figure by
+   * decision, not by a markup. What stays pinned is that it is DERIVED from the card, never typed.
+   */
+  assert.ok(Math.abs(DEFAULT_USD_PER_MILLION_TOKENS - 0.3081) < 0.0005,
+    `sits at $${DEFAULT_USD_PER_MILLION_TOKENS.toFixed(4)}/M — v4.1's pin, cold (0.30 x 0.991 + 1.20 x 0.009)`);
   assert.equal(DEFAULT_TREND_WINDOW, 3);
   assert.ok(DEFAULT_SAFETY_FACTOR >= 1);
   assert.ok(USD_EPSILON > 0 && USD_EPSILON < 1e-9);

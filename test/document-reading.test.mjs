@@ -67,11 +67,24 @@ test('⚠️ an explicit empty string is a decision, and it is honoured', () => 
   assert.ok(cfg.tableRead, 'and it must not take the sibling down with it');
 });
 
+/**
+ * ⚠️⚠️ A HOME THAT CANNOT HOLD A CREDENTIAL, AND IT IS NOT DECORATION. Since
+ * 2026-08-26 the media half is ACCOUNT-aware — a signed-in customer is offered
+ * `see_page`, `speak`, `transcribe`, `make_document`, `read_document` and
+ * `read_table` with no Modal variables at all. So "offered here" genuinely
+ * depends on `~/.acuvo/credentials.json`, and a test that inherits the real home
+ * passes on a signed-out laptop and fails on a signed-in one. Naming a path that
+ * cannot exist makes the assertion mean what it says. (`renderVia`'s header
+ * records why this matters beyond flakiness: a sibling test printed a live
+ * `xxi_live_…` token into node's own failure output.)
+ */
+const NO_ACCOUNT_HOME = '/acuvo-test-no-such-home';
+
 test('neither tool is offered when its service is absent', () => {
-  const names = mediaToolNames({});
+  const names = mediaToolNames({}, NO_ACCOUNT_HOME);
   assert.ok(!names.includes('read_document'));
   assert.ok(!names.includes('read_table'));
-  const live = mediaToolNames({ MODAL_VIDEO_SECRET: 's' });
+  const live = mediaToolNames({ MODAL_VIDEO_SECRET: 's' }, NO_ACCOUNT_HOME);
   assert.ok(live.includes('read_document'), 'a configured service that is never offered is the dark-capability bug');
   assert.ok(live.includes('read_table'));
 });

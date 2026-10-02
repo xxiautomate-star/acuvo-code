@@ -512,9 +512,23 @@ const readReal = (id) => {
   const p = join(ROOT, id);
   try { return readFileSync(p, 'utf8'); } catch { return null; }
 };
+/**
+ * ⚠️ THE REAL TREE NEEDS A DIRECTORY READER NOW, because `lib/builtin-skills.mjs`
+ * names `../skills/` — a whole directory — rather than a single file. Passing
+ * only `readFile` here would make every test below throw at build time, which is
+ * the bundler refusing to emit a bundle whose shelf is empty. See
+ * `test/bundled-skills-are-reachable.test.mjs` for why an empty shelf is a build
+ * failure rather than a warning.
+ */
+const readRealDir = (id) => {
+  try {
+    return readdirSync(join(ROOT, id), { withFileTypes: true }).filter((d) => d.isFile()).map((d) => d.name);
+  } catch { return null; }
+};
+const realTree = { readFile: readReal, readDir: readRealDir };
 
 test('the real CLI bundles, and the graph has no cycle once strings are excluded', () => {
-  const { code, moduleIds } = bundle({ entry: 'bin/acuvo.mjs', readFile: readReal });
+  const { code, moduleIds } = bundle({ entry: 'bin/acuvo.mjs', ...realTree });
   assert.ok(moduleIds.length >= 30, `only ${moduleIds.length} modules`);
   assert.equal(moduleIds.at(-1), 'bin/acuvo.mjs');
   assert.ok(code.length > 200_000, `suspiciously small: ${code.length}`);
@@ -523,7 +537,7 @@ test('the real CLI bundles, and the graph has no cycle once strings are excluded
 test('the real bundle passes `node --check`', () => {
   const dir = mkdtempSync(join(tmpdir(), 'acuvo-real-'));
   try {
-    const { code } = bundle({ entry: 'bin/acuvo.mjs', readFile: readReal });
+    const { code } = bundle({ entry: 'bin/acuvo.mjs', ...realTree });
     const out = join(dir, 'acuvo.mjs');
     writeFileSync(out, code);
     execFileSync(process.execPath, ['--check', out], { encoding: 'utf8' });
@@ -533,7 +547,7 @@ test('the real bundle passes `node --check`', () => {
 });
 
 test('the real bundle carries no test code', () => {
-  const { code } = bundle({ entry: 'bin/acuvo.mjs', readFile: readReal });
+  const { code } = bundle({ entry: 'bin/acuvo.mjs', ...realTree });
   assert.ok(!code.includes("from 'node:test'"), 'test harness leaked in');
   assert.ok(!code.includes("'node:assert"), 'assert leaked in');
   assert.ok(!code.includes('bundle.test.mjs'), 'a test file leaked in');
@@ -579,12 +593,23 @@ test('the real bundle inlines only the assets it deliberately ships', () => {
    * short, deliberate, and typed out here. A `.env` or a key appearing in this
    * assertion is the failure it exists to catch.
    */
-  const { assets } = bundle({ entry: 'bin/acuvo.mjs', readFile: readReal });
-  assert.deepEqual([...assets].sort(), ['lib/repl-driver.mjs', 'package.json']);
+  /**
+   * ⚠️⚠️ THE SHELF JOINED THE LIST ON 2026-08-29, AND IT IS THE ONE ASSET THAT
+   * IS NOT TYPED OUT HERE. `lib/builtin-skills.mjs` names `../skills/` — a
+   * DIRECTORY — because the loader scans it, and a hand-typed list of the 44
+   * files on the shelf today would drop the 45th in silence, which is the exact
+   * failure the reference exists to end. So the deliberate list stays typed and
+   * short, and the shelf is asserted against DISK.
+   */
+  const { assets } = bundle({ entry: 'bin/acuvo.mjs', ...realTree });
+  const shelf = assets.filter((a) => a.startsWith('skills/'));
+  const rest = assets.filter((a) => !a.startsWith('skills/'));
+  assert.deepEqual([...rest].sort(), ['lib/repl-driver.mjs', 'package.json']);
+  assert.deepEqual([...shelf].sort(), readRealDir('skills').sort().map((n) => `skills/${n}`));
 });
 
 test('the real bundle preserves lib/session.mjs REGISTRATION_SNIPPET byte for byte', () => {
-  const { code } = bundle({ entry: 'bin/acuvo.mjs', readFile: readReal });
+  const { code } = bundle({ entry: 'bin/acuvo.mjs', ...realTree });
   const src = readReal('lib/session.mjs');
   const start = src.indexOf('export const REGISTRATION_SNIPPET = `');
   assert.ok(start > 0, 'the snippet moved — update this test');

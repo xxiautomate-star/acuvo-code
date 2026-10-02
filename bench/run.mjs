@@ -4,10 +4,23 @@
  * Runs every task in the corpus against a fresh workspace and reports what
  * happened — mechanically, in one pass, without a human watching each round.
  *
- *   node acuvo-code/bench/run.mjs                # all of them
- *   node acuvo-code/bench/run.mjs --only git,fix # a subset
- *   node acuvo-code/bench/run.mjs --list         # free — spends nothing
- *   node acuvo-code/bench/run.mjs --keep         # leave the workspaces to inspect
+ *   node acuvo-code/bench/run.mjs                   # all of them
+ *   node acuvo-code/bench/run.mjs --only git,fix    # a subset
+ *   node acuvo-code/bench/run.mjs --suite hard-v2   # only the six hardest
+ *   node acuvo-code/bench/run.mjs --suite core      # everything except those
+ *   node acuvo-code/bench/run.mjs --list            # free — spends nothing
+ *   node acuvo-code/bench/run.mjs --keep            # leave the workspaces to inspect
+ *   node acuvo-code/bench/run.mjs --out r.json      # where the JSON result goes
+ *   node acuvo-code/bench/run.mjs --no-out          # do not write one
+ *
+ * ── ⭐⭐ IT WRITES A MACHINE-READABLE RESULT, AND IT DID NOT USED TO ────────
+ * `bench/results/latest.json` after every run, unless `--no-out`. Before that
+ * every number this thing produced lived in a terminal and died there, so
+ * *"is it better than last week"* could only be answered by a human
+ * remembering — the exact loop `bench/tasks.mjs` says does not scale. The
+ * document carries the per-task upstream and cache rate as well as the score,
+ * because without those two a cost difference between two runs cannot be told
+ * apart from a routing difference.
  *
  * ── ⚠️ WHAT IT REPORTS THAT A PASS/FAIL COLUMN WOULD NOT ────────────────────
  * The aggregate REFUSALS table, and it is the reason this exists rather than a
@@ -23,27 +36,100 @@
  * scored 5 of 6 identically when asked for taste.
  */
 
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
-import { TASKS } from './tasks.mjs';
+import { TASKS, SUITES, suiteOf } from './tasks.mjs';
 import { readOutcome } from './read-outcome.mjs';
+import { benchDocument } from './result-document.mjs';
 import { TOOL_NAMES } from '../lib/tools.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const CLI = join(HERE, '..', 'bin', 'acuvo.mjs');
+const DEFAULT_OUT = join(HERE, 'results', 'latest.json');
+
+/**
+ * ── 💰🚨⭐⭐ IMPORTING THIS FILE USED TO START THE WHOLE BENCH ──────────────
+ *
+ * Every statement below runs at module load, so `import('./bench/run.mjs')` —
+ * the reflex for "let me see what this exports" — **launches all 19 tasks
+ * against a real model**. It has already happened: a terminal typed
+ * `node -e "import('./bench/run.mjs')"` to read the module, started the sweep,
+ * and killed it after about $0.02.
+ *
+ * ⚠️ AND THE FILE SAID IT WAS SAFE. Further down: *"Nothing in the test suite
+ * can execute this script — it spends money and needs a real model."* True on
+ * the day, and true only because no test happens to import it — a property of
+ * the callers, not of this module. One `import` in one new test file and the
+ * suite spends money on every run, silently, forever. That is the
+ * correct-by-luck shape this package keeps paying for.
+ *
+ * ⭐ A THROW, NOT A SILENT RETURN. Loading a script that cannot do its job is a
+ * mistake worth hearing about, and `--list` remains the free way in.
+ * `test/hard-bench-v2-is-runnable.test.mjs` reads this file as TEXT
+ * (`readFileSync`), which is unaffected — reading is not importing.
+ */
+/**
+ * ── 🚨⚠️ THE FIRST VERSION OF THIS GUARD FAILED IN THE EXACT CASE IT EXISTS
+ *          FOR, AND IT COST MONEY TO FIND OUT ────────────────────────────────
+ *
+ * It read `if (process.argv[1] && import.meta.url !== …)`. Under
+ * **`node -e "import('./bench/run.mjs')"` — the incident this guard was written
+ * about — `process.argv[1]` is `undefined`**, so the `&&` short-circuited to
+ * false, the guard did not fire, and the bench started. Six tasks ran before it
+ * was killed. The leading `&&` was meant as defensive padding against a missing
+ * argv and it inverted the whole test in the one situation that matters.
+ *
+ * ⭐ THE RULE, WRITTEN POSITIVELY, WHICH IS WHY IT IS NOW CORRECT: this is a
+ * direct run ONLY IF there is a script path AND it is this file. Every other
+ * state — imported, `-e`, `--eval`, a REPL, a loader — is NOT a direct run and
+ * must refuse. A guard phrased as "not obviously wrong" defaults to permitting;
+ * phrased as "prove it is right" it defaults to refusing, and for a script that
+ * spends money the default has to be refusal.
+ */
+const invokedDirectly = typeof process.argv[1] === 'string'
+  && process.argv[1].length > 0
+  && import.meta.url === pathToFileURL(process.argv[1]).href;
+
+if (!invokedDirectly) {
+  throw new Error(
+    'bench/run.mjs is a SCRIPT, not a module — importing it runs all '
+    + `${TASKS.length} bench tasks against a real model and spends real money. `
+    + 'Run it as `node bench/run.mjs` (or `--list`, which is free). '
+    + 'To reuse its pieces, import ./tasks.mjs, ./read-outcome.mjs or ./result-document.mjs.',
+  );
+}
+
+/** Which build produced these numbers. ⚠️ Unreadable is `null`, never a guess. */
+function readPkgVersion() {
+  try { return JSON.parse(readFileSync(join(HERE, '..', 'package.json'), 'utf8')).version ?? null; } catch { return null; }
+}
 
 const argv = process.argv.slice(2);
 const has = (f) => argv.includes(f);
 const valueOf = (f) => { const i = argv.indexOf(f); return i === -1 ? null : argv[i + 1]; };
 
+const roundsIn = (list) => list.reduce((a, t) => a + (t.rounds ?? 0), 0);
+
 if (has('--list')) {
   console.log('\nAcuvo Code bench — the corpus:\n');
-  for (const t of TASKS) console.log(`  ${t.id.padEnd(11)} ${t.what}  (${t.checks.length} checks, ${t.rounds} rounds)`);
-  console.log(`\n${TASKS.length} tasks. Run without --list to execute them (costs roughly $0.01 total).\n`);
+  for (const t of TASKS) console.log(`  ${suiteOf(t).padEnd(8)} ${t.id.padEnd(11)} ${t.what}  (${t.checks.length} checks, ${t.rounds} rounds)`);
+  /**
+   * ⚠️ ROUNDS, NOT A DOLLAR FIGURE. This line said "costs roughly $0.01 total"
+   * and had no way to stay true: the corpus has grown three times since, the
+   * per-round price depends on which upstream serves it (measured 7× apart in
+   * this same directory's comments), and a stale number in a place people read
+   * before spending is an instruction, not a note. Rounds are the unit this
+   * file actually knows.
+   */
+  for (const s of SUITES) {
+    const list = TASKS.filter((t) => suiteOf(t) === s);
+    console.log(`\n  --suite ${s.padEnd(8)} ${list.length} tasks · ${roundsIn(list)} rounds at most`);
+  }
+  console.log(`\n  ${TASKS.length} tasks · ${roundsIn(TASKS)} rounds at most in total. Run without --list to execute them.\n`);
   process.exit(0);
 }
 
@@ -53,9 +139,21 @@ if (!process.env.OPENROUTER_API_KEY) {
 }
 
 const only = valueOf('--only')?.split(',').map((s) => s.trim()).filter(Boolean) ?? null;
-const selected = only ? TASKS.filter((t) => only.includes(t.id)) : TASKS;
+/**
+ * ⭐ `--suite` EXISTS SO THE HARD HALF CAN BE RUN ON ITS OWN, and so the cheap
+ * sweep survives it arriving. Default is the WHOLE corpus: a bench that quietly
+ * omits its hardest tasks is the defect that wiring them in was meant to fix.
+ */
+const suite = valueOf('--suite')?.trim() || null;
+if (suite && !SUITES.includes(suite)) {
+  console.error(`No suite named ${JSON.stringify(suite)}. Known: ${SUITES.join(', ')}`);
+  process.exit(2);
+}
+const selected = TASKS
+  .filter((t) => (only ? only.includes(t.id) : true))
+  .filter((t) => (suite ? suiteOf(t) === suite : true));
 if (selected.length === 0) {
-  console.error(`No task matched --only ${only?.join(',')}. Known: ${TASKS.map((t) => t.id).join(', ')}`);
+  console.error(`No task matched ${only ? `--only ${only.join(',')}` : ''}${only && suite ? ' + ' : ''}${suite ? `--suite ${suite}` : ''}. Known: ${TASKS.map((t) => t.id).join(', ')}`);
   process.exit(2);
 }
 
@@ -281,6 +379,48 @@ if (unverified.length > 0) {
   // Passing the checks without the CLI ever proving it to itself is a real
   // finding: the bench got lucky, and a user would have no reason to trust it.
   console.log(`\n  ⚠ ${unverified.length} passed the checks but the CLI never reported VERIFIED: ${unverified.map((r) => r.task.id).join(', ')}`);
+}
+
+/**
+ * ── ⭐⭐⭐ A RESULT NOBODY CAN DIFF IS A RESULT NOBODY WILL CHECK ───────────
+ *
+ * Every number this bench produced lived in a terminal and died there. So the
+ * one question the whole apparatus exists to answer — *"is it better than it
+ * was last week"* — could only be answered by a human remembering, which is
+ * exactly the loop `bench/tasks.mjs`'s header says does not scale.
+ *
+ * ⭐ AND THE COMPARABILITY FIELDS TRAVEL WITH THE SCORE. This runner already
+ * argues that a "46% cost regression" may be nothing but a different upstream
+ * or a cold cache; it printed `served` and `cached` on the line and then threw
+ * them away. Here they are recorded per task, so two runs can be compared
+ * honestly or declared incomparable — never quietly confused.
+ *
+ * ⚠️ ON BY DEFAULT, because an opt-in artefact is an artefact that does not
+ * exist. `--no-out` turns it off and `--out <file>` moves it; the directory is
+ * gitignored and is not in the npm `files` list, so nothing ships or litters.
+ */
+const outPath = has('--no-out') ? null : (valueOf('--out') || DEFAULT_OUT);
+if (outPath) {
+  /**
+   * ⚠️ BUILT BY AN IMPORTED PURE FUNCTION, NOT INLINE. Nothing in the test
+   * suite can execute this script — it spends money and needs a real model — so
+   * an inline literal could only ever be pinned by a regex over source, and a
+   * source regex proves the text changed and nothing else.
+   */
+  const document = benchDocument({
+    results,
+    suiteOf,
+    selection: { only, suite },
+    env: { at: new Date().toISOString(), cli: readPkgVersion(), node: process.version, platform: process.platform },
+  });
+  try {
+    mkdirSync(dirname(outPath), { recursive: true });
+    writeFileSync(outPath, `${JSON.stringify(document, null, 2)}\n`, 'utf8');
+    console.log(`\n  machine-readable result: ${outPath}`);
+  } catch (err) {
+    /** ⚠️ NEVER FAILS THE BENCH. The scores are already on screen and correct. */
+    console.log(`\n  ⚠ could not write ${outPath}: ${err?.message ?? err}`);
+  }
 }
 console.log('');
 

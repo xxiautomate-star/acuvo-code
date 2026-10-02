@@ -23,7 +23,7 @@ import { parseArgv } from '../lib/cli-args.mjs';
 
 test('⭐⭐ a user names OUR model and gets the provider id', () => {
   assert.equal(resolveModelName('acuvo-pro').id, 'deepseek/deepseek-v4-pro-0813');
-  assert.equal(resolveModelName('acuvo-flash').id, 'deepseek/deepseek-v4-flash-0731');
+  assert.equal(resolveModelName('acuvo-flash').id, 'deepseek/deepseek-v4.1-flash'); // v4.1 since 2026-09-28
 });
 
 test('⭐ the name is forgiving about case and spacing — people type what they read', () => {
@@ -47,17 +47,40 @@ test('⚠️⚠️ a RAW PROVIDER ID still works — renaming must not become a 
   assert.equal(stranger.model, null, 'and it must not be given one of our labels');
 });
 
-test('⚠️⚠️ the REVIEWER cannot be chosen — that would turn an independent check into self-review', () => {
+test('⚠️⚠️ NO internal model can be chosen — infrastructure is not a menu item', () => {
   /**
-   * The whole value of the second opinion is that its blind spots differ from
-   * the builder's. A user who could point it at their own builder would get a
-   * reviewer that agrees with itself, and nothing on screen would say so.
+   * ── ⚠️⚠️ THIS ASSERTED A MODEL THAT NO LONGER EXISTS ───────────────────────
+   *
+   * It was `resolveModelName('acuvo-review')` matching `/self-review/i`, with
+   * the reasoning that a user who could point the reviewer at their own builder
+   * would get one that agrees with itself. **`acuvo-review` was deleted on
+   * 2026-09-09** — `acuvo-models.mjs` records why: its blurb promised review
+   * "from a different model family", and a grep across this package AND
+   * `console/` found the name **only in its own definition on both sides**.
+   * Nothing ever called a reviewer, so the property was never bought. The test
+   * then went red for naming a deleted alias, not for any behaviour change.
+   *
+   * ⭐ THE DURABLE PROPERTY IS THE CLASS, NOT THE MEMBER: whatever is marked
+   * `internal` is refused, is absent from the menu, and the refusal names every
+   * model that CAN be chosen. Asked of the registry, this survives the next
+   * deletion and catches the next ADDITION — an internal model added without a
+   * refusal path would pass a test that only ever named one alias.
+   *
+   * ⚠️ AND IT REFUSES TO PASS VACUOUSLY. An empty internal set means the
+   * assertion has no subject; that is a red, not a green.
    */
-  const r = resolveModelName('acuvo-review');
-  assert.equal(r.ok, false);
-  assert.match(r.error, /self-review/i);
-  assert.match(r.error, /acuvo-flash|acuvo-pro/, 'a refusal must name what CAN be chosen');
-  assert.equal(selectableModels().some((m) => m.name === 'acuvo-review'), false, 'it must not appear in the menu');
+  const internal = Object.values(ACUVO_MODELS).filter((m) => m.internal);
+  assert.ok(internal.length > 0, 'no model is marked internal — this test has no subject and must not pass silently');
+
+  for (const m of internal) {
+    const r = resolveModelName(m.name);
+    assert.equal(r.ok, false, `${m.name} is internal and must not resolve`);
+    assert.match(r.error, /is used internally|self-review/i, `${m.name}'s refusal must say why`);
+    for (const pick of selectableModels()) {
+      assert.ok(r.error.includes(pick.name), `a refusal must name what CAN be chosen — ${pick.name} is missing`);
+    }
+    assert.equal(selectableModels().some((s) => s.name === m.name), false, `${m.name} must not appear in the menu`);
+  }
 });
 
 test('⚠️ a typo is refused with the options, not posted to a provider', () => {
@@ -87,7 +110,7 @@ test('⚠️⚠️ REACH: `--model acuvo-pro` resolves through the REAL argv par
 });
 
 test('⭐ labels never invent a name for a model we did not ship', () => {
-  assert.equal(labelForModelId('deepseek/deepseek-v4-pro-0813'), 'Acuvo Pro');
+  assert.equal(labelForModelId('deepseek/deepseek-v4-pro-0813'), 'Acuvo Pro 1');
   assert.equal(labelForModelId('someone/unknown'), 'someone/unknown',
     'printing "Acuvo Something" over a model we did not ship is a lie on the receipt');
 });

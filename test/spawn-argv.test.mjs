@@ -25,6 +25,19 @@ import {
   MAX_GLOB_MATCHES,
 } from '../lib/spawn-argv.mjs';
 
+/**
+ * ⚠️⚠️ SIGNED OUT, STATED EXPLICITLY. `...process.env, ACUVO_HOME: SIGNED_OUT_HOME` carries the developer's
+ * real HOME, so on a machine where somebody has run `acuvo --login` the spawned
+ * CLI gets a REAL account — and a signed-in run routes to our production gateway,
+ * deliberately outranking the loopback test seam. The child then talks to
+ * production instead of the stub and the assertions fail for a reason that has
+ * nothing to do with the code.
+ *
+ * Measured 2026-08-23: seventeen tests went red the moment the product was used
+ * for the first time.
+ */
+const SIGNED_OUT_HOME = join(tmpdir(), `acuvo-signed-out-${process.pid}`);
+
 const ECHO = 'bin/echo-argv.mjs';
 
 /** A throwaway workspace with the fixture CLI in it. */
@@ -468,7 +481,7 @@ test('the child never sees this CLI\'s API key', async () => {
   const ws = makeWorkspace({
     'bin/env.mjs': "console.log(JSON.stringify({key: process.env.OPENROUTER_API_KEY ?? 'ABSENT', model: process.env.OPENROUTER_CODEGEN_MODEL ?? 'ABSENT', opts: process.env.NODE_OPTIONS ?? 'ABSENT', ci: process.env.CI ?? 'ABSENT'}));\n",
   });
-  const saved = { ...process.env };
+  const saved = { ...process.env, ACUVO_HOME: SIGNED_OUT_HOME };
   process.env.OPENROUTER_API_KEY = 'sk-must-not-leak-into-a-child';
   // ⚠️ The back door: NODE_OPTIONS reopens --require and --loader without ever
   // appearing in argv, so the flag allowlist would never see it.
@@ -499,5 +512,14 @@ test('the tool schema is honest about what it takes', () => {
   assert.equal(props.args.type, 'array');
   // ⚠️ THE INVARIANT OF THE WHOLE MODULE: no `command` string, ever.
   assert.equal(props.command, undefined);
-  assert.deepEqual(props.program.enum, ['node', 'npm', 'npx', 'tsc']);
+  /**
+   * ⚠️⚠️ THE `enum` IS GONE ON PURPOSE, 2026-08-29. It pinned the four while
+   * `run_command` in the same workspace ran make and python, and it told the
+   * model "Nothing else is reachable" — so the widened gate would have been a
+   * capability nobody knocked on. The refusal is still the control
+   * (`test/allowlist-gate.test.mjs` mutates it and proves it bites); this is the
+   * hint, and a hint that contradicts the control is worse than no hint.
+   */
+  assert.equal(props.program.enum, undefined, 'a frozen enum makes every workspace-enabled program unreachable');
+  assert.match(props.program.description, /allowlist run_command uses/);
 });

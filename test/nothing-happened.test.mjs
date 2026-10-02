@@ -130,3 +130,59 @@ test('the existing callers are unaffected — strict is opt-in by omission', () 
   // ⚠️ Only the literal `true` opts in — a truthy string must not silently arm it.
   assert.equal(sessionFailed(readOnlyButCorrect, { strict: 'yes' }), false, 'only === true arms it');
 });
+
+/**
+ * ── ⚠️⚠️⭐ THE SAME HOLE, WITHOUT `--strict`, MEASURED 2026-09-02 ───────────
+ *
+ * Driving the real CLI on "create src/csv.ts and test/csv.test.ts", the chain
+ * fell back to a weaker model which replied *"Here are the files to create:"*
+ * and stopped. Verbatim from the `--json` document:
+ *
+ *   {"ok":true,"rounds":3,"stoppedBecause":"no-tool-calls","changes":[],
+ *    "verification":{"ran":false},
+ *    "promisedButMissing":["src/csv.ts","test/csv.test.ts"],
+ *    "costUsd":0.0116,"failed":false,"exitCode":0}
+ *
+ * ⭐ THE EVIDENCE WAS ALREADY IN THE DOCUMENT. `promisedButMissing` was computed
+ * and printed; it was simply not a clause of the verdict. Nobody runs the CLI
+ * with `--strict`, so the archived fix above could not reach this.
+ */
+test('⭐⭐ a run that NAMED files, wrote none and ran nothing fails without --strict', () => {
+  const liar = theArchivedRun({
+    stoppedBecause: 'no-tool-calls',
+    executed: [{ name: 'read_file', mutated: false, result: {}, args: {}, id: '1' }],
+    promisedButMissing: ['src/csv.ts', 'test/csv.test.ts'],
+  });
+  assert.equal(sessionFailed(liar), true, 'promised two files, produced neither, exited 0');
+  // ⚠️ nothingHappened is unchanged — the new clause READS it, it does not widen it.
+  assert.equal(nothingHappened(liar), true);
+});
+
+test('⚠️ and it cannot fail a run that did the work — the conjunction is the safety', () => {
+  /**
+   * `promisedButMissing` is prose-scraped and has had three recorded false
+   * alarms (`Node.js`, `assert.ok`, a `checkout.js` that was on disk). A false
+   * name must never fail a run that wrote files or passed a check, or this
+   * becomes the check-that-fails-correct-work defect for the sixth time.
+   */
+  const wroteFiles = theArchivedRun({
+    stoppedBecause: 'verified',
+    executed: [{ name: 'write_file', mutated: true, result: {}, args: {}, id: '1' }],
+    verification: { ran: true, passed: true, command: 'npm test', exitCode: 0, timedOut: false, attempts: 1 },
+    promisedButMissing: ['Node.js'],
+  });
+  assert.equal(sessionFailed(wroteFiles), false, 'a false name over real work is still a success');
+
+  const ranACheck = theArchivedRun({
+    verification: { ran: true, passed: true, command: 'npm test', exitCode: 0, timedOut: false, attempts: 1 },
+    promisedButMissing: ['src/csv.ts'],
+  });
+  assert.equal(sessionFailed(ranACheck), false, 'something was proven, so the run is not empty');
+
+  // The read-only question promises nothing, so it never reaches the clause.
+  const question = theArchivedRun({
+    executed: [{ name: 'read_file', mutated: false, result: {}, args: {}, id: '1' }],
+    promisedButMissing: [],
+  });
+  assert.equal(sessionFailed(question), false, '"what does this file do?" is still a success');
+});

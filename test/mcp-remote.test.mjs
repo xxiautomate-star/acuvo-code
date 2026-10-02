@@ -50,6 +50,19 @@ import {
 import { fingerprint, describeServers, headerEnvRefs, isRemote } from '../lib/mcp-consent.mjs';
 import { assessMcpServer } from '../lib/doctor.mjs';
 
+/**
+ * ⚠️⚠️ SIGNED OUT, STATED EXPLICITLY. `...process.env, ACUVO_HOME: SIGNED_OUT_HOME` carries the developer's
+ * real HOME, so on a machine where somebody has run `acuvo --login` the spawned
+ * CLI gets a REAL account — and a signed-in run routes to our production gateway,
+ * deliberately outranking the loopback test seam. The child then talks to
+ * production instead of the stub and the assertions fail for a reason that has
+ * nothing to do with the code.
+ *
+ * Measured 2026-08-23: seventeen tests went red the moment the product was used
+ * for the first time.
+ */
+const SIGNED_OUT_HOME = join(tmpdir(), `acuvo-signed-out-${process.pid}`);
+
 const CLI = join(dirname(fileURLToPath(import.meta.url)), '..', 'bin', 'acuvo.mjs');
 
 /* ────────────────────────────────────────────────────────────────────────────
@@ -557,7 +570,7 @@ test('⭐⭐ REACH: bin/acuvo.mjs connects to a hosted server and calls its tool
       const cp = spawn(process.execPath, [CLI, '--dir', dir, '--max-rounds', '3', 'echo something through the hosted server'], {
         windowsHide: true,
         env: {
-          ...process.env,
+          ...process.env, ACUVO_HOME: SIGNED_OUT_HOME,
           NO_COLOR: '1',
           OPENROUTER_API_KEY: 'sk-or-v1-stub',
           ACUVO_API_URL: modelUrl,
@@ -587,7 +600,15 @@ test('⭐⭐ REACH: bin/acuvo.mjs connects to a hosted server and calls its tool
     assert.ok(called, `the CLI never called the hosted tool: ${methods.join(', ')}\n${run.stdout}`);
     assert.equal(called.params.name, 'echo', 'the namespace must be stripped before it leaves for the server');
     assert.equal(called.params.arguments.text, 'driven by the real CLI');
-    assert.match(run.stdout, /hosted connected \(1 tool\)/);
+    /**
+     * The terminal SAYS it connected. The per-server line this used to read
+     * (`hosted connected (1 tool)`) was collapsed into the fleet summary on
+     * 2026-09-21 - eight servers, five failed, half a screen before the first
+     * question (`mcp-noise-is-one-line.test.mjs`). The PROPERTY is unchanged
+     * and still asserted here: the real binary printed that it connected.
+     * `ACUVO_MCP_VERBOSE=1` restores the per-server wording.
+     */
+    assert.match(run.stdout, /mcp: 1\/1 connected \(1 tool\)/);
     // ⚠️ An open remote connection must not hold the process open — see
     // `closeConnections`. A non-zero exit here would mean it hung and was killed.
     assert.equal(run.status, 0, `the CLI exited ${run.status}\n${run.stdout}\n${run.stderr}`);

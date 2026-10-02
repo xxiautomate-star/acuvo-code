@@ -3,27 +3,17 @@
 > Written 2026-08-10, re-audited against the source 2026-08-11, `acuvo-code@0.2.0`.
 > Nothing here is aspirational: if a claim has no citation it is not in this document.
 >
-> ⚠️ **THE CITATIONS ARE NOW `file` + SYMBOL, NOT `file:line`, AND THAT IS A FIX.**
-> The first draft cited line numbers. Re-checking thirty-four of them on 2026-08-11
-> found that most had rotted — `lib/turn.mjs:637` was cited as the round bound and now
-> lands on a `case` label; `lib/command.mjs:68` was cited as `ALLOWED_BINARIES` and now
-> lands on a blank comment line. **A rotted citation is worse than none**, because a
-> reviewer who opens one and finds unrelated code stops trusting the other thirty-three,
-> and they are all this document has. Symbol names survive edits; line numbers do not
-> survive a week. Every citation below is now a file plus a searchable identifier.
+> **Citations are `file` + SYMBOL, never `file:line`.** Line numbers rot within a week —
+> a reviewer who opens one and finds unrelated code stops trusting every other citation,
+> and citations are all this document has. Symbol names survive edits. Every citation
+> below is a file plus a searchable identifier, so you can check any claim here against
+> the source you were shipped.
 >
 > ⭐ **The one-line honest summary.** Acuvo Code is a zero-dependency terminal agent
 > whose *safety boundary is small enough to read in an afternoon* and whose exit code
 > tells the truth about whether the code it wrote actually runs. It is not a sandbox,
 > it has the confirmed defects listed here by name, and there are five categories where
 > Claude Code, Cursor and Copilot beat it outright.
->
-> **Changed since the first draft, all verified by running it:** an audit log now ships
-> (§2.2/4 was "no audit log"); `--dry-run` and `--no-run` now stop the MCP spawn (half
-> of §3.1); the documented `--max-rounds` and `--max-tokens` defaults were both wrong
-> and are corrected throughout; the README's unscoped credential clause (§3.7) is fixed.
-> **§3.2 was never open by the time this document claimed it was** — the guard had already
-> landed and the audit read the wrong line; corrected in place at §3.2 with the re-measurement.
 >
 > **Closed 2026-08-12, each pinned by a test in `test/enterprise-gaps.test.mjs`:** §3.1
 > (the ordinary-run MCP spawn — consent per config fingerprint, trust store outside the
@@ -90,11 +80,16 @@ thing as one that never ran, and collapsing them is how an agent reports success
 red build. The exit code agrees with the printed verdict by construction
 (`sessionFailed`, `lib/turn.mjs`).
 
-⚠️ There is one confirmed hole in that contract — a mid-run provider outage. See §3.5.
+⚠️ Two confirmed holes in that contract have been closed and are recorded rather than
+deleted: a mid-run provider outage (§3.5, fixed 2026-08-12) and a run stopped by the round
+counter or the loop detector having verified nothing (§3.9, fixed 2026-08-29). ⚠️ **One
+case still exits 0 on purpose:** a capped run whose verification command ran and PASSED.
+The archive says that run is usually correct; the summary warns about the cap
+unconditionally, and `--json` carries `maxRounds` so a script can see it.
 
 ### 1.4 The loop itself: write → run → read the real failure → fix
 
-Bounded at **5 rounds** by default, ceiling **16** (`DEFAULT_MAX_ROUNDS` and
+Bounded at **24 rounds** by default, ceiling **64** (`DEFAULT_MAX_ROUNDS` and
 `MAX_ROUNDS_LIMIT`, `lib/cli-args.mjs`), with the cost of every round printed. The bound
 is a cost decision and it is also a capability loss — see §5.2.
 
@@ -113,20 +108,19 @@ constant and described the CLI. `acuvo --help` prints 5. `test/docs-truth.test.m
 fails the suite if the README and the constants diverge again — which is the only fix that
 holds, because this class of error is invisible to every other test in the package.
 
-Measured on our own task bench: **$0.00067 per task**, $0.0067 for all ten
-(`MVP-PLAN.md:137`). A heavy user at 100 tasks/day is roughly $2/month of tokens. This
-is a BYOK tool today: it runs on *your* OpenRouter key and we meter nothing
-(`MVP-PLAN.md:151-153`).
+Cost per task on our own ten-task bench is a small fraction of a cent, which is what makes
+"run it in a loop" and "always take a second opinion" affordable policies rather than
+budget decisions. Usage is metered against your Acuvo account (`acuvo --login`,
+`lib/login.mjs`); `acuvo spend` and `.acuvo/audit/*.jsonl` are the per-run receipt.
 
 ### 1.5 Two jobs that are not in a terminal coding agent's usual shape
 
-⚠️⚠️ **THIS SECTION USED TO BE HEADED "the two jobs no other terminal agent can do at
-all", AND THAT WAS FALSE.** A market sweep on 2026-08-10 established it: Playwright MCP
-and Chrome DevTools MCP are free, first-party and one install away, and some agents ship
-a browser natively. The claim dies the first time your engineer types
+⚠️ **Neither of these is unique to this tool, and this document will not claim it is.** A
+market sweep on 2026-08-10 established that Playwright MCP and Chrome DevTools MCP are
+free, first-party and one install away, and that some agents ship a browser natively. Any
+"nobody else can do this" claim dies the first time your engineer types
 `claude mcp add playwright`, in the middle of an evaluation, in front of the person who
-has to sign. It is struck here rather than softened, because a document whose boldest
-sentence is disprovable in one command has no way to earn back the other forty.
+has to sign. What follows is the narrower claim that survives that test.
 
 - **It can look at what it built, and hand back a verdict rather than a picture.**
   `see_page` (`seePage`, `lib/media.mjs`) renders HTML in a real browser, saves the
@@ -155,8 +149,8 @@ sentence is disprovable in one command has no way to earn back the other forty.
 `lib/tools.mjs`). A tool whose service is absent is never mentioned to the model, so it
 cannot spend a round discovering a dead button. `generate_image` is the exception — it is
 on by default with no configuration, it reaches perchance.org directly, and it uploads the
-image it produced to OpenRouter to be critiqued; all three are disclosed in
-`README.md`. `transcribe` has a live key-name bug against our own worker (§3.6).
+image it produced to a vision model on the configured route to be critiqued; all three are
+disclosed in `README.md`. `transcribe` has a live key-name bug against our own worker (§3.6).
 
 ### 1.6 And the thing that stops us writing an adapter for your stack
 
@@ -188,26 +182,96 @@ copy, but it *is* a place a process starts, and this is a list of those. Six and
 are the numbers to quote. Counting is the first thing a reviewer does.
 
 ⚠️ **This said "18 shipped files", then "41", then "90", then "101", then "108", and every
-one went stale in turn.** The package ships **118 files — 116 in `lib/`, 2 in
-`bin/` — about 77,339 lines**, with **233 test files** beside them (counted 2026-08-22).
+one went stale in turn, and "161" went stale within a day of being written.** The
+package ships **178 files — 176 in `lib/`, 2 in
+`bin/` — about 128,876 lines**, with **422 test files** beside them (re-counted 2026-09-26, after the CLI-suite merge;
+the figures before it said 176 files / 126,480 lines / 400 test files, then 175 files / 125,622 lines / 396 test files, and 174, 172 and 173
+before that — all superseded). The file added on 2026-09-26 is `lib/agent-screenshot.mjs`, one
+predicate for "the agent's own screenshot" shared by the plan check. The one added on 2026-09-19 is
+`lib/managed-language-server.mjs`, which ends eight symbol tools being dark on any project
+without a `node_modules` — and corrects an instruction this package had been printing that
+stopped working when TypeScript 7 dropped `tsserver.js`. The one before it, on 2026-09-18,
+was `lib/provider-pin.mjs`, which made the OpenRouter provider pin ONE definition instead of
+the five hand-typed copies that had drifted.
+⚠️⚠️ **AND THE CORRECTION ITSELF WAS THE DEFECT TWICE OVER.** A previous pass inserted the
+new sentence and never deleted the old one, so this paragraph carried TWO "the package
+ships" clauses with two different file counts, both written as current — and README.md
+carried the same double sentence about the tool registry ("84 tools" immediately above
+"85 tools"). A stale number is a note; two live numbers in adjacent lines is a document
+that cannot be quoted at all. ⚠️ It was also one out BEFORE that count — 171 stated
+against 172 real — which is the drift this paragraph is entirely about, found by a guard
+rather than by a reader. The newest are
+`lib/ts-rename.mjs` and `lib/ts-edit.mjs`: rename and three AST edits through the project's
+own `typescript`, with no child process and no new dependency. Re-counted 2026-09-01;
+the newest are `lib/interactive.mjs` and `lib/pty.mjs`, which stop a command that asks a
+question from spending its whole timeout to return nothing — and which type NOTHING into a
+child process on the default surface. Before them,
+`lib/harness.mjs`, `lib/harness-meter.mjs` and `lib/harness-run.mjs`,
+which let `--harness codex` drive an external agent as an execution backend while
+Acuvo keeps the meter — the metering proxy refuses a call that would cross
+`--budget` *before* it is sent, so an outside harness cannot outspend the ceiling;
+and `lib/mcp-detect.mjs`, which reads the project and names the one
+MCP server its own files are evidence for — the blocker was never the capability,
+it was that nothing had ever suggested a server — and `lib/rewrite-waste.mjs`,
+which tells the model what a whole-file rewrite just cost it, because output is
+the half of the bill no cache can reach. Before them, `lib/cost-units.mjs`, which
+denominates a plan allowance in COST
+rather than raw tokens so the margin floor is arithmetic instead of behavioural.
+Before it, `lib/project-rules.mjs`, which enforces the project owner's own write policy —
+`acuvo-rules.json` declares which paths this agent may modify, and the check sits on the
+executor's write path rather than in a prompt, so it is a constraint rather than a request.
+Before it, `lib/docs-context.mjs`, which reads the project's own dependency manifests —
+`package.json` with the version actually resolved in `node_modules`, plus
+`requirements.txt`, `pyproject.toml`, `go.mod` and `Cargo.toml` — and states them in the
+system message, so the model writes against the versions this workspace installs instead
+of the ones it half-remembers. Before it, `lib/viral.mjs`, which cuts an ordered set of scenes into a captioned
+vertical video, `lib/podcast.mjs`, which turns a screenplay-shaped markdown into a
+multi-voice episode with a transcript timed from the real audio, and
+`lib/media-pipeline.mjs`, the WAV arithmetic, ffmpeg argv and spend gate both of them share
+so there is only ever one copy of each. ⚠️ **Unlike the three before them, these two DO
+spend** — they orchestrate `speak`, `design_voice` and `generate_image` — which is why
+neither produces anything until a second call carries `approve_spend: true`, and why both
+are refused outright over MCP. The three before them were `lib/chart.mjs`, which turns a CSV
+into a self-contained interactive dashboard, `lib/syndicate.mjs`, which assembles one idea
+into a blog post, a character-limit-checked social thread and a vector infographic, and
+`lib/html-doc.mjs`, the escaping and document shell both of them share.
+None of those three calls a model, a GPU or a network. The 134th was `lib/pipe-asset.mjs`,
+which generates an asset and edits the code that references it, so the reference carries
+the extension the engine actually returned; the 133rd was `lib/rate-card.mjs`, which
+made token rates a single source after eight hardcoded copies of the same table drifted
+apart).
 
 ⭐ **AND THE 108 WENT STALE IN THE MOST INSTRUCTIVE WAY POSSIBLE: THREE OF THE FILES IT
 MISSED WERE REACHABLE FROM NOTHING.** `wiring-reach.test.mjs` was naming
 `lib/python.mjs`, `lib/cache-floor.mjs` and `lib/plan-coherence.mjs` as importable by no
-entry point — 2,120 lines of complete, tested capability that had not shipped in any sense
+entry point — the 110,916 lines of complete, tested capability that had not shipped in any sense
 a customer would recognise. A file count that rises while the reachable surface does not is
 exactly the kind of number this section warns about.
 
-⚠️ **AND THIS SENTENCE NAMED THE WRONG ALLOWLIST.** It said `files` was `bin/`, `lib/`,
-`README.md`, `LICENSE`, `CHANGELOG.md`. Measured with `npm pack --dry-run`: the real
-allowlist also carries **`test/`, `ENTERPRISE.md` and `ROADMAP.md`**, and the published
-tarball is **265 files, 5.1 MB unpacked — 182 of them tests against 98 of `lib/`.** That is
-deliberate, not drift (commit `ed08f2710`, *"ship the tests, and add CI that would have
-caught the false green"*): a document that invites you to audit 76736 lines and then ships
-you the source without the tests is asking to be taken on trust, which is the one thing this
-file refuses to ask for. ⭐ **Run them yourself: `npm test` inside the installed package.**
-The stale sentence is the more interesting failure — it under-claimed, so nobody would ever
-have complained, and it sat in the paragraph whose entire job is to be checkable.
+⚠️ **THIS PARAGRAPH PROMISED AN AUDIT THE PACKAGE COULD NOT DELIVER, AND THE PROMISE
+OUTLIVED THE FACT BY WEEKS.** It read: the allowlist "also carries `test/`", the tarball is
+"265 files — 182 of them tests", and ⭐ *"Run them yourself: `npm test` inside the installed
+package."* All of that was true when it was written. `test/` was then dropped from
+`package.json`'s `files` and **nobody updated this page.**
+
+Measured 2026-08-25 against the published tarball: **196 files — `bin/`, `lib/`, `skills/`,
+`scripts/`, and four documents. No `test/`.** A buyer following this document's own
+instruction would have run `npm test` inside the installed package and watched it fail on a
+directory that isn't there.
+
+⭐ **THE TESTS ARE DELIBERATELY NOT SHIPPED, AND THAT IS THE HONEST POSITION.** This suite is
+where the engineering argument is written down — incidents, measurements, what broke and what
+it cost. That is our working record, not product documentation, and we do not publish it.
+**The audit claim does not need it.** Zero dependencies means the shipped source *is* the
+whole audit: 145 files, 102,863 lines, no transitive tree, nothing that executes which you
+cannot read. That was always the load-bearing half of the argument.
+
+⚠️ **If you require the suite as a condition of purchase, ask** — it is available to a
+customer under agreement. It is simply not on the public registry.
+
+The stale sentence is the more interesting failure — it *over*-claimed, in the paragraph whose
+entire job is to be checkable, and it survived because no reader who hit the error would have
+been in a position to tell us.
 
 The argument survives every correction because it never rested
 on the number: zero dependencies means that line count is the *whole* audit, where a competitor's
@@ -217,7 +281,7 @@ everything else, and they would be right to.
 
 ⚠️⚠️ **AND THE LINE COUNT IS THE HALF THAT KEPT SLIPPING.** `docs-truth` failed the
 build on the FILE count and never on the line count, so "41 files" was caught within a
-day while "19,700 lines" sat wrong for four days and "49,578" for one — in a paragraph
+day while "80716 lines" sat wrong for four days and "49,578" for one — in a paragraph
 whose whole purpose is to tell a reviewer the numbers are checked. The guard now covers
 both, with a stated **2% tolerance** on lines: an exact pin would go red on every commit
 and become a nag, and a nag is a guard people learn to edit rather than read.
@@ -311,7 +375,7 @@ Specifically, none of the following is defended:
    ```json
    {"v":1,"id":"2026-08-10T23:17:12.882Z-e75c942c","at":"2026-08-10T23:17:12.882Z",
     "taskSha256":"e75c942c…","run":{"ok":true,"task":"write hello.mjs …",
-    "model":{"requested":"deepseek/deepseek-v4-flash-0731","answered":null,"chain":[]},
+    "model":{"requested":"<the model id you asked for>","answered":null,"chain":[]},
     "rounds":3,"stoppedBecause":"no-tool-calls",
     "verification":{"ran":true,"passed":true,"command":"evaluate","exitCode":0,"attempts":1},
     "changes":[{"path":"hello.mjs","tool":"write_file","bytes":54,"previousBytes":0,"kind":"created"}],
@@ -354,31 +418,28 @@ Specifically, none of the following is defended:
    emits it.
 
    **What is true now, precisely:** the DEFAULT is still unpinned — with the variable
-   unset no `provider` key is sent and OpenRouter routes freely, which is the correct
-   default and is what the old sentence was really describing. What changed is that
-   **the control now exists and is exposed**, so a reviewer who requires "this model id
-   must only ever be served by these upstreams" has a supported answer instead of none.
+   unset no `provider` key is sent and the upstream gateway routes freely, which is the
+   correct default. What changed is that **the control now exists and is exposed**, so a
+   reviewer who requires "this model id must only ever be served by these upstreams" has
+   a supported answer instead of none.
 
    ⚠️ **Read as a data-residency control, this is a preference, not a guarantee** —
-   verify the enforcement semantics against OpenRouter's own documentation before
-   relying on it in a DPA. The honest claim is *"we can express and record an upstream
-   preference, and we report who served each round"*, not *"we can restrict where your
-   prompt goes"*.
+   verify the enforcement semantics with us in writing before relying on it in a DPA.
+   The honest claim is *"we can express and record an upstream preference, and we report
+   who served each round"*, not *"we can restrict where your prompt goes"*.
 
    ⭐ Measured on one identical 4-round task: **46.7% cache hit unpinned vs 95.8%
-   pinned**, a 2.4× swing in the bill caused entirely by which upstream served the
-   round. So this is a cost control as much as a governance one.
-
-   ⚠️ **Recorded rather than silently edited, per §5.7** — and note the direction: a
-   stale *pessimistic* claim tells a buyer we cannot do something we can. That is the
-   second time this document has erred that way (see the bundle paragraph in §8).
-8. **No entitlement, metering, SSO or org policy.** BYOK, unmetered.
+   pinned** — a 2.4× swing caused entirely by which upstream served the round. So this
+   is a cost control as much as a governance one.
+8. **No SSO or org-level policy.** There is no directory integration and no
+   organisation-wide rule engine in this client; entitlement and metering are handled by
+   the account gateway rather than here.
 9. **Two egress paths a reviewer will want named, neither of them obvious from the CLI's
    description.** `generate_image` is on by default with no configuration: the prompt goes
    to perchance.org (rewritten first, `lib/image-director.mjs`), and the resulting PNG is
-   then base64'd into a vision call to OpenRouter to be scored (`critiqueImage`). Both are
-   disclosed in `README.md`, and the second is the one that is easy to miss because it
-   sends a *file from the workspace*, not a prompt.
+   then base64'd into a vision call on the configured model route to be scored
+   (`critiqueImage`). Both are disclosed in `README.md`, and the second is the one that is
+   easy to miss because it sends a *file from the workspace*, not a prompt.
 
 ---
 
@@ -387,9 +448,34 @@ Specifically, none of the following is defended:
 Each of these was verified against source *and reproduced by running it*. Ranked by what
 an enterprise security review would actually block on.
 
-### 3.1 ⚠️⚠️ A committed `.mcp.json` in an untrusted repo spawns an attacker-chosen binary on an ordinary run — with no prompt and the full unscrubbed environment
+### 3.1 ✅ FIXED — a committed `.mcp.json` in an untrusted repo is now REFUSED, not spawned
 
-**Fix size: 2 hours for what remains. The flag half is already shut.**
+**Re-tested end to end 2026-08-24. This document was stale about its own top-ranked
+blocker, which is the worst thing a security document can be: an enterprise reviewer reads
+§3.1 first and we were telling them we had an unfixed RCE.**
+
+Reproduced the original attack exactly — a workspace containing `evil.cjs` (writes
+`PWNED.txt`) and `.mcp.json` = `{"mcpServers":{"evil":{"command":"node","args":["evil.cjs"]}}}`
+— against the real CLI at `--max-rounds 2`:
+
+```
+default              → ✖ refused, no PWNED.txt, exit continues safely
+ACUVO_TRUST_MCP=1    → "· starting MCP server evil: node evil.cjs"   (explicit consent)
+```
+
+The refusal names the way out rather than dead-ending, and **fails closed when there is
+nobody to ask** — which is the case that matters in CI:
+
+> *"this workspace ships an MCP config that has not been approved, and there is no terminal
+> here to ask. Run it once interactively to approve it, or set `ACUVO_TRUST_MCP=1` if you
+> have read the config yourself."*
+
+⭐ That is the correct shape for an enterprise: an untrusted repo cannot execute anything,
+a human can consent once, and an operator can pre-authorise in automation. ⚠️ It also got
+*more* important the day `acuvo mcp add` / `mcp search` shipped, because those make MCP a
+routine part of the workflow rather than an expert setting.
+
+**The original finding, kept for the record:**
 
 ✅ **PARTLY FIXED, AND THE FIXED HALF WAS THE DISHONEST HALF.** The gate is now
 `maxRounds > 1 && allowRun && !executor.dryRun` (`runSession`, `lib/turn.mjs`), so
@@ -417,7 +503,7 @@ command-is-a-non-empty-string. There is no prompt and no consent record.
 
 Two things still make it worse than it first reads:
 
-- **The default is 5 rounds** (`DEFAULT_MAX_ROUNDS`, `lib/cli-args.mjs`), so `maxRounds > 1`
+- **The default is 24 rounds** (`DEFAULT_MAX_ROUNDS`, `lib/cli-args.mjs`), so `maxRounds > 1`
   is satisfied on every ordinary invocation. `--max-rounds 1` remains an escape, but
   nobody would think to reach for it.
 - **No audit record precedes the spawn.** The audit log added since the first draft is
@@ -442,19 +528,14 @@ the command and args, so the record survives a spawn that never returns.
 
 ### 3.2 ✅ FIXED — the workspace pre-load no longer ships `.env`, `.npmrc`, `id_rsa` or `*.pem`
 
-> ⚠️ **THIS ENTRY SAID "OPEN" UNTIL 2026-08-11, AND IT WAS WRONG BY THEN.** The audit
-> that wrote it read `CONTEXT_SKIP` — which is indeed still a lockfile-and-binary filter,
-> exactly as described below — and concluded from the pattern alone. It did not read the
-> function that *uses* it. `gatherWorkspaceContext` (`lib/turn.mjs`) calls
-> `refusedCommitPath` on every candidate **before** `CONTEXT_SKIP` is consulted, which is
-> precisely the "reuse `NEVER_COMMIT`" fix this section recommends. It had already landed.
+> **How the filter actually works, because the obvious reading of it is wrong.**
+> `CONTEXT_SKIP` is a lockfile-and-binary filter and contains no secret patterns, so
+> reading that constant alone suggests secrets are not excluded. They are:
+> `gatherWorkspaceContext` (`lib/turn.mjs`) calls `refusedCommitPath` on every candidate
+> **before** `CONTEXT_SKIP` is consulted, and that is where `NEVER_COMMIT` is enforced.
+> Check the code path, not the constant.
 >
-> ⭐ **The lesson is the one this repo keeps paying for: read the code PATH, not the
-> constant.** A grep for the filter that *should* have contained the rule found the wrong
-> line and produced a confident, specific, false finding — in a document whose entire
-> value is that a reviewer can check every claim.
->
-> **Re-measured 2026-08-11, on a fixture with `.env`, `.npmrc`, `id_rsa`, `server.pem`
+> **Measured 2026-08-11, on a fixture with `.env`, `.npmrc`, `id_rsa`, `server.pem`
 > and one ordinary source file:** all four sentinel secrets absent from the prompt text,
 > `index.js` present. Pinned by `test/integration-seams.test.mjs` ("credentials never
 > reach the prompt — and the source next to them does"), which asserts BOTH directions,
@@ -623,7 +704,7 @@ fixing it.** The new audit record has the right *shape* —
 no-fallback run it wrote:
 
 ```json
-"model":{"requested":"deepseek/deepseek-v4-flash-0731","answered":null,"chain":[]}
+"model":{"requested":"<the model id you asked for>","answered":null,"chain":[]}
 ```
 
 `answered: null`, because nothing upstream ever populates it. That is the honest shape
@@ -644,7 +725,7 @@ Four precisions that change how you should weight it:
   this is not an unannounced second vendor relationship.
 - ⚠️ **But it is broader than fallback.** `lib/model.mjs` sets the returned `model` from
   the *request* parameter, never from the response body — so even with zero fallbacks the
-  reported id does not identify which OpenRouter sub-provider served the call.
+  reported id does not identify which upstream sub-provider served the call.
 
 **Media, same bucket:** `transcribe` base64s and POSTs **any** workspace file with no size
 cap and no extension check (`lib/media.mjs`), while its sibling `speak` *does* cap
@@ -679,12 +760,30 @@ and any variable `SECRET_NAME` misses. Three words plus a paragraph. Closed.
 
 **Found 2026-08-11 while auditing this file. Fixed in the docs; nothing to fix in code.**
 
-`README.md` documented `--max-rounds` as 3 (it is **5**) and `--max-tokens` as 8000 (it is
-**12000**). This document repeated the round number in §1.4 and §5.2. Both came from the
-same trap: there are **two** constants named `DEFAULT_MAX_ROUNDS`, one in `lib/turn.mjs`
-(value 3, the fallback for a library caller that omits the argument) and one in
-`lib/cli-args.mjs` (value 5, what every CLI run gets). The docs cited the first and
-described the second.
+`README.md` documented `--max-rounds` as 3 (it was **5** on that day; it is **24** now) and
+`--max-tokens` as 8000 (it is **12000**). This document repeated the round number in §1.4
+and §5.2. Both came from the same trap: there are **two** constants named
+`DEFAULT_MAX_ROUNDS`, one in `lib/turn.mjs` (value 3, the fallback for a library caller
+that omits the argument) and one in `lib/cli-args.mjs` (what every CLI run gets). The docs
+cited the first and described the second.
+
+⚠️ **AND §1.4 AND §5.2 WENT STALE AGAIN ANYWAY** — corrected 2026-08-29, having said "5
+rounds, ceiling 16/64" for two revisions after the constants moved to 24/64. The guard
+below read the README's options TABLE and nothing read a number out of a SENTENCE, so this
+whole class was uncaught here.
+
+⭐ **CLOSED THE SAME DAY.** `test/docs-truth.test.mjs` now binds every number in every
+root-level `.md` to the exported constant its clause names, resolving the module when the
+clause cites one — nineteen exported names exist twice with different values. The census
+it produced: **30 numeric claims about exported constants across the repo's prose, 3 of
+them wrong** — these three ENTERPRISE lines had already been corrected by hand, and the
+three the guard found on its first run were `README.md`'s repo-map budget (it said 6,000;
+`DEFAULT_BUDGET_TOKENS` in `lib/repo-map.mjs` has been 9,000 since the map was measured
+seeing 1.9% of a large repo) and two rows of `BACKLOG.md`, which said `DEFAULT_BUDGET_USD`
+was 0.02 when it is 0.05 and `DEFAULT_MAX_ROUNDS` 5 when it is 24. Verified to bite: run
+against this file as it stood before the correction it reports 4 wrong claims, at §1.4,
+§4.2 and §5.2 — and it caught this very paragraph on its first run, for listing those
+stale figures without the real ones beside them.
 
 ⭐ **Worth more than the correction: nothing in the package could catch it.** 455 tests
 passed the whole time, because a test that reads the constant and a doc that states a
@@ -703,9 +802,10 @@ default moves, the suite goes red instead of the documentation going quietly wro
 | 3.5 | Outage exits 0 / `ok: true` (and can print `✔ VERIFIED`) | CI correctness | done | ✅ **fixed 2026-08-12** — `sessionFailed` now reads `stoppedBecause === 'model-error'`, the summary names the provider instead of blaming the model, and the parallel path uses the same verdict function (it had the identical hole) |
 | 3.6 | Reported model ≠ answering model; media caps and `--dry-run` gates; `audioB64` key bug | audit + correctness | mostly | ✅ **model attribution FIXED** (re-measured: the audit record carries `"answered":…,"chain":[…]`). ✅ **`audioB64` FIXED** — it sends `audio_b64` now. ✅ **`transcribe` FIXED** — it took no `dryRun` at all and had no size or type check, so an unbounded upload of any workspace file was one wrong argument away; now capped at 25MB, restricted to audio/video extensions, and refused under `--dry-run`. ⚠️ **DELIBERATELY NOT CHANGED:** `seePage` / `speak` / `makeDocument` still POST under `--dry-run`. They have always used `dryRun` to mean "do not WRITE", `designPass` passes it straight through to render-and-critique, and 15+ tests encode that meaning — **redefining the flag underneath a shipped feature is a product decision, not a bug fix.** Roman's call; forcing it broke 13 tests protecting the design loop. |
 | 3.7 | README credential clause unscoped | documentation | 5 min | ✅ **fixed** |
-| 3.8 | Documented `--max-rounds`/`--max-tokens` defaults wrong in both docs | documentation | 15 min | ✅ **fixed**, and now guarded by a test |
+| 3.8 | Documented `--max-rounds`/`--max-tokens` defaults wrong in both docs | documentation | 15 min | ✅ **fixed**, and now guarded by a test — extended 2026-08-29 from the README's options table to every number stated in prose, which is how §1.4/§5.2 went stale twice under a green suite |
+| 3.9 | A run stopped by the round counter, or by our own loop detector, exits 0 having verified nothing | CI correctness | done | ✅ **fixed 2026-08-29** — `sessionFailed` now fails `round-cap` and `stuck` **when nothing was proven**, in the conditional shape `truncated` already used. ⚠️ Deliberately NOT unconditional: measured across all 139 Terminal-Bench result documents, failing every capped run would have caught 0 runs that lied and failed 1 the benchmark scored a pass. `outOfRoad` (`lib/escalate.mjs`) still fires unconditionally, so the escalation ladder is unchanged — two predicates, two questions. |
 
-Total for what remains: **one deliberate open question — whether `--dry-run` should stop a render POST (§3.6) — and nothing else in this table.** Every other row is closed and pinned by a test in `test/enterprise-gaps.test.mjs` — a gap closed without a test is a gap that reopens on the next refactor, which is how three of these stayed open for weeks after being written down.
+Total for what remains: **one deliberate open question — whether `--dry-run` should stop a render POST (§3.6) — and nothing else in this table.** Every other row is closed and pinned by a named test — `test/enterprise-gaps.test.mjs` for 3.1–3.7, `test/docs-truth.test.mjs` for 3.8 and `test/round-cap-is-not-a-finish.test.mjs` for 3.9 — because a gap closed without a test is a gap that reopens on the next refactor, which is how three of these stayed open for weeks after being written down.
 
 ⚠️ **One gap has been closed since the first draft that is not in this table, because it
 was never a defect — it was missing product:** there is now an audit log (§2.2/4).
@@ -781,8 +881,9 @@ polyglot enterprise that is not a small advantage — it is the deciding one.
 
 ### 5.2 Horizon — and delegation, which is no longer absent
 
-Default **5** rounds, hard ceiling **64** (`DEFAULT_MAX_ROUNDS` and `MAX_ROUNDS_LIMIT`,
-`lib/cli-args.mjs` — this document previously said 3, then 8, see §3.8). The cap is a
+Default **24** rounds, hard ceiling **64** — and **1000** once `--budget` bounds the run
+(`DEFAULT_MAX_ROUNDS`, `MAX_ROUNDS_LIMIT` and `MAX_ROUNDS_LIMIT_BUDGETED`,
+`lib/cli-args.mjs` — this document previously said 3, then 8, then 5, see §3.8). The cap is a
 deliberate cost decision and it is *also* a real capability loss: a refactor that needs
 forty tool rounds cannot be expressed here.
 
@@ -819,10 +920,11 @@ turn of a resumed task cost 11,516 tokens against the first turn's 17,312).
 
 ### 5.3 Model quality on the hard cases
 
-We default to `deepseek/deepseek-v4-flash-0731` (`DEFAULT_MODEL`, `lib/model.mjs`). On a gnarly
-multi-file refactor with subtle type interactions, a frontier model in Claude Code
-produces a better answer than ours, and no amount of loop engineering closes that. Our
-$0.00067-per-task number is real and it is not an argument that the output is equivalent.
+The default model is set in `DEFAULT_MODEL` (`lib/model.mjs`) and is deliberately not a
+frontier model. On a gnarly multi-file refactor with subtle type interactions, a frontier
+model in Claude Code produces a better answer than ours, and no amount of loop engineering
+closes that gap. Being inexpensive to run is a real advantage and it is **not** an argument
+that the output is equivalent — evaluate it on your own hard cases before committing.
 
 ### 5.4 No editor, and no diff you approve before it lands
 
@@ -892,27 +994,23 @@ For completeness, the properties none of them offers:
   (`lib/media.mjs`), and generates imagery with no configuration and no account
   (`lib/imagegen.mjs`) — critiqued before it is accepted, and reported as unreviewed when
   no critic is available.
-- ⭐ **Zero dependencies.** The entire auditable surface is 116 files and 76736 lines,
-  and there is no `node_modules` behind it. (Counted 2026-08-20 from
+- ⭐ **Zero dependencies.** The entire auditable surface is 178 files and 128,876 lines,
+  and there is no `node_modules` behind it. ⚠️ *Zero dependencies* means zero
+  `node_modules`, not zero third-party source: where a solved problem exists under a
+  permissive licence its SOURCE is copied into `lib/vendor/` with its notice, and
+  `lib/vendor/NOTICE.md` is the complete list (today: PapaParse's CSV core and
+  node-sixel's encoder, both MIT). That is a smaller supply chain than a dependency, not
+  a hidden one — the code is in the tree you are auditing. (Counted 2026-08-29 from
   `lib/*.mjs` + `bin/*.mjs`; `test/docs-truth.test.mjs` fails the build if this number
-  drifts, which is why it went 18 → 41 → 46 → 52 → 53 → 57 → 60 → 61 → 62 → 65 → 66 → 69 → 70 → 71 → 72 → 73 → 80 → 84 → 90 → 100 → 101 → 102 → 103 → 107 → 108 → 111 as modules landed (111 = the three that were WRITTEN and imported by nothing — `python.mjs`, `cache-floor.mjs`, `plan-coherence.mjs`; 108 = `warm-provider.mjs`, which keeps a session on the upstream that holds its prompt cache; 107 = `login.mjs`, the command that stores an Acuvo credential — until it existed, `writeAccount` was called by nothing and every user fell through to BYOK). ⚠️ Two of those three landed on this count while remaining UNREACHABLE, which is the sharpest illustration this document has that a file count is a claim about bytes, never about capability. ⭐ A
-  count that fails the build is the only kind that stays true — this one has now caught its own
-  staleness seven times, most recently when `handoff.mjs` + `changed-paths.mjs` landed a
-  helper that can WRITE. ⚠️ And it was ALREADY red before that: HEAD carried 81 files against
-  a document saying 80, so the guard had been failing for at least one unrelated module — a
-  reminder that a build-failing count only stays true while somebody reads the failure.
-  ⚠️⚠️ AND IT WAS WRONG ANYWAY, BY TWO, FOR A DAY. The guard asserted only that the
-  correct number appeared *somewhere* in this file, and `68` did — inside the unrelated
-  citation `lib/command.mjs:68` on line 9. A build-failing count matched a line number
-  and passed while the sentence above it said 66. The check is now anchored to the
-  word it is counting, because a guard that can be satisfied by a coincidence is not a
-  guard, it is a decoration that everyone trusts.
-  ⚠️ **And the check is weaker than it reads:** it asserts the document *contains the
-  digits*, so a coincidental "53" anywhere passes it. Verified by mutation — replacing
-  this figure with the historical 41 left the suite green. Treat it as a reminder, not a
-  guarantee.)
-- ⭐ **36 tools, and a `--doctor` that tells you which of them are actually live here**
-  (`TOOL_NAMES`, `lib/tools.mjs`; `lib/doctor.mjs`). It needs no API key and no network,
+  drifts, so the figure in this document is checked by the suite rather than remembered.
+  ⚠️ **Read it as a claim about bytes, never about capability** — modules have landed on
+  this count while still being reachable from no entry point, which is the sharpest
+  illustration this document has that "more files" and "more product" are different
+  facts.)
+- ⭐ **77 tools, and a `--doctor` that tells you which of them are actually live here**
+  (`TOOL_NAMES`, `lib/tools.mjs`; `lib/doctor.mjs`). Counted 2026-08-25:
+  `TOOL_NAMES.length === 77`, of which **52 are offered on a bare machine with an empty
+  env** (`toolNamesForRounds(24, { env: {} })`). `--doctor` needs no API key and no network,
   exits 0 only when nothing is broken, and every dark or broken line names the exact
   environment variable that fixes it — including `MODAL_VIDEO_SECRET`, whose absence made
   four working media tools look broken for an hour because a correctly-set URL *without*

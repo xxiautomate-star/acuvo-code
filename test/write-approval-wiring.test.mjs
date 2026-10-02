@@ -76,7 +76,21 @@ test('⭐ and budgetedAsker is still used for the model-facing ask_user tool', (
   // The fix must not delete the budget — it belongs to the MODEL's questions,
   // just not to a system-initiated write approval. Removing it entirely would
   // let the model interrogate the user without limit.
-  assert.match(TURN_CODE, /budgetedAsker\(mcpAsk\)/, 'the ask_user budget was removed rather than re-pointed');
+  /**
+   * ⚠️ THE ARGUMENT LIST GREW AND THE ANCHOR HAD TO FOLLOW (2026-08-24). "How
+   * many questions may it ask you" is now one of the four settings a user
+   * answers, so the call is `budgetedAsker(mcpAsk, { max: maxQuestions })`. The
+   * property this test defends is unchanged and is asserted MORE tightly than
+   * before: the raw asker goes in, AND an allowance is still applied to it.
+   * Relaxing the regex to `budgetedAsker\(` would have made the guard blind to
+   * the defect it exists for.
+   */
+  assert.match(TURN_CODE, /budgetedAsker\(mcpAsk[,)]/, 'the ask_user budget was removed rather than re-pointed');
+  assert.match(
+    TURN_CODE,
+    /budgetedAsker\(mcpAsk,\s*\{\s*max:\s*maxQuestions\s*\}\)/,
+    'the model-facing allowance must come from the resolved `maxQuestions`, or the --max-questions setting is decoration',
+  );
 });
 
 test('⭐ the other two consumers already took the raw asker', () => {

@@ -2,3 +2,4 @@
 # The host-side node tarball cached for Terminal-Bench (52MB, re-downloadable)
 bench/terminal-bench/.cache/
 bench/terminal-bench/results/
+bench/results/

@@ -19,6 +19,14 @@
  * mid-task, four files written, nothing verified. Without `maxRounds`, a
  * consumer reading `rounds: 2` cannot tell a tidy little session from a run
  * that hit its ceiling with work outstanding.
+ *
+ * ⚠️ THAT EXIT CODE WAS FIXED 2026-08-29 and this file's subject was not. The
+ * shape above — capped with NOTHING proven — now reports `failed: true`,
+ * `exitCode: 1` (`sessionFailed`, `lib/turn.mjs`; pinned by
+ * `test/round-cap-is-not-a-finish.test.mjs`). A capped run whose command ran
+ * and passed still exits 0, which is why `maxRounds` in the document remains
+ * the only way a consumer can see that ceiling. `toJson` is what these tests
+ * exercise and it does not compute the verdict, so nothing below changes.
  */
 
 import { test } from 'node:test';
@@ -79,7 +87,10 @@ test('⭐⭐ maxRounds makes a TRUNCATED run detectable', () => {
   /**
    * `rounds: 2` alone reads as a tidy little session. `rounds: 2, maxRounds: 2`
    * plus `stoppedBecause: 'round-cap'` is a run that hit its ceiling with work
-   * outstanding — and it exits 0, so the exit code will not tell you.
+   * outstanding — and when its verification command ran and PASSED it still
+   * exits 0 deliberately, so the exit code will not tell you. That case is the
+   * measured one: the archive's only capped-and-passing run with a reward on
+   * disk scored a pass.
    */
   const doc = toJson(outcome({ roundsUsed: 2, maxRounds: 2 }), { changes: [], task: 't' });
   assert.equal(doc.maxRounds, 2);

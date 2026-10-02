@@ -384,10 +384,27 @@ test('extractExports handles CommonJS, because half the world is still on it', (
   assert.ok(names.includes('alpha') && names.includes('beta'));
 });
 
-test('extractExports reads python, go and rust top-level definitions', () => {
-  assert.deepEqual(extractExports('a.py', 'def run():\n    pass\nclass Thing:\n    def inner(self): pass\n').sort(), ['Thing', 'run']);
+/**
+ * ⚠️ THIS TEST USED TO PIN `['Thing', 'run']` AND THE MISSING NAME WAS THE BUG.
+ *
+ * The Python patterns were anchored at `^`, not `^\s*`, so an indented `def` —
+ * which is to say EVERY METHOD IN EVERY PYTHON CLASS — was invisible to both
+ * the map and `find_symbol`, whose own tool description promises "a function,
+ * class, const, type, struct or method". `inner` is now expected, and the test
+ * says so rather than quietly asserting the smaller set.
+ *
+ * ⚠️ RUST STAYS PUBLIC-ONLY ON PURPOSE. `private_helper` is deliberately absent
+ * below: Rust's `pub` is an explicit statement about the file's API, and the
+ * map's contract is that surface, not every binding in the crate.
+ */
+test('extractExports reads python (INCLUDING METHODS), go and rust definitions', () => {
+  assert.deepEqual(extractExports('a.py', 'def run():\n    pass\nclass Thing:\n    def inner(self): pass\n').sort(), ['Thing', 'inner', 'run']);
   assert.ok(extractExports('a.go', 'func Serve() {}\ntype Config struct{}\n').includes('Serve'));
   assert.ok(extractExports('a.rs', 'pub fn parse() {}\npub struct Cfg;\n').includes('parse'));
+  // `pub(crate)` matched nothing at all until 2026-08-29 — `pub\s+` needs the space.
+  assert.ok(extractExports('a.rs', 'pub(crate) fn sweep() {}\n').includes('sweep'),
+    'pub(crate) is still invisible — the restricted-visibility forms are ordinary public API inside a crate');
+  assert.equal(extractExports('a.rs', 'fn private_helper() {}\n').includes('private_helper'), false);
 });
 
 test('extractExports returns nothing rather than garbage for a file it does not understand', () => {
@@ -819,7 +836,16 @@ test('⚠️ real export syntax inside a MARKDOWN file yields nothing — the ex
 test('⭐ a directory with NOTHING listed is still NAMED with its count — otherwise the blind spot is invisible', () => {
   const files = { 'src/main.js': 'x' };
   for (let i = 0; i < 40; i++) files[`vendor/pkg${String(i).padStart(2, '0')}/asset.png`] = 'x';
-  const map = buildRepoMap('/repo', makeFs(files), { budgetTokens: 80 });
+  /**
+   * ⚠️ 80 → 64 (2026-08-25), AND IT IS THE FIXTURE MOVING, NOT THE GUARD. The
+   * map now reserves `TASK_TRANCHE_SHARE` of the budget for a second, task-varying
+   * block, so at 80 tokens the reserved quarter was large enough to list two
+   * vendor assets — and the test's own stated precondition is that EVERY vendor
+   * file is omitted ("this test only proves anything while…"). 64 restores that
+   * precondition; the assertion below it is untouched and still fails if a
+   * directory with nothing listed loses its name.
+   */
+  const map = buildRepoMap('/repo', makeFs(files), { budgetTokens: 64 });
   assert.equal(map.truncated, true);
   assert.deepEqual(listedPaths(map), ['src/main.js'],
     'fixture drift: this test only proves anything while every vendor file is omitted');
@@ -837,7 +863,29 @@ test('⭐ a directory with NOTHING listed is still NAMED with its count — othe
  * inverts the entire thesis of the module. Coverage is the product.
  */
 
-test('⭐ symbols are surrendered BEFORE paths — coverage is the product, a symbol list is only the bonus', () => {
+/**
+ * ── ⚠️⚠️ THIS GUARD USED TO FAIL IN ONE DIRECTION ONLY, AND THAT COST US ZERO
+ *    SYMBOL LISTS ON EVERY LARGE REPOSITORY ─────────────────────────────────
+ *
+ * It asserted `listedFiles >= 90` and nothing whatever about the floor under
+ * `symbolsShown`, so the allocator satisfied it perfectly by giving symbols
+ * NOTHING. Measured 2026-08-29 on production code: `console/` (3,443 files)
+ * rendered 687 paths and **0** symbol lists; the enclosing 9,652-file worktree,
+ * 679 paths and **0** — while 596 of console's 687 rendered files (86.8%) had a
+ * symbol list already extracted and sitting in memory, discarded unread.
+ *
+ * ⭐ SO IT NOW PINS THE RELATIONSHIP INSTEAD OF A COUNT, and it bites in BOTH
+ * directions: coverage may not collapse, AND symbols may not be starved.
+ *
+ * ⚠️ THE COVERAGE HALF IS EXPRESSED IN BYTES, NOT IN FILES, WHICH IS THE ONLY
+ * FIXTURE-INDEPENDENT WAY TO SAY IT. The original defect this test was written
+ * for — "77 symbol lists at the price of 230 PATHS", an annotated line
+ * averaging 93 characters against 28 for a bare path — is precisely a map whose
+ * ANNOTATION bytes rival its PATH bytes, and that is what is asserted. A file
+ * count would only be a proxy for it, and a proxy calibrated on this fixture's
+ * unusually short 18-character paths at that.
+ */
+test('⭐ coverage is the product and a symbol list is the bonus — but the bonus may not be ZERO', () => {
   const files = {};
   for (let i = 0; i < 120; i++) {
     files[`lib/mod${String(i).padStart(3, '0')}.mjs`] = 'export function alpha() {}\nexport const BETA = 1;\nexport class Gamma {}\n';
@@ -849,9 +897,22 @@ test('⭐ symbols are surrendered BEFORE paths — coverage is the product, a sy
   assert.ok(roomy.stats.symbolsShown > 100, 'a roomy budget should keep the symbols it can afford');
 
   assert.ok(tight.stats.symbolsShown < roomy.stats.symbolsShown, 'the tight budget kept as many symbol lists as the roomy one');
-  assert.ok(tight.stats.listedFiles >= 90,
-    `only ${tight.stats.listedFiles} paths survived a tight budget — symbol lists ate the tokens that should have bought coverage`);
   assert.ok(tight.stats.tokensEstimated <= 600);
+
+  // ⭐ THE HALF THAT WAS MISSING. A truncated map that shows no symbols at all
+  // has thrown away work it already paid for.
+  assert.ok(tight.stats.symbolsShown > 0,
+    'a truncated map rendered ZERO symbol lists — the allocator is spending the whole budget on paths again');
+
+  // ⚠️ …AND THE HALF THAT WAS ALREADY THERE, RESTATED SO IT CANNOT BE SATISFIED
+  // BY STARVATION. Annotation bytes must stay a minority of the FILES section.
+  const fileLines = tight.text.split('\n').filter((l) => /^\s{2,}\S+\.mjs/.test(l));
+  const annotationBytes = fileLines.reduce((n, l) => n + (l.includes('[') ? l.length - l.indexOf('[') : 0), 0);
+  const pathBytes = fileLines.reduce((n, l) => n + (l.includes('[') ? l.indexOf('[') : l.length), 0);
+  assert.ok(annotationBytes < pathBytes,
+    `symbol lists took ${annotationBytes} bytes against ${pathBytes} for the paths — annotations are eating the coverage that is the product`);
+  assert.ok(tight.stats.listedFiles >= 60,
+    `only ${tight.stats.listedFiles} of 120 paths survived a tight budget — coverage has collapsed`);
 });
 
 test('a bare path in a budget-trimmed map does NOT mean the file exports nothing — files keeps what text dropped', () => {

@@ -373,6 +373,33 @@ test('STUCK_PATTERNS names every pattern the detector can return', () => {
     cyc.push(round(i * 3 + 3, [cmd('t', 0, '')]));
   }
   seen.add(detectStuck(cyc).pattern);
+  /**
+   * ⭐ `futile-edit-loop` — three REAL edits to one file, three byte-identical
+   * failures. Every write is different content, so `repeated-identical-edit`
+   * and `thrashing` correctly do not fire; the file changes every round, so
+   * `repeated-command-failure` correctly does not either. That is the whole
+   * point of the pattern: it is the loop the other six were built to exclude.
+   */
+  const futile = [];
+  for (let i = 0; i < 4; i += 1) {
+    futile.push(round(i * 2 + 1, [write('src/a.ts', `attempt-${i}`)]));
+    futile.push(round(i * 2 + 2, [cmd('tsc', 2, "src/b.ts(4,1): error TS2345: Argument of type 'string'")]));
+  }
+  seen.add(detectStuck(futile).pattern);
+  /**
+   * ⭐ `restated-plan` — the only pattern that lives in the PROSE rather than in
+   * the tool calls. Every round here reads a DIFFERENT file, so every round
+   * signature is unique and `long-cycle` is structurally blind to it; what
+   * repeats is the model's stated intent. Built from the real 2026-09-21
+   * transcript that burned all 24 rounds and produced no report at all —
+   * `a-restated-plan-is-a-stall.test.mjs` holds that run in full.
+   */
+  const SAY = 'Let me check the remaining docs and the current state of the app to complete the picture.';
+  seen.add(detectStuck([
+    round(1, [read('one.md')], SAY),
+    round(2, [read('two.md')], SAY),
+    round(3, [read('three.md')], SAY),
+  ]).pattern);
   assert.equal(seen.has(null), false, 'a scenario meant to trigger a pattern produced none — fix the SCENARIO, not the detector');
   for (const p of seen) assert.ok(STUCK_PATTERNS.includes(p), `${p} is missing from STUCK_PATTERNS`);
   assert.equal(seen.size, STUCK_PATTERNS.length, 'STUCK_PATTERNS lists a pattern nothing produces');

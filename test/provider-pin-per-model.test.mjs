@@ -1,23 +1,22 @@
 /**
  * ── ⚠️⚠️ A SINGLE GLOBAL PIN IS ONLY EVER CORRECT FOR ONE MODEL ─────────────
  *
- * `DEFAULT_PROVIDER_ORDER = 'StreamLake'` was chosen by measuring FLASH, and
- * StreamLake does not serve `deepseek-v4-pro-0813` AT ALL — it is not among
- * pro's 7 endpoints. So every pro run asked for a provider that could not
- * answer, the pin matched nothing, `allow_fallbacks` did its job, and
- * OpenRouter routed freely.
+ * `DEFAULT_PROVIDER_ORDER` was chosen by measuring FLASH, and the name it holds
+ * does not serve `deepseek-v4-pro-0813` AT ALL — it is not among pro's 7
+ * endpoints. So every pro run asked for a provider that could not answer, the
+ * pin matched nothing, `allow_fallbacks` did its job, and OpenRouter routed
+ * freely.
  *
- * MEASURED on the 13-task bench, 2026-08-15: **pro was served by GMICloud on
- * 13 of 13 runs**, while flash held its pin (StreamLake 13, Baidu 5).
+ * MEASURED on the 13-task bench, 2026-08-15: **pro was served by one and the
+ * same endpoint on 13 of 13 runs — the dearest one available** — while flash
+ * held its own pin. Against the cheapest pro endpoint that is 2.8x on tokens
+ * and 28x on CACHE READS.
  *
- *   DeepSeek (the model's author)   in $0.435  out $0.870  cache-read $0.0036
- *   GMICloud (what we actually got) in $1.218  out $2.436  cache-read $0.1015
- *
- * ⚠️ 2.8x on tokens and 28x on CACHE READS. The "pro costs 11.2x flash" number
- * this package quotes was measured on the most expensive pro endpoint
- * available, purely because nobody had pinned the cheap one. Pinned to
- * DeepSeek's own endpoint, pro's cached reads ($0.0036) are ~3.8x CHEAPER than
- * flash's ($0.0137) — which is the opposite conclusion.
+ * ⚠️ SO THE "pro costs 11.2x flash" NUMBER IS AN ARTEFACT OF THE ROUTING, not a
+ * property of the model: it was measured on the most expensive pro endpoint
+ * available, purely because nobody had pinned a cheap one. Pinned properly,
+ * pro's cached reads are several times CHEAPER than flash's — the opposite
+ * conclusion.
  *
  * ⭐ A provider list is a fact about a MODEL, not about this package.
  */
@@ -26,6 +25,8 @@ import { test } from 'node:test';
 import assert from 'node:assert';
 import { providerOrderFor, PROVIDER_PIN_BY_MODEL, callModel } from '../lib/model.mjs';
 import { MODEL_PRICES } from '../lib/plan.mjs';
+import { buildChain } from '../lib/chain.mjs';
+import { PINNED_PRIMARY_MODEL } from '../lib/provider-pin.mjs';
 
 const FLASH = 'deepseek/deepseek-v4-flash-0731';
 const PRO = 'deepseek/deepseek-v4-pro-0813';
@@ -56,8 +57,47 @@ test('⭐⭐ pro asks for DeepSeek FIRST — the author\'s own endpoint, 2.8x ch
 });
 
 test('⭐ flash keeps the pin that was measured for it', async () => {
+  /**
+   * ── 🚨 REPINNED 2026-08-27 — StreamLake led at 7.3x the cheapest ──────────
+   *
+   * This used to assert `'StreamLake'`. That name was flash's OLD lead, and
+   * the comment above it in `model.mjs` claimed "the three cheapest are
+   * within 3%" — checked against the live endpoint feed, that was false three
+   * ways: StreamLake priced $0.22/$0.66 (7.3x the cheapest), Baidu $0.14/$0.28,
+   * GMICloud $0.112/$0.224 (and status -2, degraded). None of the three was
+   * actually among the cheapest.
+   *
+   * ⭐ THE LEAD WAS `DeepInfra`, at $0.08/$0.18/$0.016 fp8 — chosen fp8-first over
+   * the cheaper fp4 endpoints (Relace, OpenInference) because 4-bit weights are a
+   * real quality risk on a coding model, and the parity mandate is a promise about
+   * quality as well as volume.
+   *
+   * ── ⭐⭐⭐ REPINNED TO `Sail Research` (fp4), 2026-09-10, ROMAN'S CALL ───────
+   *
+   * Put to him as a precision decision rather than a price one, because the
+   * paragraph above is a deliberate quality floor and not an oversight:
+   * *"sail research can be utilised mainly, as long as we always have the best
+   * priced ones being used"* · *"and sail research is the best"*.
+   *
+   * ⭐ The deciding evidence was empirical: DeepInfra 429'd every build on
+   * 2026-09-09, so the six-brief corpus that went SIX OF SIX was served largely by
+   * Sail Research — fp4 shipped the corpus at this workload. And Sail Research
+   * caches 99.98% against OpenInference's fixed 17%, so it is the cheapest endpoint
+   * in PRACTICE despite the higher per-token rate.
+   *
+   * ⚠️ THIS ASSERTION IS A LITERAL ON PURPOSE. Deriving it from
+   * `PROVIDER_PIN_BY_MODEL` would make it pass for any value and prove nothing —
+   * its whole job is to be a tripwire that someone moved the primary. FIVE other
+   * places hold this name (`provider-pin.ts`, `PROVIDER_PIN_BY_MODEL`,
+   * `DEFAULT_PROVIDER_ORDER`, `plan.mjs` `MODEL_PRICES`, and the next test in this
+   * file); they must move together. ⚠️ This sentence said FOUR when it was written
+   * an hour ago and the sixth copy failed the run — the count is now derived from a
+   * repo-wide grep, not from memory.
+   */
   const body = await sentFor(FLASH, {});
-  assert.equal(body.provider.only[0], 'StreamLake', 'the measured 2.4x caching win was on StreamLake');
+  // ⚠️ REORDERED 2026-09-11: Relace leads — Sail Research buffers a whole tool call (49 s silent on a
+  // 10 KB write) and the console's idle watch killed every large write on it. Same four names, same fp4.
+  assert.equal(body.provider.only[0], 'Relace', 'the pin leads with the endpoint that streams a tool call (2026-09-11)');
 });
 
 test('⚠️⚠️ the FIRST attempt is a real lock, not one name wearing a pin', async () => {
@@ -102,7 +142,17 @@ test('⚠️⚠️ the FIRST attempt is a real lock, not one name wearing a pin'
   assert.equal(body.provider.only.length, 1, 'the warm attempt must pin exactly one upstream');
   assert.equal(body.provider.order, undefined,
     'an ORDER here is the old defect twice over: it can land cold AND it disables sticky routing');
-  assert.equal(body.provider.only[0], 'StreamLake', 'the measured caching win was on StreamLake');
+  // ⚠️ REPINNED 2026-08-27 — see the comment on the previous test. StreamLake
+  // was 7.3x the cheapest reachable endpoint and its "three cheapest within
+  // 3%" comment was false; DeepInfra was the corrected fp8-first lead.
+  // ⚠️⚠️ REPINNED AGAIN 2026-09-10 to 'Sail Research' (Roman's precision call).
+  // ⭐ THIS LINE IS THE SIXTH COPY OF THE PRIMARY'S NAME AND IT IS THE ONE THAT
+  // CAUGHT THE OTHER FIVE. The previous test's own comment said "four other
+  // places hold this name" — it was wrong by one, and this assertion is what
+  // said so. The full set is: provider-pin.ts · PROVIDER_PIN_BY_MODEL ·
+  // DEFAULT_PROVIDER_ORDER · plan.mjs MODEL_PRICES · both assertions here.
+  // ⚠️ REORDERED 2026-09-11 to 'Relace' — see console/lib/provider-pin.ts for the per-upstream timings.
+  assert.equal(body.provider.only[0], 'Relace', 'the pin leads with Relace');
 });
 
 test('⚠️⚠️ …and the FALLBACK attempt is still a cheap LIST, so "never single" holds', async () => {
@@ -163,14 +213,30 @@ test('⚠️⚠️ ACUVO_PROVIDER_ORDER still wins, and an explicit empty string
 
 test('⚠️ every pinned model names providers that are plausible for it, and pro never names a flash-only one', () => {
   /**
-   * The specific mistake this whole file exists for: pro's endpoint list and
-   * flash's overlap only at GMICloud. StreamLake and Baidu are flash-only, so
-   * neither may appear under pro.
+   * ── 🚨 CORRECTED 2026-08-27 — StreamLake WAS ON THIS EXCLUSION LIST, WRONGLY
+   *
+   * This test used to assert `StreamLake` does not serve pro, alongside
+   * `Baidu`, `DigitalOcean` and `DeepInfra`. That premise was FALSE: checked
+   * against the live OpenRouter endpoint feed the same day, StreamLake DOES
+   * serve `deepseek-v4-pro-0813`, at $1.1154/$3.3462/$0.0372 — it is in fact
+   * pro's second-cheapest reachable endpoint, and `PROVIDER_PIN_BY_MODEL[PRO]`
+   * now pins it there deliberately (`['DeepSeek', 'StreamLake', 'GMICloud']`).
+   * Also `DeepInfra` is no longer flash-EXCLUSIVE either way — flash's own pin
+   * moved onto it in the same repin, so it could never again anchor a
+   * "flash-only" claim.
+   *
+   * ⭐ The real fact the two boards' overlap supports is narrower: `Baidu` and
+   * `DigitalOcean` are the two names that are still flash-only on the live
+   * feed and never appear under pro. StreamLake is inverted below — asserted
+   * PRESENT, not absent — with this history kept rather than deleted, because
+   * this file's whole point is catching exactly this class of mistake.
    */
   const proPins = PROVIDER_PIN_BY_MODEL[PRO];
-  for (const flashOnly of ['StreamLake', 'Baidu', 'DigitalOcean', 'DeepInfra']) {
+  for (const flashOnly of ['Baidu', 'DigitalOcean']) {
     assert.equal(proPins.includes(flashOnly), false, `${flashOnly} does not serve pro`);
   }
+  assert.ok(proPins.includes('StreamLake'),
+    'StreamLake DOES serve pro on the live feed ($1.1154/$3.3462/$0.0372) — the old exclusion was wrong');
   // And every entry in the table is a non-empty list of non-empty strings.
   for (const [model, order] of Object.entries(PROVIDER_PIN_BY_MODEL)) {
     assert.ok(Array.isArray(order) && order.length > 0, `${model} has an empty pin, which is the same as none`);
@@ -199,23 +265,59 @@ test('⭐ the reviewer\'s model is pinned too — it is a real call and a real b
  *      for as long as nobody looked.
  *
  *   2. THE TWO TABLES DRIFT. `MODEL_PRICES[m].provider` names the endpoint the
- *      MARGIN MATH IS QUOTED FROM; `PROVIDER_PIN_BY_MODEL[m][0]` names the
+ *      COST MATH IS QUOTED FROM; `PROVIDER_PIN_BY_MODEL[m][0]` names the
  *      endpoint we actually ASK FOR. They are the same fact written in two
  *      files, and this package's own history is what happens when they
- *      disagree: the "pro costs 11.2x flash" figure was measured on GMICloud
- *      while the plan was priced against DeepSeek's endpoint, and the true
- *      answer turned out to be the OPPOSITE — pinned pro's cached reads are
- *      ~3.8x CHEAPER than flash's.
+ *      disagree: the "pro costs 11.2x flash" figure was measured on one
+ *      endpoint while the plan was priced against another, and the true answer
+ *      turned out to be the OPPOSITE.
  *
- * ⚠️ A WRONG PRICE HERE IS NOT A REPORTING BUG. `lib/plan.mjs` is what the
- * A$29 / 95M-token ladder is derived from. If the quoted endpoint is not the
- * requested one, every margin number in the business is measured against a
- * price we never pay.
+ * ⚠️ A WRONG PRICE HERE IS NOT A REPORTING BUG. `lib/plan.mjs` is what the plan
+ * ladder is derived from. If the quoted endpoint is not the requested one,
+ * every cost number downstream is measured against a price we never pay.
  */
 test('💰 every priced model is pinned — an unpinned model routes to the dearest endpoint in silence', () => {
   const unpinned = Object.keys(MODEL_PRICES).filter((m) => !PROVIDER_PIN_BY_MODEL[m]);
   assert.deepEqual(unpinned, [],
     `these models are priced but not pinned, so we pay whatever OpenRouter picks: ${unpinned.join(', ')}`);
+});
+
+/**
+ * ── 🚨⭐⭐⭐ THE GUARD ABOVE ASSERTED CORRECTLY AND LOOKED AT THE WRONG SET ──
+ *
+ * 2026-09-18. `deepseek/deepseek-chat` is in `buildChain`'s fallback list and
+ * was in NO pin table, so every chain-fallback round routed wherever OpenRouter
+ * chose — a cold prefix cache, on the exact axis Roman's CLI-done item 1 names:
+ * *"caching solid even when models switch"*. Observed on a live run finishing at
+ * **cache 17%**.
+ *
+ * ⚠️ THE TEST ABOVE COULD NEVER HAVE CAUGHT IT. Its universe is `MODEL_PRICES`,
+ * and this model is routed-to without being priced. Nothing asserted wrong;
+ * the SCOPE was wrong — `feedback_a_guards_universe_matters_as_much_as_its_assertion`
+ * records five failures of exactly this shape in one day, none of them by
+ * asserting something false.
+ *
+ * ⭐ SO THE UNIVERSE IS NOW "EVERY MODEL WE CAN ACTUALLY SEND A REQUEST TO",
+ * which is the chain, not the price list. A fallback added to `buildChain`
+ * without a pin now fails here instead of showing up as a bigger bill.
+ */
+test('🚨 every model the CHAIN can reach is pinned — the set the price list cannot see', () => {
+  // The real chain for the model we actually ship, with no env overrides.
+  const chain = buildChain(PINNED_PRIMARY_MODEL, {});
+  assert.ok(chain.length >= 2, 'the chain collapsed to one model — "never single" is broken');
+
+  const unpinned = chain.filter((m) => !PROVIDER_PIN_BY_MODEL[m]);
+  assert.deepEqual(unpinned, [],
+    `these models are reachable by chain fallback but carry no provider pin, so their rounds `
+    + `route wherever OpenRouter chooses and start from a COLD prefix cache: ${unpinned.join(', ')}`);
+});
+
+test('⚠️ and that guard is looking at a real chain, not an empty one', () => {
+  // A completeness check over an empty chain passes for the wrong reason.
+  const chain = buildChain(PINNED_PRIMARY_MODEL, {});
+  assert.ok(chain.includes(PINNED_PRIMARY_MODEL), 'the primary is not in its own chain');
+  assert.ok(chain.includes('deepseek/deepseek-chat'),
+    'the fallback this guard was written for left the chain — re-derive the guard, do not delete it');
 });
 
 test('💰 the price we quote is the endpoint we ask for FIRST', () => {
@@ -224,7 +326,7 @@ test('💰 the price we quote is the endpoint we ask for FIRST', () => {
     if (!order) continue;   // the test above owns that failure; don't report it twice
     assert.equal(order[0], price.provider,
       `${model}: plan.mjs prices it on ${price.provider} but model.mjs asks for ${order[0]} first — `
-      + 'the margin math is quoting an endpoint we do not request');
+      + 'the cost math is quoting an endpoint we do not request');
   }
 });
 

@@ -101,22 +101,46 @@ test('⚠️⚠️ it does NOT mutate the live result object', () => {
   assert.equal(live.diff.length, 20_000, 'the live result was truncated in place');
 });
 
-test('⚠️ when the size is STRUCTURAL, it says so rather than lying', () => {
+test('⚠️ when the size is STRUCTURAL, the rows SURVIVE and the loss announces itself', () => {
   /**
-   * Ten thousand tiny rows cannot be reduced by trimming prose. The honest
-   * answer is a short note that still parses — not a broken object, and not a
-   * confident-looking partial set the model believes is complete.
+   * ── ⚠️⚠️ THIS TEST USED TO PIN THE OPPOSITE, AND THE OPPOSITE WAS THE BUG ───
+   *
+   * It asserted `!Array.isArray(o.rows)` — that a structurally-large result be
+   * reduced to a note with NO DATA — on the reasoning that a partial set is "a
+   * confident-looking partial set the model believes is complete".
+   *
+   * ⭐ THE CONCERN WAS RIGHT AND THE REMEDY WAS BACKWARDS. Measured 2026-08-24
+   * across all 69 dispatched tools: **11 of them returned that note and nothing
+   * else** — `review_code`, `gh_issue`, `gh_pr`, `gh_run`, `read_log`,
+   * `inspect_db`, `sample_db_rows`, `list_engines`, `list_sessions`,
+   * `web_search`, `read_table`. Every one handed the model 245 characters of
+   * apology in place of its answer, and the model's only move was to call again
+   * and receive the same 245 characters. That is worse than the unparseable
+   * JSON this module was written to fix: broken JSON at least carried the data.
+   *
+   * ⭐ A partial set stops being a lie the moment it SAYS it is partial. The
+   * array now ends in a marker element carrying the exact number dropped and the
+   * argument that fetches the rest, so nothing is presented as complete and the
+   * payload still arrives. Both halves are asserted below.
    */
   const out = stringifyForModel(
     { ok: true, total: 4_000, rows: Array.from({ length: 4_000 }, (_, i) => ({ i, v: i * 2 })) },
     MAX,
   );
-  assert.ok(parses(out), 'the structural fallback is not valid JSON either');
+  assert.ok(parses(out), 'an oversized reply must still be valid JSON');
+  assert.ok(out.length <= MAX, `rendered ${out.length} characters against a ${MAX} ceiling`);
   const o = JSON.parse(out);
-  assert.equal(o._truncated, true);
   assert.equal(o.total, 4_000, 'the scalar that describes the result was dropped with it');
-  assert.match(o._note, /narrower slice/, 'the model is not told how to get the rest');
-  assert.ok(!Array.isArray(o.rows), 'a partial row set is being presented as the result');
+  assert.ok(Array.isArray(o.rows), 'the payload was thrown away instead of trimmed');
+  assert.ok(o.rows.length > 20, `only ${o.rows.length} of 4000 rows survived`);
+
+  const marker = o.rows[o.rows.length - 1];
+  assert.equal(typeof marker, 'string', 'the truncation must be announced inside the array it happened to');
+  assert.match(marker, /more omitted/);
+  assert.match(marker, /offset|limit|narrower path/, 'the model is not told how to get the rest');
+  const kept = o.rows.length - 1;
+  const dropped = Number(String(marker).match(/\d+/)[0]);
+  assert.equal(kept + dropped, 4_000, 'the announced count is not the truth');
 });
 
 test('⭐ REACH — the default branch actually calls it', () => {

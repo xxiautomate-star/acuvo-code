@@ -26,10 +26,28 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import fs from 'node:fs';
+import path from 'node:path';
+
+/** This test file's own directory — the package root is one level up. */
+const HERE = path.dirname(fileURLToPath(import.meta.url));
 
 import { runSession, renderEvent, toolResultText } from '../lib/turn.mjs';
 import { executeToolCall } from '../lib/tools.mjs';
-import { MAX_ROUNDS_LIMIT } from '../lib/cli-args.mjs';
+import { MAX_ROUNDS_LIMIT_BUDGETED, MAX_ROUNDS_LIMIT } from '../lib/cli-args.mjs';
+
+/**
+ * ⚠️⚠️ SIGNED OUT, STATED EXPLICITLY. `...process.env, ACUVO_HOME: SIGNED_OUT_HOME` carries the developer's
+ * real HOME, so on a machine where somebody has run `acuvo --login` the spawned
+ * CLI gets a REAL account — and a signed-in run routes to our production gateway,
+ * deliberately outranking the loopback test seam. The child then talks to
+ * production instead of the stub and the assertions fail for a reason that has
+ * nothing to do with the code.
+ *
+ * Measured 2026-08-23: seventeen tests went red the moment the product was used
+ * for the first time.
+ */
+const SIGNED_OUT_HOME = join(tmpdir(), `acuvo-signed-out-${process.pid}`);
 
 const CLI = fileURLToPath(new URL('../bin/acuvo.mjs', import.meta.url));
 
@@ -48,7 +66,7 @@ const EXIT_USAGE = 64;
  * is a test that means nothing in CI.
  */
 function runCli(args, { key = null, cwd = undefined, env: extra = {} } = {}) {
-  const env = { ...process.env, NO_COLOR: '1', ...extra };
+  const env = { ...process.env, ACUVO_HOME: SIGNED_OUT_HOME, NO_COLOR: '1', ...extra };
   /**
    * ── ⚠️⚠️ EMPTY, NOT DELETED — `delete` IS DEFEATED BY OUR OWN .env LOADER ──
    *
@@ -272,11 +290,33 @@ test('⭐⭐ the DISPATCHER reaches designPass, not the bare seePage underneath 
   const dir = tempWorkspace();
   try {
     writeFileSync(join(dir, 'index.html'), '<!doctype html><title>t</title><h1>hi</h1>');
-    // ⚠️ RENDER_AUDIT_URL is deliberately absent: designPass never throws and
-    // still produces a verdict on the honest-refusal path, so this needs no
-    // network and no configured endpoint.
+    /**
+     * ── 🚨💰⭐⭐⭐ THE COMMENT HERE WAS TRUE AND STOPPED BEING TRUE (2026-09-20) ─
+     *
+     * It read: *"RENDER_AUDIT_URL is deliberately absent: designPass never
+     * throws and still produces a verdict on the honest-refusal path, so this
+     * needs no network and no configured endpoint."* That was correct when
+     * `renderVia` had ONE way in. It has had two since 2026-08-26 — unset
+     * `RENDER_AUDIT_URL` now falls through to `accountRoute`, which reads
+     * `~/.acuvo/credentials.json` and posts to `<gateway>/render` **on the
+     * signed-in user's plan.**
+     *
+     * ⚠️ SO THIS TEST MADE A LIVE, BILLED RENDER CALL whenever it was run
+     * outside `scripts/test.mjs`, which sets a throwaway `ACUVO_HOME` and is the
+     * only reason it was ever green. `node --test test/wiring-reach.test.mjs` —
+     * the invocation anyone reaches for to run one file — signs in as the
+     * developer and spends their money. I ran it that way twice before noticing,
+     * on a machine under a hard zero-spend rule.
+     *
+     * ⭐ THE ISOLATION IS NOW THE TEST'S OWN, not the runner's. `media.mjs`
+     * already argues this exact point about `home` ("every test, for the reason
+     * `renderVia`'s header records"); depending on an ambient env var for it is
+     * the second place holding one opinion.
+     */
     const before = process.env.RENDER_AUDIT_URL;
+    const beforeHome = process.env.ACUVO_HOME;
     delete process.env.RENDER_AUDIT_URL;
+    process.env.ACUVO_HOME = join(dir, '.throwaway-home');
     try {
       const record = await executeToolCall(
         { id: 'c1', function: { name: 'see_page', arguments: JSON.stringify({ path: 'index.html' }) } },
@@ -291,8 +331,51 @@ test('⭐⭐ the DISPATCHER reaches designPass, not the bare seePage underneath 
       assert.ok(!/no problems|all clear/i.test(record.result.verdict), `a failed look claimed the page was fine: ${record.result.verdict}`);
     } finally {
       if (before !== undefined) process.env.RENDER_AUDIT_URL = before;
+      if (beforeHome === undefined) delete process.env.ACUVO_HOME;
+      else process.env.ACUVO_HOME = beforeHome;
     }
   } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('⭐⭐⭐ the EYES\' verdict reaches the model as PROSE, not as escaped JSON', () => {
+  /**
+   * ⚠️⚠️ MEASURED 2026-08-28, BEFORE THE `case 'read_image'` EXISTED. `see_page`
+   * was fixed for exactly this and `read_image` never was: a 191-character
+   * verdict arrived as **352 characters of escaped JSON**, the observation
+   * behind `\"` escapes among eight fields the model has no use for.
+   *
+   * ⭐ THIS IS WHAT MAKES THE SECOND MODEL WORTH PAYING FOR. Qwen can see and
+   * DeepSeek cannot; the whole value is DeepSeek acting on what Qwen saw. A
+   * verdict computed and then handed over as JSON is the design-loop failure
+   * this file already records once.
+   */
+  const verdict = 'The heading reads "Wecome" — misspelled. The button overlaps the hero by ~12px.';
+  const text = toolResultText({
+    name: 'read_image',
+    result: {
+      ok: true, path: 'shot.png', text: verdict, model: 'qwen/qwen3.7-flash',
+      mime: 'image/png', width: 1280, height: 800, approxImageTokens: 1365, costUsd: 0.000234,
+    },
+  });
+
+  assert.ok(!text.startsWith('{'), 'the model is being handed raw JSON again');
+  assert.ok(text.includes(verdict), 'the verdict itself must survive intact');
+  assert.ok(!text.includes('\\"'), 'the quotes are escaped — this is JSON wearing a costume');
+  // ⭐ The path and size are named: "overlaps by 12px" is not actionable without them.
+  assert.ok(text.includes('shot.png') && text.includes('1280x800'));
+  // ⚠️ And the bookkeeping fields must NOT be spent on prompt tokens.
+  for (const noise of ['costUsd', 'approxImageTokens', 'mime', 'qwen/qwen3.7-flash']) {
+    assert.ok(!text.includes(noise), `${noise} is bookkeeping, not something the model can act on`);
+  }
+
+  /**
+   * ⚠️ AND AN ABSTENTION MUST ARRIVE AS ONE. `vision.mjs` refuses rather than
+   * guessing precisely so the model never describes an image it did not see;
+   * a refusal rendered as anything softer would re-open that hole.
+   */
+  const failed = toolResultText({ name: 'read_image', result: { ok: false, error: 'no OPENROUTER_API_KEY, so there is nothing that can look at this image.' } });
+  assert.match(failed, /^read_image failed: /);
+  assert.ok(!failed.includes('LOOKED AT'), 'a failed look must not read as a look');
 });
 
 test('⭐⭐ toolResultText hands the model the VERDICT, not 205 tokens of escaped JSON', () => {
@@ -466,11 +549,34 @@ test('⭐⭐ every new flag appears in --help', () => {
   }
 });
 
+/**
+ * ── ⚠️ `OPENROUTER_API_KEY` LEFT THIS LIST 2026-08-25 ───────────────────────
+ *
+ * The rest of the list is unchanged and the test's purpose is intact: a media
+ * variable that is READ but never DOCUMENTED is what made four tools look
+ * broken, and that is still guarded.
+ *
+ * ⭐ THE SUPPLIER KEY IS A DIFFERENT KIND OF VARIABLE AND WAS THE ODD ONE OUT
+ * HERE ALL ALONG. The Modal entries tell an owner how to turn on a capability
+ * they have paid for. The supplier key told everyone reading `--help` the name
+ * of who we buy from and how to route around us — on the surface people read
+ * while deciding whether to subscribe. Roman: *"we don't want to advertise our
+ * business mechanics — we might as well say: don't pay for us, just pay directly
+ * to these guys."*
+ *
+ * ⚠️ NOT DELETED, MOVED. `lib/model.mjs` still reads the variable, and both
+ * `--doctor` and `--whoami` report the credential actually in force — so someone
+ * who has it exported still finds out, from a diagnostic they chose to run.
+ */
 test('⭐ --help documents EVERY media variable, including MODAL_VIDEO_SECRET', () => {
   const r = runCli(['--help'], { key: null });
-  for (const v of ['OPENROUTER_API_KEY', 'RENDER_AUDIT_URL', 'MODAL_TTS_URL', 'MODAL_TRANSCRIBE_URL', 'MODAL_PRESS_URL', 'MODAL_VIDEO_SECRET']) {
+  for (const v of ['RENDER_AUDIT_URL', 'MODAL_TTS_URL', 'MODAL_TRANSCRIBE_URL', 'MODAL_PRESS_URL', 'MODAL_VIDEO_SECRET']) {
     assert.match(r.stdout, new RegExp(v), `--help never mentions ${v} — its absence is what made four tools look broken`);
   }
+  assert.ok(
+    !/OPENROUTER_API_KEY/.test(r.stdout),
+    'the supplier key is back in --help, which is a shipped surface read by people deciding whether to pay us',
+  );
 });
 
 test('⚠️ the usage line is a command a user would actually type', () => {
@@ -490,10 +596,41 @@ test('⭐ the round ceiling was raised now that the history is bounded', () => {
   assert.ok(!/between 1 and/.test(r.stderr ?? ''), `--max-rounds ${MAX_ROUNDS_LIMIT} was rejected by the parser`);
 });
 
-test('⚠️ one past the ceiling is still refused, with the real number in the sentence', () => {
-  const r = runCli(['--max-rounds', String(MAX_ROUNDS_LIMIT + 1), 'x'], { key: null });
-  assert.strictEqual(r.status, EXIT_USAGE);
-  assert.match(r.stderr, new RegExp(`between 1 and ${MAX_ROUNDS_LIMIT}`));
+test('⚠️ one past the ceiling is still refused — but WHICH ceiling now depends on the budget', () => {
+  /**
+   * ── ⚠️ UPDATED 2026-08-23 WHEN THE LONG-HORIZON CEILING WAS LIFTED ─────
+   *
+   * This asserted a single fixed number, and the number moved for a reason:
+   * money bounds every ordinary run (`DEFAULT_BUDGET_USD`, checked before each
+   * round), so the round count is a runaway backstop rather than the thing
+   * protecting the bill.
+   *
+   * ⭐ THE TEST'S INTENT IS PRESERVED EXACTLY — a number past the ceiling is
+   * still refused, and the refusal still names the real number. What changed is
+   * that there are now two ceilings, and the low one is the case that actually
+   * needs defending: `--budget none` removes the money governor, so rounds are
+   * all that is left.
+   */
+  const budgeted = runCli(['--max-rounds', String(MAX_ROUNDS_LIMIT_BUDGETED + 1), 'x'], { key: null });
+  assert.strictEqual(budgeted.status, EXIT_USAGE);
+  assert.match(budgeted.stderr, new RegExp(`between 1 and ${MAX_ROUNDS_LIMIT_BUDGETED}`));
+
+  // With the money governor removed, the OLD low ceiling still applies.
+  const unbudgeted = runCli(['--max-rounds', String(MAX_ROUNDS_LIMIT + 1), '--budget', 'none', 'x'], { key: null });
+  assert.strictEqual(unbudgeted.status, EXIT_USAGE);
+  assert.match(unbudgeted.stderr, /needs a budget to bound it/);
+});
+
+test('⭐⭐⭐ a long-horizon run is allowed when a budget is bounding it', () => {
+  /**
+   * Roman, 2026-08-23: *"yes we need long horizon ceiling gone."* Measured the
+   * same day: a bench task ran every round it was given and stopped at
+   * `round-cap` rather than failing — a cap that is REACHED is a cap deciding
+   * the outcome.
+   */
+  const r = runCli(['--max-rounds', '500', '--dir', tempWorkspace(), 'x'], { key: null });
+  assert.ok(!/between 1 and/.test(r.stderr ?? ''), '--max-rounds 500 was rejected by the parser');
+  assert.ok(!/needs a budget/.test(r.stderr ?? ''), 'the default budget should already bound this');
 });
 
 /* ─────────────────────────────────────────────────────────────────────────────
@@ -619,29 +756,53 @@ test('every module is reachable from a real entry point, or is named here', asyn
   /** Known-unwired, deliberately. Shrink this list; never grow it silently. */
   const KNOWN_UNWIRED = new Set([
     /**
-     * ⚠️ `lib/localize.mjs` — QUEUED, NOT PARKED, and the distinction is the
-     * whole reason this entry has a date on it.
+     * ⚠️⚠️ `lib/localize.mjs` — **DECIDED, NOT QUEUED** (2026-09-19).
+     * The reasoning, the measurements and the one experiment that reopens it
+     * are in `DECISION-localize-files.md`; the instrument is
+     * `scripts/zz-what-localize-would-cost.mjs`. Read those, not this comment,
+     * before changing anything — a summary here would be the second copy that
+     * goes stale, which is exactly how the paragraph this one replaced rotted.
      *
-     * It is finished and tested, it already exports `localizeToolSchemas()` and
-     * `runLocalizeTool()` — i.e. it was BUILT to be registered — and its own
-     * header measures file-level localization at **15-17x over a no-file
-     * baseline**, larger than any prompt, model or harness change measured on
-     * this codebase. So this is not a low-value module; it is a high-value one
-     * that stopped one step short.
+     * ⚠️ THE PARAGRAPH THAT SAT HERE FOR A MONTH WAS STALE IN ITS LOAD-BEARING
+     * CLAUSE. It said registering this means deciding whether the tool dispatch
+     * layer may make model calls, *"which no other verb does"* — and
+     * `lib/tools.mjs`'s own `delegate` case says verbatim *"`delegate` IS THE
+     * FIRST TOOL THAT NEEDS TO CALL A MODEL ITSELF"*, with the whole seam built
+     * out: injection point, credential refusal, parent-budget remainder,
+     * charge-back on failure. So the architecture question was answered before
+     * the excuse was written, and it held up a decision for a month on a
+     * reason that had already expired.
      *
-     * ⭐ WHAT IT IS ACTUALLY BLOCKED ON, precisely: `localize()` requires an
-     * `askImpl`, and the module imports no model client ON PURPOSE — its header
-     * calls that "the spend guard, and it is structural… the absence of any way
-     * to make a call at all". Registering it in `tools.mjs` therefore means
-     * deciding whether the TOOL DISPATCH LAYER may make model calls, which no
-     * other verb does. That is an architecture decision, not a wiring task, and
-     * guessing it here would put an unbudgeted model call inside a tool.
-     *
-     * ⚠️ ADDED 2026-08-20. If this line is still here without that decision
-     * having been made, the excuse has expired — exactly as `mcp-defaults.mjs`
-     * below did.
+     * ⭐ THE ACTUAL REASON IT IS NOT WIRED, in one line: the module's 15-17x is
+     * measured **over a no-file baseline**, and this CLI is not at one — it
+     * already ships a task-seeded repo map and eleven file-finding verbs on
+     * every task. The schema is cheap (741 B/round, 1.2-2.6%); the price is
+     * 3-4 model calls a call; the increment over what already ships is
+     * unmeasured. That is a measurement to make, not a wiring task to do.
      */
     'lib/localize.mjs',
+    /**
+     * ⭐⭐ `lib/repo-index.mjs` WAS HERE FOR ONE DAY AND IS NOT ANY MORE
+     * (2026-08-25). Its excuse was a genuine open decision, not a shrug: the
+     * two candidate call sites — feeding `repo-map.mjs`'s ranker, or backing a
+     * lookup verb — differ in whether index output reaches the PROMPT, and
+     * anything that reaches the prompt must be byte-identical per tree or it
+     * breaks prefix caching (production 51.2%, our largest cost lever).
+     *
+     * ⭐ IT WAS RESOLVED WITH MEASUREMENTS, BOTH ON THIS TREE. The ranker side
+     * changes NOTHING here — 0 of 143 symbol lists differ between the map and
+     * the index — so it would have bought ~530ms of wall clock while putting a
+     * mutable on-disk cache into the causal chain of the prompt head. The
+     * lookup side cannot touch a prefix at all (a tool result lands in the
+     * tail) and fixes a measured wrong answer: `search_text` returns total=0,
+     * scanCapped=true for `rankFiles`, `byCodePoint` and `openIndex`, all three
+     * defined in `lib/`. So it is `find_symbol` in `lib/tools.mjs`.
+     *
+     * ⚠️ AND THE WIRING FOUND A COLLISION NOTHING HAD CHECKED: the module
+     * declared `find_definition`, which `lib/lsp.mjs` already declares
+     * unconditionally. Registering it would have put two schemas with different
+     * parameter shapes under one name. Renamed to `find_symbol`.
+     */
     /**
      * ⭐ `lib/mcp-defaults.mjs` WAS HERE AND IS NOT ANY MORE (2026-08-14). Its
      * excuse read "a curated MCP server catalogue with no surface that offers
@@ -655,8 +816,34 @@ test('every module is reachable from a real entry point, or is named here', asyn
      * a live statement that the module is unreachable, which is how a shipped
      * capability stays invisible. Shrinking this list is the point of it.
      */
-    // The in-memory executor: built for "one loop, two clients", and the second
-    // client is the console, which does not run this binary.
+    /**
+     * ── ⚠️⚠️ `lib/memory-workspace.mjs` — THE EXCUSE IS AN INTENTION, NOT A FACT
+     *    (re-measured 2026-09-19) ────────────────────────────────────────────
+     *
+     * The line here read: *"built for 'one loop, two clients', and the second
+     * client is the console, which does not run this binary."* The first half is
+     * true and the second half is doing work it has not earned — it reads as
+     * "reached by the other client", and **it is reached by neither.**
+     *
+     * MEASURED: `grep -rn createMemoryExecutor console/` finds exactly ONE hit,
+     * and it is a COMMENT in `console/lib/plan-drift.test.ts` saying the
+     * `exports` map was added on 2026-08-16 *"so the console could reach
+     * `createMemoryExecutor`"*. `could` is the whole finding. The console
+     * genuinely imports `acuvo-code/lib/plan.mjs` through that map, so the
+     * channel works — nothing has ever imported the executor through it.
+     *
+     * ⭐ SO THIS IS A REAL DARK CAPABILITY AND ITS OWNER IS NOT THIS PACKAGE.
+     * The CLI cannot use it — the CLI has a disk; that is what
+     * `createLocalExecutor` is for — so no amount of work in `acuvo-code/`
+     * closes it. The one line that would is a `createMemoryExecutor` call in
+     * the console's builder, which is where `turn.mjs`'s write→run→fix loop
+     * would meet the generated-files Map. That is a `console/` change and this
+     * guard must not be read as permission to fake it from here.
+     *
+     * ⚠️ AND DO NOT "FIX" IT BY IMPORTING IT SOMEWHERE IN `lib/` TO TURN THIS
+     * ENTRY GREEN. An import with no caller is this allowlist's own failure mode
+     * with the evidence removed.
+     */
     'lib/memory-workspace.mjs',
   ]);
 
@@ -673,4 +860,80 @@ test('every module is reachable from a real entry point, or is named here', asyn
   for (const f of KNOWN_UNWIRED) {
     assert.equal(seen.has(f), false, `${f} is in KNOWN_UNWIRED but is now reachable — remove it from the list`);
   }
+});
+
+/**
+ * ── ⭐⭐⭐ THE GENERALISED VERSION OF THE `localize_files` FINDING ────────────
+ *
+ * The module walk above catches a FILE nothing imports. It cannot catch the
+ * thing that actually costs us: a module that IS imported, or is not, and holds
+ * a finished **tool-schema factory that `tools.mjs` never pushes.** That is what
+ * `lib/localize.mjs` was for a month — 834 lines, 27 green tests, a schema and a
+ * dispatcher both built for registration, offered to no model.
+ *
+ * ⭐ AUDITED 2026-09-19 across every `*ToolSchemas` export in `lib/`: **43
+ * factories, 42 registered, one not** — and the one was `localizeToolSchemas`.
+ * So this shape is rare, which is exactly why it needs a guard rather than a
+ * habit: a second one would go unnoticed for the same month.
+ *
+ * ⚠️ THE ESCAPE IS A WRITTEN DECISION, NOT AN ALLOWLIST ENTRY HERE. A name in a
+ * `Set` in a test file is the shape of excuse that rotted for `localize.mjs`
+ * (its stated blocker was already false when it was written) and for
+ * `memory-workspace.mjs` (its excuse names a second client that has never
+ * imported it). A `DECISION-*.md` has to carry the reasoning where a reader will
+ * find it, and it is the artifact this repo already uses for exactly this —
+ * `DECISION-provider-pins-2026-09-18.md`, `DECISION-the-first-fallback-is-unpinned.md`.
+ *
+ * ⚠️ IT MATCHES ON THE FACTORY NAME, not on prose about it. A decision document
+ * that discusses the module in general terms without naming the export it is
+ * declining to register has not said which capability it decided about.
+ */
+test('⭐⭐ every *ToolSchemas factory is registered, or a DECISION-*.md says why not', () => {
+  const pkg = path.join(HERE, '..');
+  const libDir = path.join(pkg, 'lib');
+
+  const declared = new Set();
+  for (const f of fs.readdirSync(libDir).filter((n) => n.endsWith('.mjs'))) {
+    const src = fs.readFileSync(path.join(libDir, f), 'utf8');
+    for (const m of src.matchAll(/^export function (\w*ToolSchemas)\b/gm)) declared.add(m[1]);
+  }
+  assert.ok(declared.size > 20, `only found ${declared.size} tool-schema factories — the scan is broken, not the code`);
+
+  const toolsSrc = fs.readFileSync(path.join(libDir, 'tools.mjs'), 'utf8');
+  /**
+   * ⚠️ "REGISTERED" MEANS NAMED IN A `TOOL_SCHEMAS.push`, and the push may span
+   * many lines — several of these are `push(...xToolSchemas({ … }))` with a
+   * multi-line argument object. A one-line regex over the push call reported
+   * FIVE false positives on the first run of this audit (`avatar`, `imageEdit`,
+   * `media`, `mcp`, `localize`) and four of them were correctly wired. So the
+   * test is "does tools.mjs reference the factory at all, outside its import" —
+   * a factory this file never mentions cannot be pushed by it.
+   *
+   * ⚠️ `mcpToolSchemas` IS THE ONE THAT IS NOT IN `tools.mjs` AND IS STILL
+   * REACHED: `turn.mjs` calls it per-run, because MCP verbs depend on which
+   * servers connected and so cannot be a module-load-time constant. That is why
+   * the whole package is scanned for the call, not just `tools.mjs`.
+   */
+  const everySrc = ['lib', 'bin']
+    .flatMap((d) => fs.readdirSync(path.join(pkg, d)).filter((n) => n.endsWith('.mjs')).map((n) => `${d}/${n}`))
+    .map((rel) => ({ rel, src: fs.readFileSync(path.join(pkg, rel), 'utf8') }));
+
+  const decisions = fs.readdirSync(pkg).filter((n) => /^DECISION-.*\.md$/.test(n))
+    .map((n) => fs.readFileSync(path.join(pkg, n), 'utf8')).join('\n');
+
+  const undecided = [];
+  for (const name of declared) {
+    const called = everySrc.some(({ rel, src }) => {
+      if (rel.endsWith(`/${name.replace(/ToolSchemas$/, '')}.mjs`)) return false;
+      // The declaring module itself does not count, nor does a bare import line.
+      return new RegExp(`${name}\\s*\\(`).test(src.replace(new RegExp(`^import .*${name}.*$`, 'gm'), ''));
+    });
+    if (called) continue;
+    if (new RegExp(`\\b${name}\\b`).test(decisions)) continue;
+    undecided.push(name);
+  }
+
+  assert.deepEqual(undecided, [],
+    `these tool-schema factories are offered to no model and no DECISION-*.md names them: ${undecided.join(', ')}. `
+    + 'Register it, or write the decision down — a dark capability nobody has decided about is this repo\'s most repeated defect.');
 });

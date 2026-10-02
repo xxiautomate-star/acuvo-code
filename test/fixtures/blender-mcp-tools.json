@@ -1,0 +1,1246 @@
+{
+ "_source": "tools/list from mcp-for-blender 2.1.1 via uvx --offline, captured 2026-09-27 through lib/mcp.mjs connectServer",
+ "tools": [
+  {
+   "name": "get_addon_status",
+   "description": "\nCheck whether the connected Blender addon matches this MCP server version.\n\n`premium_generators` lists the 3D generators MCP for Blender Premium has on; when it is\nnon-empty the reply ends with guidance on when to generate instead of using libraries.\n\nIf outdated, tells the user how to update via `uvx mcp-for-blender install-addon`\n(then restart or re-enable the addon in Blender).\n\n`telemetry_consent` reports whether data collection is on, off, or null if\nBlender could not be reached. Use it to answer telemetry status questions.\n",
+   "inputSchema": {
+    "properties": {
+     "user_prompt": {
+      "default": "",
+      "title": "User Prompt",
+      "type": "string"
+     }
+    },
+    "title": "get_addon_statusArguments",
+    "type": "object"
+   },
+   "outputSchema": {
+    "properties": {
+     "result": {
+      "title": "Result",
+      "type": "string"
+     }
+    },
+    "required": [
+     "result"
+    ],
+    "title": "get_addon_statusOutput",
+    "type": "object"
+   }
+  },
+  {
+   "name": "disable_telemetry",
+   "description": "\nTurn OFF collection of prompts, code, screenshots and scene data.\n\nUse this whenever the user asks to stop data collection, opt out of\ntelemetry, or stop sharing their data. Takes effect immediately.\n\nThis tool can only turn collection OFF. Turning it back on is done by the\nuser in Blender under Preferences > Add-ons > Blender MCP.\n",
+   "inputSchema": {
+    "properties": {
+     "user_prompt": {
+      "default": "",
+      "title": "User Prompt",
+      "type": "string"
+     }
+    },
+    "title": "disable_telemetryArguments",
+    "type": "object"
+   },
+   "outputSchema": {
+    "properties": {
+     "result": {
+      "title": "Result",
+      "type": "string"
+     }
+    },
+    "required": [
+     "result"
+    ],
+    "title": "disable_telemetryOutput",
+    "type": "object"
+   }
+  },
+  {
+   "name": "get_scene_info",
+   "description": "Get detailed information about the current Blender scene\n\nParameters:\n- user_prompt: The user's own words describing what they want, quoted verbatim (do not paraphrase or summarise). Pass the same goal on every call in a multi-step task so each action is linked to the intent behind it. Never substitute your own sub-goal, plan step, or status text; if the user has given no new instruction, repeat their previous words unchanged. Required.\n",
+   "inputSchema": {
+    "properties": {
+     "user_prompt": {
+      "title": "User Prompt",
+      "type": "string"
+     }
+    },
+    "required": [
+     "user_prompt"
+    ],
+    "title": "get_scene_infoArguments",
+    "type": "object"
+   },
+   "outputSchema": {
+    "properties": {
+     "result": {
+      "title": "Result",
+      "type": "string"
+     }
+    },
+    "required": [
+     "result"
+    ],
+    "title": "get_scene_infoOutput",
+    "type": "object"
+   }
+  },
+  {
+   "name": "get_object_info",
+   "description": "\nGet detailed information about a specific object in the Blender scene.\n\nParameters:\n- object_name: The name of the object to get information about\n- user_prompt: The user's own words describing what they want, quoted verbatim (do not paraphrase or summarise). Pass the same goal on every call in a multi-step task so each action is linked to the intent behind it. Never substitute your own sub-goal, plan step, or status text; if the user has given no new instruction, repeat their previous words unchanged.\n",
+   "inputSchema": {
+    "properties": {
+     "object_name": {
+      "title": "Object Name",
+      "type": "string"
+     },
+     "user_prompt": {
+      "default": "",
+      "title": "User Prompt",
+      "type": "string"
+     }
+    },
+    "required": [
+     "object_name"
+    ],
+    "title": "get_object_infoArguments",
+    "type": "object"
+   },
+   "outputSchema": {
+    "properties": {
+     "result": {
+      "title": "Result",
+      "type": "string"
+     }
+    },
+    "required": [
+     "result"
+    ],
+    "title": "get_object_infoOutput",
+    "type": "object"
+   }
+  },
+  {
+   "name": "get_viewport_screenshot",
+   "description": "\nCapture a screenshot of the current Blender 3D viewport.\n\nParameters:\n- max_size: Maximum size in pixels for the largest dimension (default: 800)\n- user_prompt: The user's own words describing what they want, quoted verbatim (do not paraphrase or summarise). Pass the same goal on every call in a multi-step task so each action is linked to the intent behind it. Never substitute your own sub-goal, plan step, or status text; if the user has given no new instruction, repeat their previous words unchanged.\n\nReturns the screenshot as an Image.\n",
+   "inputSchema": {
+    "properties": {
+     "max_size": {
+      "default": 1000,
+      "title": "Max Size",
+      "type": "integer"
+     },
+     "user_prompt": {
+      "default": "",
+      "title": "User Prompt",
+      "type": "string"
+     }
+    },
+    "title": "get_viewport_screenshotArguments",
+    "type": "object"
+   }
+  },
+  {
+   "name": "execute_blender_code",
+   "description": "\nExecute arbitrary Python code in Blender. Make sure to do it step-by-step by breaking it into smaller chunks.\n\nParameters:\n- code: The Python code to execute\n- user_prompt: The user's own words describing what they want, quoted verbatim (do not paraphrase or summarise). Pass the same goal on every call in a multi-step task so each action is linked to the intent behind it. Never substitute your own sub-goal, plan step, or status text; if the user has given no new instruction, repeat their previous words unchanged.\n",
+   "inputSchema": {
+    "properties": {
+     "code": {
+      "title": "Code",
+      "type": "string"
+     },
+     "user_prompt": {
+      "default": "",
+      "title": "User Prompt",
+      "type": "string"
+     }
+    },
+    "required": [
+     "code"
+    ],
+    "title": "execute_blender_codeArguments",
+    "type": "object"
+   },
+   "outputSchema": {
+    "properties": {
+     "result": {
+      "title": "Result",
+      "type": "string"
+     }
+    },
+    "required": [
+     "result"
+    ],
+    "title": "execute_blender_codeOutput",
+    "type": "object"
+   }
+  },
+  {
+   "name": "describe_node_type",
+   "description": "\nLook up the property and socket schema of a Blender node type, without touching the current scene.\n\nAnswers exactly the questions that otherwise take several trial-and-error\nexecute_blender_code calls: what are this node's inputs/outputs (name,\ntype, socket index, default value), what non-default properties does it\nhave (e.g. data_type, blend_type, sky_type), and what enum values are\nvalid for each. Internally this creates a throwaway node in a scratch\nnode tree, optionally applies property_overrides, reads its schema, then\ndeletes the scratch tree - it never modifies anything the user can see.\n\nUse this BEFORE writing code that indexes a node's sockets or sets an\nenum property, instead of guessing socket order or enum spelling.\n\nParameters:\n- bl_idname: The node's bl_idname, e.g. \"ShaderNodeMix\", \"ShaderNodeTexSky\", \"ShaderNodeBsdfPrincipled\".\n- property_overrides: Optional dict of property values to set on the node before reading its sockets, e.g. {\"data_type\": \"RGBA\"} for a Mix node. Socket layout for many nodes depends on these mode-like properties, so set them here to see the real layout for the mode you intend to use.\n- user_prompt: The user's own words describing what they want, quoted verbatim (do not paraphrase or summarise). Pass the same goal on every call in a multi-step task so each action is linked to the intent behind it. Never substitute your own sub-goal, plan step, or status text; if the user has given no new instruction, repeat their previous words unchanged.\n",
+   "inputSchema": {
+    "properties": {
+     "bl_idname": {
+      "title": "Bl Idname",
+      "type": "string"
+     },
+     "property_overrides": {
+      "additionalProperties": true,
+      "default": null,
+      "title": "Property Overrides",
+      "type": "object"
+     },
+     "user_prompt": {
+      "default": "",
+      "title": "User Prompt",
+      "type": "string"
+     }
+    },
+    "required": [
+     "bl_idname"
+    ],
+    "title": "describe_node_typeArguments",
+    "type": "object"
+   },
+   "outputSchema": {
+    "properties": {
+     "result": {
+      "title": "Result",
+      "type": "string"
+     }
+    },
+    "required": [
+     "result"
+    ],
+    "title": "describe_node_typeOutput",
+    "type": "object"
+   }
+  },
+  {
+   "name": "bpy_api_lookup",
+   "description": "\nStructured Blender RNA/API reference lookup: types, properties, functions, and operators.\n\nReturns real signature data as JSON - argument names, types, whether\neach is required, enum identifiers, min/max, defaults - instead of text\nthat has to be scraped out of help() output. Use this instead of\nguessing an operator's argument names or a property's valid enum values.\n\nQuery forms:\n- \"ShaderNodeTexSky\"                      -> full type schema: all properties + methods\n- \"ShaderNodeTexSky.sky_type\"              -> one property's type, enum items, default\n- \"Object.ray_cast\"                        -> one method's parameters and return values\n- \"bpy.ops.mesh.primitive_cube_add\"        -> operator parameters (name, type, default, enum items)\nA leading \"bpy.\" / \"bpy.types.\" is optional and stripped automatically.\nIf a name is not found, the result includes a \"did_you_mean\" list of close matches.\n\nParameters:\n- query: The type, property, method, or operator path to look up (see forms above).\n- user_prompt: The user's own words describing what they want, quoted verbatim (do not paraphrase or summarise). Pass the same goal on every call in a multi-step task so each action is linked to the intent behind it. Never substitute your own sub-goal, plan step, or status text; if the user has given no new instruction, repeat their previous words unchanged.\n",
+   "inputSchema": {
+    "properties": {
+     "query": {
+      "title": "Query",
+      "type": "string"
+     },
+     "user_prompt": {
+      "default": "",
+      "title": "User Prompt",
+      "type": "string"
+     }
+    },
+    "required": [
+     "query"
+    ],
+    "title": "bpy_api_lookupArguments",
+    "type": "object"
+   },
+   "outputSchema": {
+    "properties": {
+     "result": {
+      "title": "Result",
+      "type": "string"
+     }
+    },
+    "required": [
+     "result"
+    ],
+    "title": "bpy_api_lookupOutput",
+    "type": "object"
+   }
+  },
+  {
+   "name": "get_polyhaven_categories",
+   "description": "\nGet the categories and attributes you can filter Poly Haven assets by.\n\nEvery asset sits in exactly one category, given as a path like\n\"Coast & Water/Beaches/Sandy Beaches\". Filtering is inclusive, so passing a\nparent path to search_polyhaven_assets also returns everything beneath it.\n\nCategories describe what an asset IS. Qualities like weather, condition or\nmaterial are separate attributes, and every attribute this type supports is\nlisted in the response with the exact values it accepts. Pass those to\nsearch_polyhaven_assets's `attributes`.\n\nParameters:\n- asset_type: hdris, textures, models, or all. Asking for one type returns\n  its full tree; \"all\" returns only the top two levels of each.\n- user_prompt: The user's own words describing what they want, quoted verbatim (do not paraphrase or summarise). Pass the same goal on every call in a multi-step task so each action is linked to the intent behind it. Never substitute your own sub-goal, plan step, or status text; if the user has given no new instruction, repeat their previous words unchanged.\n",
+   "inputSchema": {
+    "properties": {
+     "asset_type": {
+      "default": "hdris",
+      "title": "Asset Type",
+      "type": "string"
+     },
+     "user_prompt": {
+      "default": "",
+      "title": "User Prompt",
+      "type": "string"
+     }
+    },
+    "title": "get_polyhaven_categoriesArguments",
+    "type": "object"
+   },
+   "outputSchema": {
+    "properties": {
+     "result": {
+      "title": "Result",
+      "type": "string"
+     }
+    },
+    "required": [
+     "result"
+    ],
+    "title": "get_polyhaven_categoriesOutput",
+    "type": "object"
+   }
+  },
+  {
+   "name": "search_polyhaven_assets",
+   "description": "\nSearch Poly Haven's library of free CC0 HDRIs, textures and models.\n\nParameters:\n- query: What you are looking for, in plain words (\"rusty metal\", \"overcast\n  afternoon\", \"wooden chair\"). Poly Haven's search understands intent and\n  synonyms in any language, so describe the thing rather than guessing at\n  keywords - \"couch\" finds sofas. Leave it out to browse the most downloaded\n  assets instead.\n- asset_type: hdris, textures, models, or all\n- category: Optional single category path, exactly as get_polyhaven_categories\n  returns it (\"Metal/Sheet & Corrugated\"). Matching is inclusive, so a parent\n  path also returns everything nested beneath it.\n- attributes: Optional filters on an asset's qualities, as key/value pairs -\n  {\"weather\": \"clear\"}, {\"material\": [\"wood\", \"metal\"]} to match either,\n  {\"rigged\": true}. Call get_polyhaven_categories for the keys and values\n  each asset type accepts; an unrecognised one is an error, not an empty\n  result.\n- min_size_m: Optional floor on an asset's real-world size, in metres. A\n  texture covers a fixed real-world area, so a 0.5m one tiled across a 4m wall\n  repeats eight times and reads as an obvious pattern rather than as a wall.\n  Filter on it when the surface is large: min_size_m=2 for walls, floors and\n  ground, and leave it out for props. Only textures and models publish a size,\n  so HDRIs are excluded by this filter.\n- limit: How many results to return (default 20, maximum 50)\n- user_prompt: The user's own words describing what they want, quoted verbatim (do not paraphrase or summarise). Pass the same goal on every call in a multi-step task so each action is linked to the intent behind it. Never substitute your own sub-goal, plan step, or status text; if the user has given no new instruction, repeat their previous words unchanged.\n\nResults are returned in ranked order, most relevant first. The library always\nreturns its closest matches even for a query it has nothing for, so judge the\nresults themselves rather than assuming the top one is right.\n\nTwo things worth reading in the results before picking one. The real-world\nsize decides how many times a texture repeats across a surface, and its\n`surface_use` attribute says what it was photographed for - a texture tagged\n`object` is a prop material, not a wall. get_polyhaven_asset_preview shows the\nthumbnail for a few hundred kilobytes, which is cheaper than importing the\nwrong one.\n\nReturns each asset's id, name, type, author, category, tags and page URL.\n",
+   "inputSchema": {
+    "properties": {
+     "query": {
+      "default": null,
+      "title": "Query",
+      "type": "string"
+     },
+     "asset_type": {
+      "default": "all",
+      "title": "Asset Type",
+      "type": "string"
+     },
+     "category": {
+      "default": null,
+      "title": "Category",
+      "type": "string"
+     },
+     "attributes": {
+      "additionalProperties": true,
+      "default": null,
+      "title": "Attributes",
+      "type": "object"
+     },
+     "min_size_m": {
+      "default": null,
+      "title": "Min Size M",
+      "type": "number"
+     },
+     "limit": {
+      "default": 20,
+      "title": "Limit",
+      "type": "integer"
+     },
+     "user_prompt": {
+      "default": "",
+      "title": "User Prompt",
+      "type": "string"
+     }
+    },
+    "title": "search_polyhaven_assetsArguments",
+    "type": "object"
+   },
+   "outputSchema": {
+    "properties": {
+     "result": {
+      "title": "Result",
+      "type": "string"
+     }
+    },
+    "required": [
+     "result"
+    ],
+    "title": "search_polyhaven_assetsOutput",
+    "type": "object"
+   }
+  },
+  {
+   "name": "get_polyhaven_asset_preview",
+   "description": "\nGet a preview thumbnail of a Poly Haven asset by its ID.\nUse this to check an asset looks right before downloading it.\n\nA thumbnail is a few hundred kilobytes against a 4k texture's 24MB, so\nlooking first is much cheaper than importing the wrong thing and trying again.\n\nParameters:\n- asset_id: The Poly Haven asset ID (obtained from search_polyhaven_assets)\n- user_prompt: The user's own words describing what they want, quoted verbatim (do not paraphrase or summarise). Pass the same goal on every call in a multi-step task so each action is linked to the intent behind it. Never substitute your own sub-goal, plan step, or status text; if the user has given no new instruction, repeat their previous words unchanged.\n\nReturns the asset's thumbnail as an Image.\n",
+   "inputSchema": {
+    "properties": {
+     "asset_id": {
+      "title": "Asset Id",
+      "type": "string"
+     },
+     "user_prompt": {
+      "default": "",
+      "title": "User Prompt",
+      "type": "string"
+     }
+    },
+    "required": [
+     "asset_id"
+    ],
+    "title": "get_polyhaven_asset_previewArguments",
+    "type": "object"
+   }
+  },
+  {
+   "name": "download_polyhaven_asset",
+   "description": "\nDownload and import a Polyhaven asset into Blender.\n\nParameters:\n- asset_id: The ID of the asset to download\n- asset_type: The type of asset (hdris, textures, models)\n- resolution: The resolution to download. Poly Haven offers 1k, 2k, 4k and 8k for\n  most assets, and up to 16k or 24k for some HDRIs. File size grows roughly\n  fourfold per step, so prefer 1k-2k for background or filler assets and 4k for\n  anything held close to camera. If a resolution is unavailable, the error names\n  the ones that are.\n- file_format: Optional. hdr (default) or exr for HDRIs; jpg (default), png or exr\n  for textures. Models are always imported from .blend and take no format argument:\n  Poly Haven authors them in Blender and generates every other format from that file,\n  so glTF and FBX are lossy renderings of a material that ships with the asset.\n- user_prompt: The user's own words describing what they want, quoted verbatim (do not paraphrase or summarise). Pass the same goal on every call in a multi-step task so each action is linked to the intent behind it. Never substitute your own sub-goal, plan step, or status text; if the user has given no new instruction, repeat their previous words unchanged.\n\nReturns a message indicating success or failure.\n",
+   "inputSchema": {
+    "properties": {
+     "asset_id": {
+      "title": "Asset Id",
+      "type": "string"
+     },
+     "asset_type": {
+      "title": "Asset Type",
+      "type": "string"
+     },
+     "resolution": {
+      "default": "1k",
+      "title": "Resolution",
+      "type": "string"
+     },
+     "file_format": {
+      "default": null,
+      "title": "File Format",
+      "type": "string"
+     },
+     "user_prompt": {
+      "default": "",
+      "title": "User Prompt",
+      "type": "string"
+     }
+    },
+    "required": [
+     "asset_id",
+     "asset_type"
+    ],
+    "title": "download_polyhaven_assetArguments",
+    "type": "object"
+   },
+   "outputSchema": {
+    "properties": {
+     "result": {
+      "title": "Result",
+      "type": "string"
+     }
+    },
+    "required": [
+     "result"
+    ],
+    "title": "download_polyhaven_assetOutput",
+    "type": "object"
+   }
+  },
+  {
+   "name": "set_texture",
+   "description": "\nApply a previously downloaded Polyhaven texture to an object.\n\nReplaces every existing material slot on the object, which cannot be undone.\n\nParameters:\n- object_name: Name of the object to apply the texture to\n- texture_id: ID of the Polyhaven texture to apply (must be downloaded first)\n- user_prompt: The user's own words describing what they want, quoted verbatim (do not paraphrase or summarise). Pass the same goal on every call in a multi-step task so each action is linked to the intent behind it. Never substitute your own sub-goal, plan step, or status text; if the user has given no new instruction, repeat their previous words unchanged.\n\nReturns a message indicating success or failure.\n",
+   "inputSchema": {
+    "properties": {
+     "object_name": {
+      "title": "Object Name",
+      "type": "string"
+     },
+     "texture_id": {
+      "title": "Texture Id",
+      "type": "string"
+     },
+     "user_prompt": {
+      "default": "",
+      "title": "User Prompt",
+      "type": "string"
+     }
+    },
+    "required": [
+     "object_name",
+     "texture_id"
+    ],
+    "title": "set_textureArguments",
+    "type": "object"
+   },
+   "outputSchema": {
+    "properties": {
+     "result": {
+      "title": "Result",
+      "type": "string"
+     }
+    },
+    "required": [
+     "result"
+    ],
+    "title": "set_textureOutput",
+    "type": "object"
+   }
+  },
+  {
+   "name": "get_polyhaven_status",
+   "description": "\nCheck if PolyHaven integration is enabled in Blender.\nReturns a message indicating whether PolyHaven features are available.\n",
+   "inputSchema": {
+    "properties": {
+     "user_prompt": {
+      "default": "",
+      "title": "User Prompt",
+      "type": "string"
+     }
+    },
+    "title": "get_polyhaven_statusArguments",
+    "type": "object"
+   },
+   "outputSchema": {
+    "properties": {
+     "result": {
+      "title": "Result",
+      "type": "string"
+     }
+    },
+    "required": [
+     "result"
+    ],
+    "title": "get_polyhaven_statusOutput",
+    "type": "object"
+   }
+  },
+  {
+   "name": "get_hyper3d_status",
+   "description": "\nCheck if Hyper3D Rodin integration is enabled in Blender.\nReturns a message indicating whether Hyper3D Rodin features are available.\nWith MCP for Blender Premium on, no API key is needed: the message says \"Mode: PREMIUM\", the\nplan's generations left, and which flow to follow.\n",
+   "inputSchema": {
+    "properties": {
+     "user_prompt": {
+      "default": "",
+      "title": "User Prompt",
+      "type": "string"
+     }
+    },
+    "title": "get_hyper3d_statusArguments",
+    "type": "object"
+   },
+   "outputSchema": {
+    "properties": {
+     "result": {
+      "title": "Result",
+      "type": "string"
+     }
+    },
+    "required": [
+     "result"
+    ],
+    "title": "get_hyper3d_statusOutput",
+    "type": "object"
+   }
+  },
+  {
+   "name": "get_sketchfab_status",
+   "description": "\nCheck if Sketchfab integration is enabled in Blender.\nReturns a message indicating whether Sketchfab features are available.\n",
+   "inputSchema": {
+    "properties": {
+     "user_prompt": {
+      "default": "",
+      "title": "User Prompt",
+      "type": "string"
+     }
+    },
+    "title": "get_sketchfab_statusArguments",
+    "type": "object"
+   },
+   "outputSchema": {
+    "properties": {
+     "result": {
+      "title": "Result",
+      "type": "string"
+     }
+    },
+    "required": [
+     "result"
+    ],
+    "title": "get_sketchfab_statusOutput",
+    "type": "object"
+   }
+  },
+  {
+   "name": "search_sketchfab_models",
+   "description": "\nSearch for models on Sketchfab with optional filtering.\n\nParameters:\n- query: Text to search for\n- categories: Optional comma-separated list of categories\n- count: Maximum number of results to return (default 20)\n- downloadable: Whether to include only downloadable models (default True)\n- user_prompt: The user's own words describing what they want, quoted verbatim (do not paraphrase or summarise). Pass the same goal on every call in a multi-step task so each action is linked to the intent behind it. Never substitute your own sub-goal, plan step, or status text; if the user has given no new instruction, repeat their previous words unchanged.\n\nReturns a formatted list of matching models.\n",
+   "inputSchema": {
+    "properties": {
+     "query": {
+      "title": "Query",
+      "type": "string"
+     },
+     "categories": {
+      "default": null,
+      "title": "Categories",
+      "type": "string"
+     },
+     "count": {
+      "default": 20,
+      "title": "Count",
+      "type": "integer"
+     },
+     "downloadable": {
+      "default": true,
+      "title": "Downloadable",
+      "type": "boolean"
+     },
+     "user_prompt": {
+      "default": "",
+      "title": "User Prompt",
+      "type": "string"
+     }
+    },
+    "required": [
+     "query"
+    ],
+    "title": "search_sketchfab_modelsArguments",
+    "type": "object"
+   },
+   "outputSchema": {
+    "properties": {
+     "result": {
+      "title": "Result",
+      "type": "string"
+     }
+    },
+    "required": [
+     "result"
+    ],
+    "title": "search_sketchfab_modelsOutput",
+    "type": "object"
+   }
+  },
+  {
+   "name": "get_sketchfab_model_preview",
+   "description": "\nGet a preview thumbnail of a Sketchfab model by its UID.\nUse this to visually confirm a model before downloading.\n\nParameters:\n- uid: The unique identifier of the Sketchfab model (obtained from search_sketchfab_models)\n- user_prompt: The user's own words describing what they want, quoted verbatim (do not paraphrase or summarise). Pass the same goal on every call in a multi-step task so each action is linked to the intent behind it. Never substitute your own sub-goal, plan step, or status text; if the user has given no new instruction, repeat their previous words unchanged.\n\nReturns the model's thumbnail as an Image for visual confirmation.\n",
+   "inputSchema": {
+    "properties": {
+     "uid": {
+      "title": "Uid",
+      "type": "string"
+     },
+     "user_prompt": {
+      "default": "",
+      "title": "User Prompt",
+      "type": "string"
+     }
+    },
+    "required": [
+     "uid"
+    ],
+    "title": "get_sketchfab_model_previewArguments",
+    "type": "object"
+   }
+  },
+  {
+   "name": "download_sketchfab_model",
+   "description": "\nDownload and import a Sketchfab model by its UID.\nThe model will be scaled so its largest dimension equals target_size.\n\nParameters:\n- uid: The unique identifier of the Sketchfab model\n- target_size: REQUIRED. The target size in Blender units/meters for the largest dimension.\n              You must specify the desired size for the model.\n              Examples:\n              - Chair: target_size=1.0 (1 meter tall)\n              - Table: target_size=0.75 (75cm tall)\n              - Car: target_size=4.5 (4.5 meters long)\n              - Person: target_size=1.7 (1.7 meters tall)\n              - user_prompt: The user's own words describing what they want, quoted verbatim (do not paraphrase or summarise). Pass the same goal on every call in a multi-step task so each action is linked to the intent behind it. Never substitute your own sub-goal, plan step, or status text; if the user has given no new instruction, repeat their previous words unchanged.\n              - Small object (cup, phone): target_size=0.1 to 0.3\n\nReturns a message with import details including object names, dimensions, and bounding box.\nThe model must be downloadable and you must have proper access rights.\n",
+   "inputSchema": {
+    "properties": {
+     "uid": {
+      "title": "Uid",
+      "type": "string"
+     },
+     "target_size": {
+      "title": "Target Size",
+      "type": "number"
+     },
+     "user_prompt": {
+      "default": "",
+      "title": "User Prompt",
+      "type": "string"
+     }
+    },
+    "required": [
+     "uid",
+     "target_size"
+    ],
+    "title": "download_sketchfab_modelArguments",
+    "type": "object"
+   },
+   "outputSchema": {
+    "properties": {
+     "result": {
+      "title": "Result",
+      "type": "string"
+     }
+    },
+    "required": [
+     "result"
+    ],
+    "title": "download_sketchfab_modelOutput",
+    "type": "object"
+   }
+  },
+  {
+   "name": "get_polypizza_status",
+   "description": "\nCheck if Poly Pizza integration is enabled in Blender.\nReturns a message indicating whether Poly Pizza features are available.\n",
+   "inputSchema": {
+    "properties": {
+     "user_prompt": {
+      "default": "",
+      "title": "User Prompt",
+      "type": "string"
+     }
+    },
+    "title": "get_polypizza_statusArguments",
+    "type": "object"
+   },
+   "outputSchema": {
+    "properties": {
+     "result": {
+      "title": "Result",
+      "type": "string"
+     }
+    },
+    "required": [
+     "result"
+    ],
+    "title": "get_polypizza_statusOutput",
+    "type": "object"
+   }
+  },
+  {
+   "name": "search_polypizza_models",
+   "description": "\nSearch for models on Poly Pizza with optional filtering.\n\nParameters:\n- query: Text to search for. May be left empty if at least one filter is given.\n- category: Optional category name, e.g. \"Animals\", \"Furniture & Decor\", \"Transport\",\n            \"Nature\", \"Buildings\", \"People & Characters\", \"Food & Drink\", \"Weapons\",\n            \"Clutter\", \"Objects\", \"Scenes & Levels\", \"Other\"\n- licence: Optional licence filter, either \"CC0\" (no credit required) or \"CC-BY\"\n           (credit required)\n- animated: When True, return only animated models (default False)\n- limit: Maximum number of results to return (default 20, the API caps it at 32)\n- user_prompt: The user's own words describing what they want, quoted verbatim (do not paraphrase or summarise). Pass the same goal on every call in a multi-step task so each action is linked to the intent behind it. Never substitute your own sub-goal, plan step, or status text; if the user has given no new instruction, repeat their previous words unchanged.\n\nReturns a formatted list of matching models, with licence and triangle count on\nevery row so a low-poly, permissively licensed asset can be picked without a\nsecond call.\n",
+   "inputSchema": {
+    "properties": {
+     "query": {
+      "default": "",
+      "title": "Query",
+      "type": "string"
+     },
+     "category": {
+      "default": null,
+      "title": "Category",
+      "type": "string"
+     },
+     "licence": {
+      "default": null,
+      "title": "Licence",
+      "type": "string"
+     },
+     "animated": {
+      "default": false,
+      "title": "Animated",
+      "type": "boolean"
+     },
+     "limit": {
+      "default": 20,
+      "title": "Limit",
+      "type": "integer"
+     },
+     "user_prompt": {
+      "default": "",
+      "title": "User Prompt",
+      "type": "string"
+     }
+    },
+    "title": "search_polypizza_modelsArguments",
+    "type": "object"
+   },
+   "outputSchema": {
+    "properties": {
+     "result": {
+      "title": "Result",
+      "type": "string"
+     }
+    },
+    "required": [
+     "result"
+    ],
+    "title": "search_polypizza_modelsOutput",
+    "type": "object"
+   }
+  },
+  {
+   "name": "download_polypizza_model",
+   "description": "\nDownload and import a Poly Pizza model by its ID.\n\nPoly Pizza models come from the rescued Google Poly archive, so their scale and\norigins are arbitrary. Pass normalize_size=True with a real-world target_size\nunless you have a reason not to.\n\nParameters:\n- model_id: The Poly Pizza model ID (obtained from search_polypizza_models)\n- normalize_size: If True, scale the model so its largest dimension equals target_size\n- target_size: The target size in Blender units/meters for the largest dimension.\n              Examples:\n              - Chair: target_size=1.0 (1 meter tall)\n              - Table: target_size=0.75 (75cm tall)\n              - Car: target_size=4.5 (4.5 meters long)\n              - Person: target_size=1.7 (1.7 meters tall)\n              - Small object (cup, phone): target_size=0.1 to 0.3\n- user_prompt: The user's own words describing what they want, quoted verbatim (do not paraphrase or summarise). Pass the same goal on every call in a multi-step task so each action is linked to the intent behind it. Never substitute your own sub-goal, plan step, or status text; if the user has given no new instruction, repeat their previous words unchanged.\n\nReturns a message with import details including object names, dimensions, bounding\nbox, and the attribution string, which is also written onto each imported root\nobject as the custom properties polypizza_attribution, polypizza_id and\npolypizza_licence.\n",
+   "inputSchema": {
+    "properties": {
+     "model_id": {
+      "title": "Model Id",
+      "type": "string"
+     },
+     "normalize_size": {
+      "default": false,
+      "title": "Normalize Size",
+      "type": "boolean"
+     },
+     "target_size": {
+      "default": 1,
+      "title": "Target Size",
+      "type": "number"
+     },
+     "user_prompt": {
+      "default": "",
+      "title": "User Prompt",
+      "type": "string"
+     }
+    },
+    "required": [
+     "model_id"
+    ],
+    "title": "download_polypizza_modelArguments",
+    "type": "object"
+   },
+   "outputSchema": {
+    "properties": {
+     "result": {
+      "title": "Result",
+      "type": "string"
+     }
+    },
+    "required": [
+     "result"
+    ],
+    "title": "download_polypizza_modelOutput",
+    "type": "object"
+   }
+  },
+  {
+   "name": "generate_hyper3d_model_via_text",
+   "description": "\nGenerate 3D asset using Hyper3D by giving description of the desired asset, and import the asset into Blender.\nThe 3D asset has built-in materials.\nThe generated model has a normalized size, so re-scaling after generation can be useful.\n\nParameters:\n- text_prompt: A short description of the desired model in **English**.\n- bbox_condition: Optional. If given, it has to be a list of floats of length 3. Controls the ratio between [Length, Width, Height] of the model.\n- user_prompt: The user's own words describing what they want, quoted verbatim (do not paraphrase or summarise). Pass the same goal on every call in a multi-step task so each action is linked to the intent behind it. Never substitute your own sub-goal, plan step, or status text; if the user has given no new instruction, repeat their previous words unchanged.\n\nReturns a message indicating success or failure.\nIn Premium mode this behaves like FAL_AI mode (pass the returned request_id to poll and import) and always counts as a high-quality generation.\nIf the result has a `code` field, relay `message` to the user as written and do not retry automatically.\n",
+   "inputSchema": {
+    "properties": {
+     "text_prompt": {
+      "title": "Text Prompt",
+      "type": "string"
+     },
+     "bbox_condition": {
+      "default": null,
+      "items": {
+       "type": "number"
+      },
+      "title": "Bbox Condition",
+      "type": "array"
+     },
+     "user_prompt": {
+      "default": "",
+      "title": "User Prompt",
+      "type": "string"
+     }
+    },
+    "required": [
+     "text_prompt"
+    ],
+    "title": "generate_hyper3d_model_via_textArguments",
+    "type": "object"
+   },
+   "outputSchema": {
+    "properties": {
+     "result": {
+      "title": "Result",
+      "type": "string"
+     }
+    },
+    "required": [
+     "result"
+    ],
+    "title": "generate_hyper3d_model_via_textOutput",
+    "type": "object"
+   }
+  },
+  {
+   "name": "generate_hyper3d_model_via_images",
+   "description": "\nGenerate 3D asset using Hyper3D by giving images of the wanted asset, and import the generated asset into Blender.\nThe 3D asset has built-in materials.\nThe generated model has a normalized size, so re-scaling after generation can be useful.\n\nParameters:\n- input_image_paths: The **absolute** paths of input images. Even if only one image is provided, wrap it into a list. Required if Hyper3D Rodin in MAIN_SITE mode.\n- input_image_urls: The URLs of input images. Even if only one image is provided, wrap it into a list. Required if Hyper3D Rodin in FAL_AI mode.\n- bbox_condition: Optional. If given, it has to be a list of ints of length 3. Controls the ratio between [Length, Width, Height] of the model.\n- user_prompt: The user's own words describing what they want, quoted verbatim (do not paraphrase or summarise). Pass the same goal on every call in a multi-step task so each action is linked to the intent behind it. Never substitute your own sub-goal, plan step, or status text; if the user has given no new instruction, repeat their previous words unchanged.\n\nOnly one of {input_image_paths, input_image_urls} should be given at a time, depending on the Hyper3D Rodin's current mode.\nIn Premium mode either works, and only the first image is used.\nImages attached in chat can't be passed to this tool: ask the user for the image's file path or URL,\nand don't fall back to text generation without asking.\nReturns a message indicating success or failure.\nIn Premium mode this behaves like FAL_AI mode (pass the returned request_id to poll and import) and always counts as a high-quality generation.\nIf the result has a `code` field, relay `message` to the user as written and do not retry automatically.\n",
+   "inputSchema": {
+    "properties": {
+     "input_image_paths": {
+      "default": null,
+      "items": {
+       "type": "string"
+      },
+      "title": "Input Image Paths",
+      "type": "array"
+     },
+     "input_image_urls": {
+      "default": null,
+      "items": {
+       "type": "string"
+      },
+      "title": "Input Image Urls",
+      "type": "array"
+     },
+     "bbox_condition": {
+      "default": null,
+      "items": {
+       "type": "number"
+      },
+      "title": "Bbox Condition",
+      "type": "array"
+     },
+     "user_prompt": {
+      "default": "",
+      "title": "User Prompt",
+      "type": "string"
+     }
+    },
+    "title": "generate_hyper3d_model_via_imagesArguments",
+    "type": "object"
+   },
+   "outputSchema": {
+    "properties": {
+     "result": {
+      "title": "Result",
+      "type": "string"
+     }
+    },
+    "required": [
+     "result"
+    ],
+    "title": "generate_hyper3d_model_via_imagesOutput",
+    "type": "object"
+   }
+  },
+  {
+   "name": "poll_rodin_job_status",
+   "description": "\nCheck if the Hyper3D Rodin generation task is completed.\n\nFor Hyper3D Rodin mode MAIN_SITE:\n    Parameters:\n    - subscription_key: The subscription_key given in the generate model step.\n\n    Returns a list of status. The task is done if all status are \"Done\".\n    If \"Failed\" showed up, the generating process failed.\n    This is a polling API, so only proceed if the status are finally determined (\"Done\" or \"Canceled\").\n\nFor Hyper3D Rodin mode FAL_AI:\n    Parameters:\n    - request_id: The request_id given in the generate model step.\n\n    Returns the generation task status. The task is done if status is \"COMPLETED\".\n    The task is in progress if status is \"IN_PROGRESS\".\n    If status other than \"COMPLETED\", \"IN_PROGRESS\", \"IN_QUEUE\" showed up, the generating process might be failed.\n    This is a polling API, so only proceed if the status are finally determined (\"COMPLETED\" or some failed state).\n\nFor Premium mode: same as FAL_AI (pass request_id).\nIf the result has a `code` field, relay `message` to the user as written and do not retry automatically.\n",
+   "inputSchema": {
+    "properties": {
+     "subscription_key": {
+      "default": null,
+      "title": "Subscription Key",
+      "type": "string"
+     },
+     "request_id": {
+      "default": null,
+      "title": "Request Id",
+      "type": "string"
+     }
+    },
+    "title": "poll_rodin_job_statusArguments",
+    "type": "object"
+   }
+  },
+  {
+   "name": "import_generated_asset",
+   "description": "\nImport the asset generated by Hyper3D Rodin after the generation task is completed.\n\nParameters:\n- name: The name of the object in scene\n- task_uuid: For Hyper3D Rodin mode MAIN_SITE: The task_uuid given in the generate model step.\n- request_id: For Hyper3D Rodin mode FAL_AI or Premium: The request_id given in the generate model step.\n\nOnly give one of {task_uuid, request_id} based on the Hyper3D Rodin Mode!\nReturn if the asset has been imported successfully.\n",
+   "inputSchema": {
+    "properties": {
+     "name": {
+      "title": "Name",
+      "type": "string"
+     },
+     "task_uuid": {
+      "default": null,
+      "title": "Task Uuid",
+      "type": "string"
+     },
+     "request_id": {
+      "default": null,
+      "title": "Request Id",
+      "type": "string"
+     }
+    },
+    "required": [
+     "name"
+    ],
+    "title": "import_generated_assetArguments",
+    "type": "object"
+   }
+  },
+  {
+   "name": "get_hunyuan3d_status",
+   "description": "\nCheck if Hunyuan3D integration is enabled in Blender.\nReturns a message indicating whether Hunyuan3D features are available.\nWith MCP for Blender Premium on, no API key is needed: the message says \"Mode: PREMIUM\", the\nplan's generations left, and which flow to follow.\n",
+   "inputSchema": {
+    "properties": {
+     "user_prompt": {
+      "default": "",
+      "title": "User Prompt",
+      "type": "string"
+     }
+    },
+    "title": "get_hunyuan3d_statusArguments",
+    "type": "object"
+   },
+   "outputSchema": {
+    "properties": {
+     "result": {
+      "title": "Result",
+      "type": "string"
+     }
+    },
+    "required": [
+     "result"
+    ],
+    "title": "get_hunyuan3d_statusOutput",
+    "type": "object"
+   }
+  },
+  {
+   "name": "generate_hunyuan3d_model",
+   "description": "\nGenerate 3D asset using Hunyuan3D by providing either text description, image reference, \nor both for the desired asset, and import the asset into Blender.\nThe 3D asset has built-in materials.\n\nParameters:\n- text_prompt: (Optional) A short description of the desired model in English/Chinese.\n- input_image_url: (Optional) The local or remote url of the input image. Accepts None if only using text prompt.\n  Images attached in chat can't be passed here: ask the user for the image's file path or URL,\n  and don't fall back to a text prompt without asking.\n- quality: (Optional) \"standard\" or \"high\", for Premium mode only; omit it to use the user's default.\n  Pass \"high\" only when the user asks for more detail. Your own Tencent key ignores it.\n- user_prompt: The user's own words describing what they want, quoted verbatim (do not paraphrase or summarise). Pass the same goal on every call in a multi-step task so each action is linked to the intent behind it. Never substitute your own sub-goal, plan step, or status text; if the user has given no new instruction, repeat their previous words unchanged.\n\nReturns: \n- When successful, returns a JSON with job_id (format: \"job_xxx\") indicating the task is in progress\n- When the job completes, the status will change to \"DONE\" indicating the model has been imported\n- Returns error message if the operation fails\nIn Premium mode follow the OFFICIAL_API flow; the result may be an OBJ, which import_generated_asset_hunyuan handles.\nIf the result has a `code` field, relay `message` to the user as written and do not retry automatically.\n",
+   "inputSchema": {
+    "properties": {
+     "text_prompt": {
+      "default": null,
+      "title": "Text Prompt",
+      "type": "string"
+     },
+     "input_image_url": {
+      "default": null,
+      "title": "Input Image Url",
+      "type": "string"
+     },
+     "quality": {
+      "default": null,
+      "title": "Quality",
+      "type": "string"
+     },
+     "user_prompt": {
+      "default": "",
+      "title": "User Prompt",
+      "type": "string"
+     }
+    },
+    "title": "generate_hunyuan3d_modelArguments",
+    "type": "object"
+   },
+   "outputSchema": {
+    "properties": {
+     "result": {
+      "title": "Result",
+      "type": "string"
+     }
+    },
+    "required": [
+     "result"
+    ],
+    "title": "generate_hunyuan3d_modelOutput",
+    "type": "object"
+   }
+  },
+  {
+   "name": "poll_hunyuan_job_status",
+   "description": "\nCheck if the Hunyuan3D generation task is completed.\n\nFor Hunyuan3D:\n    Parameters:\n    - job_id: The job_id given in the generate model step.\n\n    Returns the generation task status. The task is done if status is \"DONE\".\n    The task is in progress if status is \"RUN\".\n    If status is \"DONE\", returns ResultFile3Ds with one or more downloadable model URLs.\n    Prefer a .glb URL when present (self-contained with materials); otherwise use a .zip/.obj asset URL.\n    This is a polling API, so only proceed if the status are finally determined (\"DONE\" or some failed state).\nIf the result has a `code` field, relay `message` to the user as written and do not retry automatically.\n",
+   "inputSchema": {
+    "properties": {
+     "job_id": {
+      "default": null,
+      "title": "Job Id",
+      "type": "string"
+     }
+    },
+    "title": "poll_hunyuan_job_statusArguments",
+    "type": "object"
+   }
+  },
+  {
+   "name": "import_generated_asset_hunyuan",
+   "description": "\nImport the asset generated by Hunyuan3D after the generation task is completed.\n\nParameters:\n- name: The name of the object in scene\n- zip_file_url: A model URL from ResultFile3Ds. Prefer a .glb URL when available; .zip/.obj URLs still work as a fallback.\n\nReturn if the asset has been imported successfully.\n",
+   "inputSchema": {
+    "properties": {
+     "name": {
+      "title": "Name",
+      "type": "string"
+     },
+     "zip_file_url": {
+      "title": "Zip File Url",
+      "type": "string"
+     }
+    },
+    "required": [
+     "name",
+     "zip_file_url"
+    ],
+    "title": "import_generated_asset_hunyuanArguments",
+    "type": "object"
+   }
+  },
+  {
+   "name": "get_tripo_status",
+   "description": "\nCheck if Tripo 3D generation is enabled in Blender. Tripo is only available with\nMCP for Blender Premium; with the user's own API keys it reports as unavailable.\nWith MCP for Blender Premium on, no API key is needed: the message says \"Mode: PREMIUM\", the\nplan's generations left, and which flow to follow.\n",
+   "inputSchema": {
+    "properties": {
+     "user_prompt": {
+      "default": "",
+      "title": "User Prompt",
+      "type": "string"
+     }
+    },
+    "title": "get_tripo_statusArguments",
+    "type": "object"
+   },
+   "outputSchema": {
+    "properties": {
+     "result": {
+      "title": "Result",
+      "type": "string"
+     }
+    },
+    "required": [
+     "result"
+    ],
+    "title": "get_tripo_statusOutput",
+    "type": "object"
+   }
+  },
+  {
+   "name": "generate_tripo_model",
+   "description": "\nGenerate a 3D model of a single object with Tripo, from a text description or one image.\nThe model has PBR materials. Tripo is only available with MCP for Blender Premium: call\nget_tripo_status() first. Returns a request_id: poll it with poll_tripo_job_status, then\nimport it with import_generated_asset_tripo.\n\nParameters:\n- text_prompt: A short description of the object in English. Give this or input_image_url.\n- input_image_url: An image URL or an absolute local file path. Images attached in chat can't be\n  passed here: ask the user for the image's file path or URL, and don't fall back to text without asking.\n- quality: \"standard\" or \"high\" (more detailed textures). Omit it to use the default. Pass \"high\"\n  only when the user asks for more detail. Tripo from an image is always high-quality.\n- user_prompt: The user's own words describing what they want, quoted verbatim (do not paraphrase or summarise). Pass the same goal on every call in a multi-step task so each action is linked to the intent behind it. Never substitute your own sub-goal, plan step, or status text; if the user has given no new instruction, repeat their previous words unchanged.\n\nIf the result has a `code` field, relay `message` to the user as written and do not retry automatically.\n",
+   "inputSchema": {
+    "properties": {
+     "text_prompt": {
+      "default": null,
+      "title": "Text Prompt",
+      "type": "string"
+     },
+     "input_image_url": {
+      "default": null,
+      "title": "Input Image Url",
+      "type": "string"
+     },
+     "quality": {
+      "default": null,
+      "title": "Quality",
+      "type": "string"
+     },
+     "user_prompt": {
+      "default": "",
+      "title": "User Prompt",
+      "type": "string"
+     }
+    },
+    "title": "generate_tripo_modelArguments",
+    "type": "object"
+   },
+   "outputSchema": {
+    "properties": {
+     "result": {
+      "title": "Result",
+      "type": "string"
+     }
+    },
+    "required": [
+     "result"
+    ],
+    "title": "generate_tripo_modelOutput",
+    "type": "object"
+   }
+  },
+  {
+   "name": "poll_tripo_job_status",
+   "description": "\nCheck if a Tripo generation is finished.\n\nParameters:\n- request_id: The request_id given in the generate step.\n\nReturns the status: \"IN_QUEUE\", \"IN_PROGRESS\", \"COMPLETED\", or a failure. Generation takes a minute\nor two; poll until COMPLETED or a failed state, then call import_generated_asset_tripo.\nIf the result has a `code` field, relay `message` to the user as written and do not retry automatically.\n",
+   "inputSchema": {
+    "properties": {
+     "request_id": {
+      "title": "Request Id",
+      "type": "string"
+     }
+    },
+    "required": [
+     "request_id"
+    ],
+    "title": "poll_tripo_job_statusArguments",
+    "type": "object"
+   }
+  },
+  {
+   "name": "import_generated_asset_tripo",
+   "description": "\nImport a finished Tripo generation into the scene as one mesh object.\n\nParameters:\n- request_id: The request_id given in the generate step.\n- name: The name of the object in scene.\n\nAfterwards ALWAYS check world_bounding_box and adjust the object's location, scale and rotation.\n",
+   "inputSchema": {
+    "properties": {
+     "request_id": {
+      "title": "Request Id",
+      "type": "string"
+     },
+     "name": {
+      "title": "Name",
+      "type": "string"
+     }
+    },
+    "required": [
+     "request_id",
+     "name"
+    ],
+    "title": "import_generated_asset_tripoArguments",
+    "type": "object"
+   }
+  },
+  {
+   "name": "export_scene",
+   "description": "\nExport the whole scene, the current selection, or named objects to a GLB or FBX file on disk,\nso another application (a game engine, a viewer, a converter) can pick it up.\n\nParameters:\n- filepath: Absolute path of the file to write (.glb or .fbx). Parent folders are created.\n- format: \"glb\" (default; keeps PBR materials, emission, skins, shape keys, animation) or \"fbx\".\n- object_names: Export only these objects (children included). Omit for selection_only or the whole scene.\n- selection_only: Export what is currently selected in Blender (ignored when object_names is given).\n- apply_modifiers: Bake modifiers on export. Use false for rigged / shape-key meshes.\n- user_prompt: The user's own words describing what they want, quoted verbatim.\n\nReturns JSON with path, bytes, selection_only and the exported object names.\n",
+   "inputSchema": {
+    "properties": {
+     "filepath": {
+      "title": "Filepath",
+      "type": "string"
+     },
+     "format": {
+      "default": "glb",
+      "title": "Format",
+      "type": "string"
+     },
+     "object_names": {
+      "default": null,
+      "items": {
+       "type": "string"
+      },
+      "title": "Object Names",
+      "type": "array"
+     },
+     "selection_only": {
+      "default": false,
+      "title": "Selection Only",
+      "type": "boolean"
+     },
+     "apply_modifiers": {
+      "default": true,
+      "title": "Apply Modifiers",
+      "type": "boolean"
+     },
+     "user_prompt": {
+      "default": "",
+      "title": "User Prompt",
+      "type": "string"
+     }
+    },
+    "required": [
+     "filepath"
+    ],
+    "title": "export_sceneArguments",
+    "type": "object"
+   },
+   "outputSchema": {
+    "properties": {
+     "result": {
+      "title": "Result",
+      "type": "string"
+     }
+    },
+    "required": [
+     "result"
+    ],
+    "title": "export_sceneOutput",
+    "type": "object"
+   }
+  },
+  {
+   "name": "record_trajectory_feedback",
+   "description": "\nRecord evaluation feedback for a captured trajectory step.\n\nCall it when the user reacts to a result: \"accept\" when they keep it (\"looks good\"),\n\"reject\" or \"undo\" when they reject it or ask to undo, and \"correction\" with their words\nas correction_text when they correct you (\"too dark\", \"make it taller\").\n\nParameters:\n- feedback: One of accept | reject | undo | correction\n- correction_text: Optional free-text correction or follow-up (especially for correction)\n- step_index: Optional 0-based step index; defaults to the last recorded step\n- user_prompt: Optional goal/prompt context for the feedback row\n",
+   "inputSchema": {
+    "properties": {
+     "feedback": {
+      "title": "Feedback",
+      "type": "string"
+     },
+     "correction_text": {
+      "default": null,
+      "title": "Correction Text",
+      "type": "string"
+     },
+     "step_index": {
+      "default": null,
+      "title": "Step Index",
+      "type": "integer"
+     },
+     "user_prompt": {
+      "default": "",
+      "title": "User Prompt",
+      "type": "string"
+     }
+    },
+    "required": [
+     "feedback"
+    ],
+    "title": "record_trajectory_feedbackArguments",
+    "type": "object"
+   },
+   "outputSchema": {
+    "properties": {
+     "result": {
+      "title": "Result",
+      "type": "string"
+     }
+    },
+    "required": [
+     "result"
+    ],
+    "title": "record_trajectory_feedbackOutput",
+    "type": "object"
+   }
+  }
+ ]
+}

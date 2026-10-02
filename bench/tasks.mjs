@@ -279,3 +279,41 @@ TASKS.push(INDENT_HANDOFF_TASK);
 // Self-check: `node bench/polyglot-task.mjs` (free, spends nothing).
 import { POLYGLOT_TASK } from './polyglot-task.mjs';
 TASKS.push(POLYGLOT_TASK);
+
+/**
+ * ── ⭐⭐⭐ THE HARD HALF, AND IT WAS IMPORTED BY NOTHING FOR WEEKS ──────────
+ *
+ * `bench/hard-tasks-v2.mjs` is the six hardest tasks in this repository — the
+ * only ones that measure work spanning many files at once — and the ONE LINE
+ * that wires them in existed solely as a comment INSIDE THE FILE IT WOULD WIRE:
+ *
+ *     HOW THE LEAD WIRES THIS IN (one line, in bench/tasks.mjs)
+ *
+ * So `node bench/run.mjs` could not run them, `--only renamewide` answered "no
+ * task matched", and the corpus's own header kept saying we had no evidence
+ * about complex work — while the evidence-gathering apparatus sat finished,
+ * self-checked offline by `test/hard-bench-v2.test.mjs`, and unreachable.
+ *
+ * ⭐ That is this package's signature defect (BUILT AND UNREACHED) aimed at the
+ * instrument we would use to find it. A bench nobody can run is exactly the
+ * same class of thing as a verb nobody is offered.
+ *
+ * ⚠️ TAGGED, BECAUSE THESE SIX COST REAL MONEY AND REAL MINUTES. 67 rounds
+ * against the rest of the corpus's 100-odd, on fixtures up to 18 files. Nothing
+ * is hidden by default — `run.mjs` runs the whole corpus, as a corpus should —
+ * but `--suite core` exists so the cheap sweep is still one flag away, and
+ * `--list` now prints the round total rather than a stale dollar figure.
+ */
+import { HARD_TASKS_V2 } from './hard-tasks-v2.mjs';
+TASKS.push(...HARD_TASKS_V2.map((t) => ({ ...t, suite: 'hard-v2' })));
+
+/**
+ * Which suite a task belongs to. ⚠️ A FUNCTION, not a field every task must
+ * remember to carry: the sixteen tasks above this line have no `suite` key and
+ * adding one to each is sixteen chances to typo a string that decides whether a
+ * task ever runs.
+ */
+export const suiteOf = (task) => task?.suite ?? 'core';
+
+/** Every suite name present in the corpus, in corpus order. */
+export const SUITES = [...new Set(TASKS.map(suiteOf))];

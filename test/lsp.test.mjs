@@ -568,7 +568,16 @@ test('end to end against a real child: handshake, definition, references, symbol
   const refs = await references(root, 'main.ts', 1, 17, { session });
   assert.equal(refs.count, 3);
   assert.equal(refs.truncated, false);
-  assert.equal(refs.note, null);
+  /**
+   * ⚠️ THIS ASSERTED `note === null` AND THAT WAS A SPELLING, NOT A PROPERTY.
+   * The property is "we did not cut this list short". `note` became a channel
+   * for a second, unrelated fact when the project-load gate landed — this
+   * scratch workspace has no tsconfig.json, so `find_references` now correctly
+   * says its answer is scoped to the files the server has been shown (see
+   * `lsp-project-load.test.mjs`). Pinning the field to null made a true warning
+   * look like a regression.
+   */
+  assert.doesNotMatch(String(refs.note ?? ''), /showing \d+ of/, '3 of 3 is not a truncated list');
 
   const syms = await documentSymbols(root, 'main.ts', { session });
   assert.deepEqual(syms.symbols.map((s) => s.name), ['Widget', 'render']);
@@ -670,6 +679,40 @@ test('stopping twice is safe, and stopAllLanguageServers reports what it closed'
   const second = await stopLanguageServer(session);
   assert.equal(second.alreadyStopped, true);
   assert.equal(await stopAllLanguageServers(), 0);
+});
+
+/**
+ * ⚠️⚠️ A SERVER REQUEST THAT ARRIVES AFTER WE CLOSED STDIN MUST NOT CRASH ACUVO.
+ *
+ * `stream.write()` after `end()` does not THROW — it emits `error` on the next
+ * tick, so the `try/catch` around the reply caught nothing and the process died
+ * with an uncaught ERR_STREAM_WRITE_AFTER_END. Seen 2026-09-26 in the full suite
+ * (`lsp-project-load` "list_symbols is NOT gated"): the fake server asked
+ * `window/workDoneProgress/create` while `stopLanguageServer` was closing it.
+ * A real tsserver wrapper does the same, and in the CLI that is a dead run.
+ */
+test('⚠️ a server request after stdin is closed is dropped, not an uncaught crash', async (t) => {
+  const root = ws();
+  let child = null;
+  const session = await startLanguageServer(root, {
+    language: 'typescript',
+    server: fakeServerIn(root, 'normal'),
+    handshakeTimeoutMs: 8_000,
+    spawnImpl: (...args) => { child = realSpawn(...args); return child; },
+  });
+  t.after(() => stopLanguageServer(session));
+  assert.equal(session.ok, true, session.error);
+
+  const crashes = [];
+  const onCrash = (e) => crashes.push(e);
+  process.on('uncaughtException', onCrash);
+  t.after(() => process.off('uncaughtException', onCrash));
+
+  child.stdin.end();
+  child.stdout.emit('data', encodeMessage({ jsonrpc: '2.0', id: 9001, method: 'window/workDoneProgress/create', params: { token: 'late' } }));
+  await new Promise((r) => setTimeout(r, 100));
+  assert.deepEqual(crashes.map((e) => e?.code ?? String(e)), [],
+    'answering a server request on a closed stdin raised an uncaught error — that kills the CLI mid-run');
 });
 
 // ───────────────────────────────────────────────────────────────────────────

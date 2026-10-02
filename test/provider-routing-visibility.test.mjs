@@ -5,16 +5,16 @@
  * is served by **28 upstream endpoints** on OpenRouter; a prompt cache lives on
  * exactly ONE of them. The same 4-round CLI task, n=2 per arm:
  *
- *     unpinned   48.6% hit  $0.002184   |  unpinned   46.7% hit  $0.002217
- *     DeepInfra  73.7% hit  $0.001492   |  DeepInfra  95.8% hit  $0.000910
+ *     unpinned   48.6% hit   |   unpinned   46.7% hit
+ *     pinned     73.7% hit   |   pinned     95.8% hit    (~2.4x cheaper)
  *
  * ⚠️ THE DEFECT IS NOT THE FALLBACK, IT IS THE SILENCE. `allow_fallbacks: true`
  * is deliberate and stays — "never single" is this package's standing rule, and
  * a cheaper request that does not happen is not cheaper. But OpenRouter does NOT
  * reject an `order` list it cannot honour: it treats it as an empty preference
- * and routes at random. Measured: `ACUVO_PROVIDER_ORDER=DeepSeek` 404s when sent
- * alone (the account's data policy excludes it), and inside the real payload it
- * fell back silently and measured **0.0% cached**. Three outcomes, not two —
+ * and routes at random. Measured: a provider name this account's data policy
+ * excludes 404s when sent alone, and inside the real payload it fell back
+ * silently and measured **0.0% cached**. Three outcomes, not two —
  * honoured, rejected loudly, and accepted-ignored-billed — and the third was
  * indistinguishable from the first at every layer of this CLI.
  *
@@ -37,11 +37,13 @@ import { join } from 'node:path';
 import { after } from 'node:test';
 
 import {
-  callModel, extractReply, pinOutcome, classifyHttpFailure, DEFAULT_PROVIDER_ORDER,
+  callModel, extractReply, pinOutcome, classifyHttpFailure, DEFAULT_PROVIDER_ORDER, CACHE_MEASURED,
 } from '../lib/model.mjs';
 import { collectStream } from '../lib/stream.mjs';
 import { runSession, aggregateProviders, formatSummary } from '../lib/turn.mjs';
 import { createLocalExecutor } from '../lib/workspace.mjs';
+import { toJson as toJsonForTest, PROVIDER_REPORT_FIELDS } from '../lib/report.mjs';
+import { providerCaches } from '../lib/model.mjs';
 import { toJson } from '../lib/report.mjs';
 
 const made = [];
@@ -134,14 +136,14 @@ test('⭐⭐ pinOutcome distinguishes all five states, and NEVER guesses', () =>
  * and a cold cache, and it was scored as a success at every layer.
  *
  * ⭐ MEASURED 2026-08-16, replaying ONE byte-identical 46,171-byte payload
- * against `order: [StreamLake, Baidu, GMICloud]`:
+ * against a three-name preference list:
  *
- *     StreamLake (first)    11,520 of 11,714 cached   98.3%   $0.000172
- *     Baidu      (second)        0 of 11,714 cached    0.0%   $0.000791
+ *     the FIRST name     11,520 of 11,714 cached   98.3%
+ *     the SECOND name         0 of 11,714 cached    0.0%
  *
  * 4.6× on one round for identical bytes, reported as `pinTook: 1, pinMissed: 0`.
- * Over 40 pinned calls the scatter was StreamLake 38, Baidu 2 — a ~5% event that
- * nothing in this package could see, name, or price.
+ * Over 40 pinned calls the scatter ran about 19:1 in the first name's favour —
+ * a ~5% event that nothing in this package could see, name, or price.
  */
 test('⭐⭐ a fallback INSIDE the pin list is its own outcome — a live provider and a cold cache', () => {
   assert.equal(pinOutcome({ pin: ['DeepInfra', 'Novita'], served: 'DeepInfra' }), 'took',
@@ -177,19 +179,21 @@ test('⭐ the DEFAULT pin names a provider — the owner made that call', () => 
    *
    * THE EVIDENCE IT WAS MADE ON, all measured:
    *   · 28 endpoints serve this model; a prompt cache lives on ONE instance
-   *   · unpinned 48.6% / 46.7% cache at $0.002217 per task
-   *   · pinned    73.7% / 95.8% cache at $0.000910 — 2.4x cheaper
-   *   · StreamLake is cheapest at OUR real cache rate ($0.0327/M effective),
-   *     not merely on the headline per-token price
+   *   · unpinned 48.6% / 46.7% cache hit
+   *   · pinned    73.7% / 95.8% cache hit — 2.4x cheaper per task
+   *   · the name was chosen on EFFECTIVE cost at our real cache rate, not on
+   *     the headline per-token price — at high cache rates those rank
+   *     differently, and the top few candidates sit within a few percent
    *   · ⚠️ 1 of the 28 publishes NO cache-read price, so unpinned a run can land
-   *     where nothing caches at all and nothing says so
+   *     where nothing caches at all and nothing says so — that hazard, not the
+   *     few-percent spread, is the argument for pinning
    *
    * ⚠️ WHAT MUST STAY TRUE, and is asserted below rather than assumed: this is a
    * PREFERENCE, not a lock. `allow_fallbacks` remains true, so an outage
    * degrades instead of killing every run at once. Measured on the bench the
-   * same hour: one task of four fell back to Baidu and its cache dropped to 33%
-   * — the pin improving the odds, not guaranteeing them, which is the honest
-   * shape of it.
+   * same hour: one task of four fell back to the second name and its cache
+   * dropped to 33% — the pin improving the odds, not guaranteeing them, which
+   * is the honest shape of it.
    */
   assert.ok(DEFAULT_PROVIDER_ORDER.trim().length > 0, 'an empty default is the routing lottery');
   assert.ok(!DEFAULT_PROVIDER_ORDER.includes(','), 'one preferred provider, not a list pretending to be a policy');
@@ -336,8 +340,8 @@ test('⚠️ rounds that named no provider are counted apart, never scored as a 
  * served the round — is nearly unreachable: one of the three almost always
  * answers. What actually happens, measured 2026-08-16 at ~5% of rounds (2 of
  * 40), is a fallback to the SECOND name, which is a live provider and a cold
- * cache: 0.0% cached at $0.000791 against 98.3% cached at $0.000172 for the
- * IDENTICAL payload. Before `pinFellBack` existed, this session reported
+ * cache: 0.0% cached against 98.3% cached — 4.6x the cost — for the IDENTICAL
+ * payload. Before `pinFellBack` existed, this session reported
  * `pinTook: 3, pinMissed: 0` and looked perfect.
  */
 test('⭐⭐ a fallback within the list is counted apart from a first-choice hit', () => {
@@ -462,4 +466,288 @@ test('⚠️ and it stays SILENT when the pin took, and when nothing was pinned'
   // silence would fire on every provider that does not report routing.
   const quiet = await drive([reply('done', null, ['DeepInfra'])]);
   assert.doesNotMatch(formatSummary(quiet).join('\n'), /did not take/);
+});
+
+/**
+ * ── ⚠️⚠️ THE ROUND THAT WAS IN NONE OF THE COLUMNS ──────────────────────────
+ *
+ * MEASURED ON A LIVE RUN, 2026-09-01, `acuvo --json` against a real key:
+ *
+ *     "rounds": 4,
+ *     "served": { "DeepInfra": 3, "StreamLake": 1 },
+ *     "pinTook": 3, "pinFellBack": 0, "pinMissed": 0, "roundsUnknown": 0
+ *
+ * Three plus zero plus zero plus zero is three; four rounds happened. The
+ * missing one was a chain fallback to `deepseek/deepseek-chat`, which has no
+ * entry in `PROVIDER_PIN_BY_MODEL`, so that round carried no pin, `pinOutcome`
+ * answered `'none'`, and no counter existed for it.
+ *
+ * ⭐ IT IS NOT BOOKKEEPING. An unpinned round went wherever routing chose, which
+ * is a cold prefix cache — the very event `pinFellBack` was added to stop being
+ * silent. It was silent again through another door.
+ */
+test('⚠️⚠️ every round lands in exactly one column — the counters must sum to the rounds', () => {
+  const rounds = [
+    { provider: 'DeepInfra', providerPin: ['DeepInfra', 'Ambient'] },   // took
+    { provider: 'Ambient', providerPin: ['DeepInfra', 'Ambient'] },     // fell back
+    { provider: 'Novita', providerPin: ['DeepInfra', 'Ambient'] },      // missed
+    { provider: 'StreamLake', providerPin: null },                      // unpinned ← the live case
+    { provider: null, providerPin: ['DeepInfra'] },                     // unknown
+  ];
+  const p = aggregateProviders(rounds);
+  assert.equal(p.pinTook, 1);
+  assert.equal(p.pinFellBack, 1);
+  assert.equal(p.pinMissed, 1);
+  assert.equal(p.roundsUnpinned, 1, 'a round with no pin is counted nowhere, so the numbers do not add up');
+  assert.equal(p.roundsUnknown, 1);
+  assert.equal(
+    p.pinTook + p.pinFellBack + p.pinMissed + p.roundsUnpinned + p.roundsUnknown,
+    rounds.length,
+    'the five outcomes do not account for every round — a sixth case exists and nothing names it',
+  );
+});
+
+test('⭐ and the summary SAYS a round went unpinned, even when the pin never fell back', () => {
+  const lines = formatSummary({
+    ok: true, model: 'm', roundsUsed: 4, rounds: [], executed: [], changed: [], note: 'done',
+    stoppedBecause: 'stop', verification: { ran: false, passed: false },
+    providers: {
+      pin: ['DeepInfra'], served: { DeepInfra: 3, StreamLake: 1 },
+      pinTook: 3, pinFellBack: 0, pinMissed: 0, roundsUnpinned: 1, roundsUnknown: 0,
+    },
+  }).join('\n');
+  assert.match(lines, /carried no provider pin at all/,
+    'the exact live shape that printed nothing at all');
+});
+
+test('⚠️ and it is still silent on a clean run — every round pinned and took', () => {
+  const lines = formatSummary({
+    ok: true, model: 'm', roundsUsed: 3, rounds: [], executed: [], changed: [], note: 'done',
+    stoppedBecause: 'stop', verification: { ran: false, passed: false },
+    providers: {
+      pin: ['DeepInfra'], served: { DeepInfra: 3 },
+      pinTook: 3, pinFellBack: 0, pinMissed: 0, roundsUnpinned: 0, roundsUnknown: 0,
+    },
+  }).join('\n');
+  assert.doesNotMatch(lines, /carried no provider pin/);
+});
+
+test('⚠️⚠️ `--json` publishes the same five counters — the projection is a SECOND COPY', () => {
+  /**
+   * `toJson` hand-lists the provider fields, so a counter added to
+   * `aggregateProviders` is invisible to every machine reader until it is added
+   * again here. Measured: `roundsUnpinned` existed on the outcome and was
+   * dropped on the way into the document, which is the same class of defect as
+   * not having it at all.
+   */
+  const doc = toJsonForTest({
+    ok: true, model: 'm', roundsUsed: 4,
+    providers: {
+      pin: ['DeepInfra'], served: { DeepInfra: 3, StreamLake: 1 },
+      pinTook: 3, pinFellBack: 0, pinMissed: 0, roundsUnpinned: 1, roundsUnknown: 0,
+    },
+  });
+  assert.equal(doc.providers.roundsUnpinned, 1, 'the machine document silently drops the unpinned round');
+  assert.equal(
+    doc.providers.pinTook + doc.providers.pinFellBack + doc.providers.pinMissed
+      + doc.providers.roundsUnpinned + doc.providers.roundsUnknown,
+    doc.rounds,
+    'the published counters do not account for every published round',
+  );
+});
+
+/**
+ * ── ⭐⭐⭐ THE SECOND-COPY CLASS, CLOSED ─────────────────────────────────────
+ *
+ * `aggregateProviders` PRODUCES the provider block; `toJson` PUBLISHES it. They
+ * were two hand-maintained lists, and on 2026-09-01 they diverged: a new counter
+ * (`roundsUnpinned`) reached the outcome, the summary and the audit record while
+ * `--json` — the surface every machine reader uses — silently dropped it.
+ *
+ * ⚠️ THIS IS THE GUARD, NOT THE FIX. The fix is that `toJson` now loops
+ * `PROVIDER_REPORT_FIELDS`. This makes the two lists provably the same set, so a
+ * counter added to one and not the other turns the suite RED instead of going
+ * missing — which is the only thing that stops the class recurring.
+ */
+test('⚠️⚠️ the published field list and what aggregateProviders produces are the SAME SET', () => {
+  const produced = aggregateProviders([
+    { provider: 'DeepInfra', providerPin: ['DeepInfra'] },
+    { provider: 'StreamLake', providerPin: null },
+    { provider: null, providerPin: ['DeepInfra'] },
+  ]);
+  assert.ok(produced, 'the fixture produced no provider block, so this guard is checking nothing');
+
+  const publishedKeys = Object.keys(PROVIDER_REPORT_FIELDS).sort();
+  const producedKeys = Object.keys(produced).sort();
+  assert.deepEqual(
+    producedKeys,
+    publishedKeys,
+    'aggregateProviders and the --json contract disagree about which provider fields exist. '
+    + 'Adding a counter in one place and not the other is exactly how roundsUnpinned went missing.',
+  );
+
+  // ⭐ And the projection really carries the values, not just the keys.
+  const doc = toJsonForTest({ ok: true, model: 'm', roundsUsed: 3, providers: produced });
+  for (const key of publishedKeys) assert.deepEqual(doc.providers[key], produced[key], key);
+});
+
+test('⚠️ a run that never named an upstream publishes null, not an empty shell', () => {
+  assert.equal(toJsonForTest({ ok: true, model: 'm', roundsUsed: 0 }).providers, null);
+});
+
+/**
+ * ── 💰⭐⭐ AN ENDPOINT THAT DOES NOT CACHE IS NOT A COLD START ───────────────
+ *
+ * Measured live 2026-09-01, byte-identical 31,341-byte payloads sent twice to
+ * each pinned endpoint 90s apart on one `session_id`:
+ *
+ *     DeepInfra  0% -> 96.1%   $0.000640 -> $0.000148
+ *     Ambient    0% ->  0.0%   $0.000640 -> $0.000640
+ *     Relace     0% ->  0.0%   $0.000529 -> $0.000529
+ *
+ * ⚠️ THE COST IS THE PROOF. A provider that cached but did not report
+ * `cached_tokens` would still bill less on the second send. These billed the
+ * same to the cent, so two of flash's three pinned endpoints pay full input
+ * price on every round with nothing to warm up.
+ */
+/**
+ * ── ⚠️⚠️ THIS TEST NAMED `Relace` AND THE ROW FLIPPED UNDER IT (2026-09-18) ──
+ *
+ * Re-probed by `CACHE_MEASURED`'s own standard, Relace caches **98.7%** and
+ * bills 4.75x less warm, so its row is now `caches: true` and this fixture
+ * stopped describing anything. The assertion was never wrong; the FIXTURE
+ * went stale — CLAUDE.md's *"check the fixture before the code"*, on the day.
+ *
+ * ⭐ SO THE FIXTURE IS DERIVED, NOT TYPED. Whichever endpoint the table
+ * currently says does not cache is the one this test uses, and the day that
+ * set empties the test says so instead of passing vacuously.
+ */
+const CACHELESS = Object.keys(CACHE_MEASURED).filter((n) => CACHE_MEASURED[n].caches === false);
+const CACHING = Object.keys(CACHE_MEASURED).filter((n) => CACHE_MEASURED[n].caches === true);
+
+test('💰 the summary says when a round was served by an endpoint measured NOT to cache', () => {
+  assert.ok(CACHELESS.length > 0, 'no endpoint is recorded as cacheless — this test would prove nothing');
+  assert.ok(CACHING.length > 0, 'no endpoint is recorded as caching — the control below would prove nothing');
+  const bad = CACHELESS[0];
+  const good = CACHING[0];
+  const lines = formatSummary({
+    ok: true, model: 'm', roundsUsed: 4, rounds: [], executed: [], changed: [], note: 'done',
+    stoppedBecause: 'stop', verification: { ran: false, passed: false },
+    providers: {
+      pin: [good], served: { [good]: 3, [bad]: 1 },
+      pinTook: 3, pinFellBack: 0, pinMissed: 0, roundsUnpinned: 1, roundsUnknown: 0,
+    },
+  }).join('\n');
+  assert.match(lines, new RegExp(`served by ${bad}, which returned NO prompt cache`));
+  assert.match(lines, /full input price every round/);
+});
+
+/**
+ * ── 🚨⭐⭐⭐ A FROZEN FACT MAY NOT CONTRADICT ONE THIS RUN OBSERVED ──────────
+ *
+ * The defect this pins, seen on a real run on 2026-09-18 — two sentences about
+ * the same four rounds, three words apart in one summary:
+ *
+ *     cache 46% (24576 of 53447 prompt tokens; round 1 0%) · served by Relace
+ *     ⚠ 4 rounds served by Relace x4, which returned NO prompt cache …
+ *
+ * Correcting the stale row fixes today. This rule fixes the next time a row
+ * goes stale, which is the part that keeps happening.
+ */
+test('🚨 a measured cache hit SILENCES the "no prompt cache" claim about the endpoints that served it', () => {
+  assert.ok(CACHELESS.length > 0, 'nothing is recorded as cacheless — this test would prove nothing');
+  const bad = CACHELESS[0];
+  const base = {
+    ok: true, model: 'm', roundsUsed: 4, rounds: [], executed: [], changed: [], note: 'done',
+    stoppedBecause: 'stop', verification: { ran: false, passed: false },
+    providers: {
+      pin: [bad], served: { [bad]: 4 },
+      pinTook: 4, pinFellBack: 0, pinMissed: 0, roundsUnpinned: 0, roundsUnknown: 0,
+    },
+  };
+
+  /** ⭐ THE CONTROL. With no cache observed, the table's claim stands and prints. */
+  const withoutReading = formatSummary({ ...base }).join('\n');
+  assert.match(withoutReading, /NO prompt cache/, 'with no live reading the frozen claim must still be heard');
+
+  const withHit = formatSummary({
+    ...base,
+    usage: { cache: { promptTokens: 53_447, cachedTokens: 24_576, hitRate: 24_576 / 53_447, roundsReported: 4, roundsUnknown: 0 } },
+  }).join('\n');
+  assert.doesNotMatch(
+    withHit,
+    /NO prompt cache/,
+    'this run measured a cache hit and every round was served by that endpoint — the frozen row is contradicted by the wire',
+  );
+});
+
+test('⚠️ but NOT silenced when an unflagged endpoint also served — the hit may be entirely its', () => {
+  /**
+   * ⚠️ SCOPE, WHICH IS WHERE GUARDS IN THIS REPO FAIL. If a caching endpoint
+   * answered some rounds, the measured hit rate cannot be attributed to the
+   * cacheless one, and suppressing here would hide a TRUE warning. The
+   * conservative direction is to keep printing.
+   */
+  assert.ok(CACHELESS.length > 0 && CACHING.length > 0, 'both kinds are needed or this proves nothing');
+  const bad = CACHELESS[0];
+  const good = CACHING[0];
+  const lines = formatSummary({
+    ok: true, model: 'm', roundsUsed: 4, rounds: [], executed: [], changed: [], note: 'done',
+    stoppedBecause: 'stop', verification: { ran: false, passed: false },
+    providers: {
+      pin: [good], served: { [good]: 3, [bad]: 1 },
+      pinTook: 3, pinFellBack: 0, pinMissed: 0, roundsUnpinned: 1, roundsUnknown: 0,
+    },
+    usage: { cache: { promptTokens: 40_000, cachedTokens: 20_000, hitRate: 0.5, roundsReported: 4, roundsUnknown: 0 } },
+  }).join('\n');
+  assert.match(lines, /NO prompt cache/, 'the caching endpoint could account for the whole hit rate');
+});
+
+test('⚠️ the warning must not recommend a vendor — that claim ages faster than the warning', () => {
+  /**
+   * It ended *"DeepInfra warm measured 3.6x cheaper than Relace ever is."*
+   * Re-probed 2026-09-18 the comparison is INVERTED (Relace $0.000082 warm
+   * against DeepInfra's $0.000109), and on `deepseek/deepseek-chat` that same
+   * DeepInfra deployment enforces an undeclared 32,768-token cap. A sentence
+   * printed on most runs was steering readers onto a worse endpoint.
+   */
+  assert.ok(CACHELESS.length > 0);
+  const bad = CACHELESS[0];
+  const lines = formatSummary({
+    ok: true, model: 'm', roundsUsed: 2, rounds: [], executed: [], changed: [], note: 'done',
+    stoppedBecause: 'stop', verification: { ran: false, passed: false },
+    providers: {
+      pin: [bad], served: { [bad]: 2 },
+      pinTook: 2, pinFellBack: 0, pinMissed: 0, roundsUnpinned: 0, roundsUnknown: 0,
+    },
+  }).join('\n');
+  assert.match(lines, /NO prompt cache/, 'the warning itself must still fire, or this proves nothing');
+  assert.doesNotMatch(lines, /cheaper than/, 'no price comparison between named vendors in a standing warning');
+});
+
+test('⚠️ and it is SILENT for an endpoint nobody has measured', () => {
+  // `providerCaches` returns null for an unprobed name, and "no evidence" must
+  // not be reported as either good or bad news.
+  const lines = formatSummary({
+    ok: true, model: 'm', roundsUsed: 2, rounds: [], executed: [], changed: [], note: 'done',
+    stoppedBecause: 'stop', verification: { ran: false, passed: false },
+    providers: {
+      pin: ['Venice'], served: { Venice: 2 },
+      pinTook: 2, pinFellBack: 0, pinMissed: 0, roundsUnpinned: 0, roundsUnknown: 0,
+    },
+  }).join('\n');
+  assert.equal(providerCaches('Venice'), null, 'Venice must be unmeasured or this test proves nothing');
+  assert.doesNotMatch(lines, /NO prompt cache/);
+});
+
+test('⚠️ and silent on the good endpoint — noise on the healthy path is how a real signal gets skipped', () => {
+  const lines = formatSummary({
+    ok: true, model: 'm', roundsUsed: 3, rounds: [], executed: [], changed: [], note: 'done',
+    stoppedBecause: 'stop', verification: { ran: false, passed: false },
+    providers: {
+      pin: ['DeepInfra'], served: { DeepInfra: 3 },
+      pinTook: 3, pinFellBack: 0, pinMissed: 0, roundsUnpinned: 0, roundsUnknown: 0,
+    },
+  }).join('\n');
+  assert.doesNotMatch(lines, /NO prompt cache/);
 });

@@ -1,8 +1,8 @@
 /**
  * ── ⚠️⚠️ 59% CACHE ON A LIVE RUN, BECAUSE ONE ROUND LANDED ON THE SECOND NAME ─
  *
- * The measured cost of that: 98.3% cached and $0.000172 on the first choice
- * against 0.0% cached and $0.000791 on the second — 4.6× for byte-identical
+ * The measured cost of that: 98.3% cached on the first choice against 0.0% on
+ * the second — 4.6× the cost for byte-identical
  * input. Roman's rule is that the cache must stay in the high 90s permanently,
  * so a ~5% scatter is not survivable on short tasks.
  *
@@ -15,11 +15,111 @@ import assert from 'node:assert/strict';
 import { join } from 'node:path';
 import {
   freshWarmth, rememberWarm, forgetWarm, warmProviderFor, routeFor, describeRouting,
-  loadWarmth, saveWarmth, warmthPath, routingNote,
+  loadWarmth, saveWarmth, warmthPath, routingNote, pruneUnchosen,
 } from '../lib/warm-provider.mjs';
+import { PROVIDER_PIN_BY_MODEL } from '../lib/model.mjs';
 
 const FLASH = 'deepseek/deepseek-v4-flash-0731';
-const PIN = ['StreamLake', 'Baidu', 'GMICloud'];
+/**
+ * ── ⚠️⚠️⚠️ DERIVED FROM THE PIN, NEVER TYPED — THIS FIXTURE WENT STALE TWICE ─
+ *
+ * It was `['StreamLake', 'Baidu', 'GMICloud']`, then hand-remapped 1:1 to
+ * `['DeepInfra', 'Ambient', 'Relace']` on 2026-08-27 with a comment explaining
+ * that the OLD names were no longer in `KNOWN_PROVIDERS_BY_MODEL`, so
+ * `rememberWarm` refused every one of them and **silently hollowed out every
+ * test below that named one**. On 2026-09-10 the pin moved again — flash now
+ * leads with `Sail Research` and `Ambient` was dropped ("gone from the feed",
+ * `model.mjs`) — and the same three tests went red for the same reason, in the
+ * same file, for the second time.
+ *
+ * ⭐ THE HAND-REMAP WAS THE DEFECT, NOT THE NAMES. A test that types a provider
+ * name is a SECOND OPINION about the pin, and the pin is the one that ships.
+ * These read `PROVIDER_PIN_BY_MODEL` — the exact table `chosenProvidersFor`
+ * consults — so a repin can never again hollow out a guard without failing it
+ * loudly first, at the length assertion below.
+ *
+ * ⚠️ POSITION, NOT IDENTITY, IS WHAT THESE TESTS ARE ABOUT. `LEAD` is "the name
+ * the config prefers" and `SECOND` is "a name that is NOT the lead" — the whole
+ * point of `⚠️⚠️ it locks to who ACTUALLY served` is that those two differ.
+ */
+const PIN = PROVIDER_PIN_BY_MODEL[FLASH];
+assert.ok(
+  Array.isArray(PIN) && PIN.length >= 2,
+  `flash has no pin of at least two providers (${JSON.stringify(PIN)}) — these tests distinguish the LEAD `
+  + 'from a NON-LEAD upstream and cannot say anything with fewer than two names.',
+);
+const [LEAD, SECOND] = PIN;
+/** The tail of the pin — used where the point is "any chosen name", not the lead. */
+const LAST = PIN[PIN.length - 1];
+
+/**
+ * ── ⚠️⚠️ THE MOST EXPENSIVE BUG THIS MODULE HAS HAD ───────────────────────
+ *
+ * Measured 2026-08-25 from our own audit ledger. `~/.acuvo/warm-providers.json`
+ * had learned an upstream ABSENT from the configured pin — one nobody had
+ * chosen or priced — and it then served **6 of 6** recorded runs at a multiple
+ * of the configured endpoints on CACHE READS, the exact token type the cache
+ * strategy exists to maximise. It stuck because `routeFor` locks with
+ * `allow_fallbacks: false`, so the pin only releases on a FAILURE — and an
+ * expensive success is not one.
+ */
+test('⚠️⚠️ it REFUSES to learn a provider that is not in the configured pin', () => {
+  const s = freshWarmth();
+  rememberWarm(s, FLASH, 'Novita');
+  assert.equal(warmProviderFor(s, FLASH), null,
+    'Novita is not in the pin — learning it locks us onto an upstream we never chose, with fallbacks off');
+
+  rememberWarm(s, FLASH, LEAD);
+  assert.equal(warmProviderFor(s, FLASH), LEAD, 'a chosen provider must still be learned');
+});
+
+/**
+ * ── ⚠️⚠️⚠️ THE THIRD TIME A TYPED FIXTURE WENT STALE IN THIS FILE (2026-09-20) ─
+ *
+ * The header above records the provider NAMES going stale twice and prescribes
+ * the cure — derive from `PROVIDER_PIN_BY_MODEL`, never type. The test below
+ * then typed a MODEL ID, `'deepseek/deepseek-chat'`, chosen because it had no
+ * pin and so exercised the no-opinion branch. It gained one
+ * (`['StreamLake', 'DeepInfra']`), the membership check acquired an opinion, and
+ * the assertion went red for exactly the reason the header warns about, in the
+ * same file, one layer down. A typed model id is the same second opinion about
+ * the pin table that a typed provider name is.
+ *
+ * ⭐ SO THE UNPINNED MODEL IS DERIVED TOO — any id the table does not hold.
+ */
+const UNPINNED_MODEL = (() => {
+  for (const candidate of ['zz/never-priced-model', 'deepseek/deepseek-chat']) {
+    if (!PROVIDER_PIN_BY_MODEL[candidate]) return candidate;
+  }
+  return null;
+})();
+
+test('⚠️ a one-character provider name is garbage, not a provider', () => {
+  // The real file held `P` for a model with no configured pin, so the membership
+  // check had no opinion and would have honoured it forever.
+  assert.ok(UNPINNED_MODEL, 'every candidate model id is now pinned — pick another unpinned id');
+  const s = freshWarmth();
+  rememberWarm(s, UNPINNED_MODEL, 'P');
+  assert.equal(warmProviderFor(s, UNPINNED_MODEL), null);
+  rememberWarm(s, UNPINNED_MODEL, LEAD);
+  assert.equal(warmProviderFor(s, UNPINNED_MODEL), LEAD,
+    'a model we never priced may still learn freely — we have no opinion, only a floor');
+});
+
+test('⭐ pruneUnchosen clears damage ALREADY on disk, not just future writes', () => {
+  const s = freshWarmth();
+  // Bypass rememberWarm the way loadWarmth does when reading an old file.
+  s.byModel.set(FLASH, 'Novita');
+  // ⚠️ UNPINNED ON PURPOSE. Against a model the table DOES hold, `P` would be
+  // pruned for failing the membership check and this line would pass without
+  // ever exercising the one-character floor it exists to prove.
+  s.byModel.set(UNPINNED_MODEL, 'P');
+  s.byModel.set('z-ai/glm-4.6', 'Venice');
+  pruneUnchosen(s);
+  assert.equal(warmProviderFor(s, FLASH), null, 'the unchosen pin must not survive a reload');
+  assert.equal(warmProviderFor(s, UNPINNED_MODEL), null);
+  assert.equal(warmProviderFor(s, 'z-ai/glm-4.6'), 'Venice', 'a legitimate entry survives');
+});
 
 test('round 1 routes exactly as it does today — full list, fallbacks ON', () => {
   /**
@@ -33,31 +133,31 @@ test('round 1 routes exactly as it does today — full list, fallbacks ON', () =
 });
 
 test('⭐ after a provider serves, later rounds ask for THAT ONE with fallbacks off', () => {
-  const s = rememberWarm(freshWarmth(), FLASH, 'StreamLake');
+  const s = rememberWarm(freshWarmth(), FLASH, LEAD);
   const r = routeFor(s, FLASH, PIN);
-  assert.deepEqual(r.order, ['StreamLake']);
+  assert.deepEqual(r.order, [LEAD]);
   assert.equal(r.strict, true);
   assert.match(r.reason, /holds this session's prompt cache/);
 });
 
 test('⚠️⚠️ it locks to who ACTUALLY served, not to the first name', () => {
   /**
-   * The live failure: Baidu served a round. The cache is now on Baidu, so
-   * chasing StreamLake would be cold too. Follow the bytes, not the config.
+   * The live failure: Ambient served a round. The cache is now on Ambient, so
+   * chasing DeepInfra would be cold too. Follow the bytes, not the config.
    */
-  const s = rememberWarm(freshWarmth(), FLASH, 'Baidu');
-  assert.deepEqual(routeFor(s, FLASH, PIN).order, ['Baidu']);
+  const s = rememberWarm(freshWarmth(), FLASH, SECOND);
+  assert.deepEqual(routeFor(s, FLASH, PIN).order, [SECOND]);
 });
 
 test('⚠️ a single name is sent ALONE — a list is a preference, not a lock', () => {
   // `[warm, ...rest]` would be the same preference list that let a round land
-  // on Baidu while StreamLake sat first. That is the bug, not the fix.
-  const s = rememberWarm(freshWarmth(), FLASH, 'StreamLake');
+  // on Ambient while DeepInfra sat first. That is the bug, not the fix.
+  const s = rememberWarm(freshWarmth(), FLASH, LEAD);
   assert.equal(routeFor(s, FLASH, PIN).order.length, 1);
 });
 
 test('⚠️⚠️ a failure gives the lock back immediately', () => {
-  const s = rememberWarm(freshWarmth(), FLASH, 'StreamLake');
+  const s = rememberWarm(freshWarmth(), FLASH, LEAD);
   forgetWarm(s, FLASH);
   const r = routeFor(s, FLASH, PIN);
   assert.deepEqual(r.order, PIN, 'a dead provider must cost one round, not the session');
@@ -77,7 +177,7 @@ test('⭐ strict is NEVER true without a provider we watched serve', () => {
 });
 
 test('warmth is per MODEL — flash and pro do not share an upstream', () => {
-  const s = rememberWarm(freshWarmth(), FLASH, 'StreamLake');
+  const s = rememberWarm(freshWarmth(), FLASH, LEAD);
   assert.equal(warmProviderFor(s, 'deepseek/deepseek-v4-pro-0813'), null);
   assert.deepEqual(routeFor(s, 'deepseek/deepseek-v4-pro-0813', ['DeepSeek', 'GMICloud']).order,
     ['DeepSeek', 'GMICloud']);
@@ -147,8 +247,30 @@ test('⚠️⚠️ the session loop actually uses it', async () => {
   assert.match(code, /const warmth = loadWarmth\(\)/, 'the session starts cold every time');
   assert.match(code, /routeFor\(warmth, config\.model/, 'the route is never computed');
   assert.match(code, /routeOverride:/, 'the route never reaches the model call');
-  assert.match(code, /rememberWarm\(warmth, config\.model, reply\.provider\)/, 'nothing learns who served');
-  assert.match(code, /forgetWarm\(warmth, config\.model\)/, 'a failure never releases the lock');
+  /**
+   * ⚠️⚠️ REWRITTEN 2026-09-01, AND THE OLD ASSERTION WAS PINNING THE BUG.
+   *
+   * It read `rememberWarm(warmth, config.model, reply.provider)` — i.e. it
+   * required, in a guard, that the round's provider be learned against the model
+   * that was ASKED FOR rather than the one that ANSWERED. `chain.mjs` falls back
+   * across models, `DeepInfra` sits in both `deepseek-v4-flash-0731`'s pin and
+   * `z-ai/glm-4.6`'s, and `rememberWarm`'s membership check therefore waved the
+   * cross-model write straight through. Measured: one GLM round taught the
+   * DeepSeek model a `strict: true` (`allow_fallbacks: false`) pin on an upstream
+   * that had never held its prefix — and `saveWarmth` made it machine-wide.
+   *
+   * ⭐ A GUARD THAT PINS A DEFECT IS WORSE THAN NO GUARD, so this now pins the
+   * RULE instead: warmth is keyed on the model that replied.
+   */
+  assert.match(code, /learnFromRound\(warmth, \{/, 'nothing learns who served');
+  assert.match(code, /asked: config\.model,/, 'the round outcome does not say which model was asked for');
+  assert.match(
+    code,
+    /served: reply\?\.model \?\? null,/,
+    'warmth is not keyed on the model that ANSWERED — a chain fallback will teach the configured '
+    + 'model an upstream that never served its prefix, and pin it fallback-free',
+  );
+  assert.match(code, /ok: reply\?\.ok === true,/, 'a failure never releases the lock');
 });
 
 test('⚠️ and the model layer honours an override', async () => {
@@ -176,13 +298,16 @@ test('⭐⭐ what served the last run is remembered for the next one', async () 
   const home = mkdtempSync(join(tmpdir(), 'acuvo-warmth-'));
   try {
     const env = { ACUVO_HOME: home };
-    const saved = rememberWarm(freshWarmth(), FLASH, 'GMICloud');
+    // ⚠️ REPINNED 2026-08-27: 'GMICloud' is not in flash's corrected known-
+    // provider set (it never was flash's — it was the third name on the OLD,
+    // wrong pin). 'Relace' is the corrected pin's third name.
+    const saved = rememberWarm(freshWarmth(), FLASH, LAST);
     assert.equal(saveWarmth(saved, env), true);
 
     const loaded = loadWarmth(env);
-    assert.equal(warmProviderFor(loaded, FLASH), 'GMICloud');
+    assert.equal(warmProviderFor(loaded, FLASH), LAST);
     // …and the very first call of the NEXT run is therefore already pinned.
-    assert.deepEqual(routeFor(loaded, FLASH, PIN).order, ['GMICloud']);
+    assert.deepEqual(routeFor(loaded, FLASH, PIN).order, [LAST]);
   } finally {
     rmSync(home, { recursive: true, force: true });
   }

@@ -1,0 +1,32 @@
+<!doctype html>
+<!--
+  A deliberately broken page, used by test/playtest.test.mjs.
+
+  It carries one of each defect class the playtester exists to find, so the test
+  is asserting a real pipeline (file -> browser output -> report) rather than a
+  hand-written string:
+
+    1. a stylesheet that is not on disk  -> a 404 in the network log
+    2. a call to a function nobody defined -> a console error
+    3. a button that does something       -> the control that works
+    4. a button wired to nothing          -> the finding no screenshot catches
+
+  ⚠️ EDITING THIS FILE CHANGES THE EXPECTED REPORT. That is the point: the
+  fixture is the input, not decoration.
+-->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Get a quote</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <h1>Get a quote</h1>
+  <input id="email" type="email" placeholder="Email">
+  <button id="send" data-adds="Thanks, we will be in touch">Send</button>
+  <button id="help" data-dead>Need help?</button>
+  <script>
+    trackQuoteView();
+  </script>
+</body>
+</html>

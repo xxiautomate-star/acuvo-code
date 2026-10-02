@@ -1,6 +1,6 @@
 {
   "name": "acuvo-code",
-  "version": "0.3.1",
+  "version": "0.6.25",
   "description": "Acuvo Code — the terminal client for the Acuvo capability registry. Zero dependencies, by design.",
   "type": "module",
   "bin": {
@@ -37,6 +37,7 @@
     "lib/",
     "skills/",
     "scripts/",
+    "docs/",
     "README.md",
     "LICENSE",
     "CHANGELOG.md",

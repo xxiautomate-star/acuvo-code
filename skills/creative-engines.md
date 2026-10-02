@@ -17,6 +17,7 @@ come from reaching for the wrong verb, not from the model.
 | `expand_image` | a new aspect ratio by painting new edges, not cropping |
 | `speak` | text to an audio file, in a fixed voice |
 | `read_image` | LOOK at what you produced |
+| `make_document` | an HTML file → a real PDF, PNG or PPTX |
 
 ## ⚠️⚠️ Cost before spending, every time
 
@@ -71,6 +72,34 @@ rather than assumed.
 Presenting a generated image you have not looked at is presenting a guess. See
 the `designing-by-looking` skill — it is the same rule as never shipping an
 unrendered page.
+
+## ⭐ A PDF, a deck or a poster: write HTML, then press it
+
+`make_document` takes an **HTML file you already wrote** and returns a real
+`.pdf`, `.png` or `.pptx`. It does not take a prompt — the layout is yours, so
+everything you know about CSS applies, and `@page` and `page-break-inside: avoid`
+work the way they do in a browser's print dialog.
+
+⭐ **From a shell — including a build sandbox — it is one command and no model
+turn:**
+
+```
+acuvo document report.html report.pdf
+```
+
+`.png` and `.pptx` follow from the output extension. It presses the file and
+exits, so it costs a command rather than an agent session; `acuvo "turn
+report.html into a PDF"` would do the same work and buy a model turn to do it.
+
+⚠️ It needs an account: `acuvo --login`, or `ACUVO_TOKEN` in the environment
+(which is how it works inside a build machine), or `MODAL_PRESS_URL` pointing at
+your own worker. Without one it refuses and names those three — it never
+silently writes nothing.
+
+⚠️ **Look at the result.** A PDF is not a screenshot of your intent: the page box
+is a different shape from a viewport, so anything positioned with `vh`, anything
+relying on scroll, and anything in a fixed-height container will land somewhere
+you did not expect. Press it, open it, then present it.
 
 ## ⭐ Choosing size
 

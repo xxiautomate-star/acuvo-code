@@ -47,6 +47,23 @@ import {
 
 const ws = () => mkdtempSync(join(tmpdir(), 'acuvo-voice-'));
 
+/**
+ * ── ⚠️⚠️ "NOT CONFIGURED" NOW HAS A SECOND HALF, AND IT IS ON DISK ──────────
+ *
+ * Added 2026-08-26, when `--say` and `--task-audio` learned to run on a
+ * signed-in Acuvo plan. `voiceConfig` no longer asks only "is a URL set" — it
+ * asks "is there a ROUTE", and one of the two routes is `~/.acuvo/credentials.
+ * json`. So `env: {}` on its own stopped meaning "unconfigured": on the machine
+ * of anybody who has ever run `acuvo --login`, these tests would have started
+ * exercising the gateway path while claiming to prove absence.
+ *
+ * ⭐ A THROWAWAY HOME MAKES THE ABSENCE A FACT THE TEST CREATES. It also stops
+ * the tests reading a real credential — `render-reaches-the-customer.test.mjs`
+ * records the day a sibling test printed a live `xxi_live_…` token into node's
+ * failure output, which then goes into CI logs and pasted terminal dumps.
+ */
+const NO_ACCOUNT = mkdtempSync(join(tmpdir(), 'acuvo-voice-nohome-'));
+
 const ENV = {
   MODAL_TRANSCRIBE_URL: 'https://stt.example.invalid/x',
   MODAL_TTS_URL: 'https://tts.example.invalid/x',
@@ -99,24 +116,24 @@ const wrote = (path, bytes = 100) => ({ name: 'write_file', mutated: true, resul
 
 test('voiceConfig reports both directions independently', () => {
   assert.deepEqual(
-    { ...voiceConfig({}) },
-    { canListen: false, canSpeak: false, listenUrl: null, speakUrl: null },
+    { ...voiceConfig({}, NO_ACCOUNT) },
+    { canListen: false, canSpeak: false, listenUrl: null, speakUrl: null, viaAccount: false },
   );
-  const only = voiceConfig({ MODAL_TTS_URL: 'https://t/x' });
+  const only = voiceConfig({ MODAL_TTS_URL: 'https://t/x' }, NO_ACCOUNT);
   assert.equal(only.canSpeak, true);
   assert.equal(only.canListen, false, 'a TTS url must not imply a transcribe url — they are separate services');
 });
 
 test('⚠️ config is read at CALL time, never captured at import', () => {
   const env = {};
-  assert.equal(voiceConfig(env).canListen, false);
+  assert.equal(voiceConfig(env, NO_ACCOUNT).canListen, false);
   env.MODAL_TRANSCRIBE_URL = 'https://stt/x';
-  assert.equal(voiceConfig(env).canListen, true,
+  assert.equal(voiceConfig(env, NO_ACCOUNT).canListen, true,
     'a variable that changed mid-session must be seen — a module-level snapshot is how a capability stays dark after it was fixed');
 });
 
 test('whitespace-only env vars are not configuration', () => {
-  assert.equal(voiceConfig({ MODAL_TTS_URL: '   ' }).canSpeak, false);
+  assert.equal(voiceConfig({ MODAL_TTS_URL: '   ' }, NO_ACCOUNT).canSpeak, false);
 });
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -226,9 +243,11 @@ test('⚠️ with no MODAL_TRANSCRIBE_URL the capability is ABSENT and says whic
   try {
     writeFileSync(join(root, 'note.wav'), Buffer.from('audio'));
     const f = forbidden();
-    const r = await taskFromAudio(root, 'note.wav', { env: {}, fetchImpl: f });
+    const r = await taskFromAudio(root, 'note.wav', { env: {}, fetchImpl: f, home: NO_ACCOUNT });
     assert.equal(r.ok, false);
     assert.match(r.error, /MODAL_TRANSCRIBE_URL/, `the message must name the variable to set. Got: ${r.error}`);
+    // ⭐ And the move a CUSTOMER can actually make — the variable is ours.
+    assert.match(r.error, /--login/, `signing in is the answer for anybody who is not us. Got: ${r.error}`);
     assert.equal(f.calls.length, 0, 'nothing may be attempted when the service is not configured');
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
@@ -542,10 +561,11 @@ test('⚠️ asked but not configured: it says which variable, and reaches no ne
   const root = ws();
   try {
     const f = forbidden();
-    const r = await speakSummary(root, outcome({}), { env: {}, fetchImpl: f, task: 'x', enabled: true });
+    const r = await speakSummary(root, outcome({}), { env: {}, fetchImpl: f, task: 'x', enabled: true, home: NO_ACCOUNT });
     assert.equal(r.spoken, false);
     assert.equal(r.ok, false, 'the user explicitly asked — silence here would be dishonest');
     assert.match(r.reason, /MODAL_TTS_URL/, `unhelpful: ${r.reason}`);
+    assert.match(r.reason, /--login/, `and the move a customer can actually make. Got: ${r.reason}`);
     assert.equal(f.calls.length, 0);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });

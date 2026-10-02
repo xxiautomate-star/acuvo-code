@@ -56,7 +56,7 @@ function makeTree(files) {
 
 // ══ (1) THE HANDOFF TO edit_file — LEADING WHITESPACE IS CONTENT ════════════
 
-test('⭐⭐ search_text returns the line BYTE-EXACT, indentation included', () => {
+test('⭐⭐ search_text returns the line BYTE-EXACT, indentation included', async () => {
   /**
    * Verbatim from lib/git.mjs 280-284 — the exact slice that cost a session.
    * The file has TWO leading spaces; the trimmed answer had none, and the model
@@ -71,7 +71,7 @@ test('⭐⭐ search_text returns the line BYTE-EXACT, indentation included', () 
   ].join('\n') + '\n';
   const root = makeTree({ 'git.mjs': body });
   try {
-    const r = searchText(root, 'clampOutput');
+    const r = await searchText(root, 'clampOutput');
     assert.equal(r.ok, true);
     assert.equal(r.matches.length, 1);
     const hit = r.matches[0];
@@ -91,14 +91,14 @@ test('⭐⭐ search_text returns the line BYTE-EXACT, indentation included', () 
   }
 });
 
-test('tabs and deep indentation survive too, and trailing whitespace is still stripped', () => {
+test('tabs and deep indentation survive too, and trailing whitespace is still stripped', async () => {
   const root = makeTree({
     'tabs.js': '\t\tconst deep = needleA;\n',
     'deep.js': '                    const twenty = needleB;\n',
     'trail.js': '  const trailing = needleC;   \t\n',
   });
   try {
-    const r = searchText(root, 'needle[ABC]');
+    const r = await searchText(root, 'needle[ABC]');
     assert.equal(r.ok, true);
     const byPath = Object.fromEntries(r.matches.map((m) => [m.path, m.text]));
 
@@ -116,10 +116,10 @@ test('tabs and deep indentation survive too, and trailing whitespace is still st
   }
 });
 
-test('non-ASCII content comes back unchanged', () => {
+test('non-ASCII content comes back unchanged', async () => {
   const root = makeTree({ 'i18n.ts': '  const msg = "café — naïve 日本語 🚀 needleU";\n' });
   try {
-    const r = searchText(root, 'needleU');
+    const r = await searchText(root, 'needleU');
     assert.equal(r.matches.length, 1);
     assert.equal(r.matches[0].text, '  const msg = "café — naïve 日本語 🚀 needleU";');
     assert.ok(readFileSync(join(root, 'i18n.ts'), 'utf8').includes(r.matches[0].text));
@@ -130,13 +130,13 @@ test('non-ASCII content comes back unchanged', () => {
 
 // ══ (2) CRLF — HALF A WINDOWS TREE ══════════════════════════════════════════
 
-test('⚠️ a `$`-anchored pattern matches on a CRLF file', () => {
+test('⚠️ a `$`-anchored pattern matches on a CRLF file', async () => {
   const root = makeTree({
     'crlf.js': Buffer.from('  const a = 1;\r\nexport default a;\r\n', 'utf8'),
     'lf.js': '  const a = 1;\nexport default a;\n',
   });
   try {
-    const r = searchText(root, 'const a = 1;$');
+    const r = await searchText(root, 'const a = 1;$');
     assert.equal(r.ok, true);
     const paths = r.matches.map((m) => m.path).sort();
     assert.deepEqual(
@@ -149,10 +149,10 @@ test('⚠️ a `$`-anchored pattern matches on a CRLF file', () => {
   }
 });
 
-test('a CRLF hit does not carry the carriage return into the old_string', () => {
+test('a CRLF hit does not carry the carriage return into the old_string', async () => {
   const root = makeTree({ 'crlf.js': Buffer.from('    const needleR = 1;\r\nmore();\r\n', 'utf8') });
   try {
-    const r = searchText(root, 'needleR');
+    const r = await searchText(root, 'needleR');
     assert.equal(r.matches.length, 1);
     assert.equal(r.matches[0].text, '    const needleR = 1;', 'indentation kept, the \\r terminator dropped');
     assert.ok(!r.matches[0].text.includes('\r'));
@@ -164,14 +164,14 @@ test('a CRLF hit does not carry the carriage return into the old_string', () => 
 
 // ══ (3) UTF-8 BOM — DEFEATS A `^` ANCHOR ON LINE 1 ══════════════════════════
 
-test('⚠️ a `^`-anchored pattern matches the FIRST line of a BOM file', () => {
+test('⚠️ a `^`-anchored pattern matches the FIRST line of a BOM file', async () => {
   const bom = Buffer.from([0xef, 0xbb, 0xbf]);
   const root = makeTree({
     'bom.ts': Buffer.concat([bom, Buffer.from('import { thing } from "./thing";\nconst x = 1;\n', 'utf8')]),
     'plain.ts': 'import { thing } from "./thing";\nconst x = 1;\n',
   });
   try {
-    const r = searchText(root, '^import ');
+    const r = await searchText(root, '^import ');
     assert.equal(r.ok, true);
     const paths = r.matches.map((m) => m.path).sort();
     assert.deepEqual(
@@ -187,15 +187,15 @@ test('⚠️ a `^`-anchored pattern matches the FIRST line of a BOM file', () =>
   }
 });
 
-test('a BOM + CRLF file — the two legitimate Windows shapes together', () => {
+test('a BOM + CRLF file — the two legitimate Windows shapes together', async () => {
   const bom = Buffer.from([0xef, 0xbb, 0xbf]);
   const root = makeTree({
     'both.ts': Buffer.concat([bom, Buffer.from('import a from "a";\r\n\tconst needleBC = 2;\r\n', 'utf8')]),
   });
   try {
-    const anchored = searchText(root, '^import a');
+    const anchored = await searchText(root, '^import a');
     assert.equal(anchored.matches.length, 1, 'BOM + CRLF must not defeat a `^` anchor');
-    const inner = searchText(root, 'needleBC = 2;$');
+    const inner = await searchText(root, 'needleBC = 2;$');
     assert.equal(inner.matches.length, 1, 'BOM + CRLF must not defeat a `$` anchor');
     assert.equal(inner.matches[0].text, '\tconst needleBC = 2;');
   } finally {
@@ -205,14 +205,14 @@ test('a BOM + CRLF file — the two legitimate Windows shapes together', () => {
 
 // ══ (4) THE OTHER LEGITIMATE SHAPES — A GUARD MUST NOT FAIL CORRECT WORK ════
 
-test('an empty file, and a file with no trailing newline, are both handled', () => {
+test('an empty file, and a file with no trailing newline, are both handled', async () => {
   const root = makeTree({
     'empty.js': '',
     'no-newline.js': '  const last = needleN;',
     'only-newline.js': '\n',
   });
   try {
-    const r = searchText(root, 'needleN');
+    const r = await searchText(root, 'needleN');
     assert.equal(r.ok, true);
     assert.equal(r.matches.length, 1, 'a file with no trailing newline still has a last line');
     assert.equal(r.matches[0].path, 'no-newline.js');
@@ -220,18 +220,18 @@ test('an empty file, and a file with no trailing newline, are both handled', () 
     assert.equal(r.skippedCount, 0, 'an empty file is not a skip — it was read, it just has nothing in it');
 
     // And an empty file is not a crash and not a false positive.
-    const dot = searchText(root, 'x');
+    const dot = await searchText(root, 'x');
     assert.equal(dot.ok, true);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
 });
 
-test('a BOM-only file and a CRLF-only file do not produce phantom matches', () => {
+test('a BOM-only file and a CRLF-only file do not produce phantom matches', async () => {
   const bom = Buffer.from([0xef, 0xbb, 0xbf]);
   const root = makeTree({ 'bomonly.txt': bom, 'crlfonly.txt': Buffer.from('\r\n\r\n', 'utf8') });
   try {
-    const r = searchText(root, 'anything');
+    const r = await searchText(root, 'anything');
     assert.equal(r.ok, true);
     assert.deepEqual(r.matches, []);
     assert.equal(r.skippedCount, 0);
@@ -249,25 +249,25 @@ function manyHits(n) {
   return makeTree(files);
 }
 
-test('⭐ search_text pages: offset walks past the cap, and `total` says how much is out there', () => {
+test('⭐ search_text pages: offset walks past the cap, and `total` says how much is out there', async () => {
   const n = 150;
   const root = manyHits(n);
   try {
-    const p1 = searchText(root, 'PAGEME');
+    const p1 = await searchText(root, 'PAGEME');
     assert.equal(p1.ok, true);
     assert.equal(p1.matches.length, MAX_MATCHES);
     assert.equal(p1.total, n, 'the reply must say how many hits exist, not just that there were "more"');
     assert.equal(p1.offset, 0);
     assert.equal(p1.truncated, true);
 
-    const p2 = searchText(root, 'PAGEME', { offset: MAX_MATCHES });
+    const p2 = await searchText(root, 'PAGEME', { offset: MAX_MATCHES });
     assert.equal(p2.ok, true);
     assert.equal(p2.offset, MAX_MATCHES);
     assert.equal(p2.matches.length, MAX_MATCHES, 'the second page must exist');
     assert.equal(p2.total, n);
     assert.equal(p2.truncated, true);
 
-    const p3 = searchText(root, 'PAGEME', { offset: MAX_MATCHES * 2 });
+    const p3 = await searchText(root, 'PAGEME', { offset: MAX_MATCHES * 2 });
     assert.equal(p3.matches.length, n - MAX_MATCHES * 2);
     assert.equal(p3.truncated, false, 'the last page has nothing after it');
 
@@ -280,7 +280,7 @@ test('⭐ search_text pages: offset walks past the cap, and `total` says how muc
   }
 });
 
-test('⭐ find_files pages the same way, with the same `total`', () => {
+test('⭐ find_files pages the same way, with the same `total`', async () => {
   const n = 150;
   const root = manyHits(n);
   try {
@@ -307,10 +307,10 @@ test('⭐ find_files pages the same way, with the same `total`', () => {
   }
 });
 
-test('an offset past the end is an honest empty page, not an error and not a wrap-around', () => {
+test('an offset past the end is an honest empty page, not an error and not a wrap-around', async () => {
   const root = manyHits(10);
   try {
-    const r = searchText(root, 'PAGEME', { offset: 500 });
+    const r = await searchText(root, 'PAGEME', { offset: 500 });
     assert.equal(r.ok, true);
     assert.deepEqual(r.matches, []);
     assert.equal(r.total, 10, 'the model must still learn the real size');
@@ -325,30 +325,30 @@ test('an offset past the end is an honest empty page, not an error and not a wra
   }
 });
 
-test('a nonsense offset is REFUSED with a usable message, never silently ignored', () => {
+test('a nonsense offset is REFUSED with a usable message, never silently ignored', async () => {
   const root = manyHits(3);
   try {
     for (const bad of [-1, 1.5, 'later', {}]) {
-      const r = searchText(root, 'PAGEME', { offset: bad });
+      const r = await searchText(root, 'PAGEME', { offset: bad });
       assert.equal(r.ok, false, `offset ${JSON.stringify(bad)} was accepted`);
       assert.match(r.error, /offset/i);
       const f = findFiles(root, '*.js', { offset: bad });
       assert.equal(f.ok, false, `find_files accepted offset ${JSON.stringify(bad)}`);
     }
     // …and the shapes a model legitimately sends still work.
-    assert.equal(searchText(root, 'PAGEME', { offset: 0 }).ok, true);
-    assert.equal(searchText(root, 'PAGEME', { offset: '2' }).ok, true, 'a numeric string is what JSON tool-calls often carry');
-    assert.equal(searchText(root, 'PAGEME', {}).offset, 0, 'omitting offset means page one');
-    assert.equal(searchText(root, 'PAGEME').offset, 0, 'omitting the options object entirely still works');
+    assert.equal((await searchText(root, 'PAGEME', { offset: 0 })).ok, true);
+    assert.equal((await searchText(root, 'PAGEME', { offset: '2' })).ok, true, 'a numeric string is what JSON tool-calls often carry');
+    assert.equal((await searchText(root, 'PAGEME', {})).offset, 0, 'omitting offset means page one');
+    assert.equal((await searchText(root, 'PAGEME')).offset, 0, 'omitting the options object entirely still works');
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
 });
 
-test('`total` is marked INEXACT when the walk itself was capped — never a false census', () => {
+test('`total` is marked INEXACT when the walk itself was capped — never a false census', async () => {
   const root = manyHits(20);
   try {
-    const r = searchText(root, 'PAGEME');
+    const r = await searchText(root, 'PAGEME');
     assert.equal(r.totalExact, true, 'a small clean tree gives an exact count');
     assert.equal(r.scanCapped, false);
     const f = findFiles(root, '*.js');
@@ -358,7 +358,7 @@ test('`total` is marked INEXACT when the walk itself was capped — never a fals
   }
 });
 
-test('both schemas declare `offset`, and say what `total` means', () => {
+test('both schemas declare `offset`, and say what `total` means', async () => {
   const s = searchToolSchemas();
   const byName = Object.fromEntries(s.map((t) => [t.function.name, t]));
   for (const name of ['find_files', 'search_text']) {
@@ -379,7 +379,7 @@ test('both schemas declare `offset`, and say what `total` means', () => {
 
 // ══ (6) THE GUARDS THAT MUST SURVIVE ALL OF THE ABOVE ═══════════════════════
 
-test('⚠️⚠️ paging cannot be used to page INTO a credential file', () => {
+test('⚠️⚠️ paging cannot be used to page INTO a credential file', async () => {
   const root = makeTree({
     '.env': 'OPENROUTER_API_KEY=sk-or-v1-CANARYENV\n',
     'id_rsa': '-----BEGIN OPENSSH PRIVATE KEY-----\nCANARYKEY\n',
@@ -388,14 +388,14 @@ test('⚠️⚠️ paging cannot be used to page INTO a credential file', () => 
   });
   try {
     for (const offset of [0, 1, 2, 50]) {
-      const r = searchText(root, 'CANARY', { offset });
+      const r = await searchText(root, 'CANARY', { offset });
       assert.equal(r.ok, true);
       const blob = JSON.stringify(r);
       for (const secret of ['CANARYENV', 'CANARYKEY', 'CANARYAWS']) {
         assert.ok(!blob.includes(secret), `${secret} leaked at offset ${offset}`);
       }
     }
-    const first = searchText(root, 'CANARY');
+    const first = await searchText(root, 'CANARY');
     assert.equal(first.withheld, 2, 'id_rsa and secrets.json are withheld and COUNTED');
     assert.ok(first.matches.some((m) => m.path === 'src/app.js'));
     assert.equal(first.matches[0].text, '  // CANARYOK — ordinary source', 'and it is still byte-exact');

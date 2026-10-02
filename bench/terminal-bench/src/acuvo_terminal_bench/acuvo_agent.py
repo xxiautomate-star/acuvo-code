@@ -76,7 +76,23 @@ STDERR_FILE = f"{AGENT_DIR}/acuvo-stderr.log"
 # measured reasoning as a blast radius; scoring at the product's real limit is
 # the number we would have to defend anyway, and if it proves too few that is a
 # finding about the product rather than a knob to turn.
-MAX_ROUNDS = 16
+# ── ⚠️⚠️⚠️ RAISED 16 → 32 ON 2026-08-23, AND 16 WAS MEASURING THE FLAG ───
+#
+# The comment above states the principle and the constant was violating it. 16
+# was the CLI's ceiling WHEN THIS WAS WRITTEN; `MAX_ROUNDS_LIMIT` is now **64**,
+# so the bench has been running the agent at a quarter of its available horizon.
+#
+# ⚠️ MEASURED THE SAME DAY: with a correctly-built bundle,
+# `adaptive-rejection-sampler` ran all 16 rounds and stopped at `round-cap` —
+# it did not fail the task, it ran out of turns. A cap that is reached is a cap
+# that is deciding the score.
+#
+# ⭐ 32, NOT 64, AND THE REASON IS MONEY NOT MODESTY. Per-task spend is already
+# bounded by `--budget` ($0.10), but the DeepSeek balance funding this run is
+# $1.25. Quadrupling the horizon across 89 tasks risks exhausting it mid-run,
+# and a run that dies at task 70 produces no score at all. 32 doubles the
+# horizon at a cost the balance can certainly cover; 64 needs a top-up first.
+MAX_ROUNDS = 32
 
 #: Pinned deliberately — see the install step. A benchmark result produced
 #: against "whatever node was latest that week" cannot be reproduced, and an
@@ -146,6 +162,11 @@ BUDGET_USD = _SCORED_BUDGET_USD
 # this, we are reporting a configuration that is not the default install. Both
 # are true, so both get said. The CLI's own ceiling is 900s (`cli-args.mjs`).
 REQUEST_TIMEOUT_S = 600
+
+# The COMMAND clock, distinct from the model-request clock above.
+# 600 is MAX_COMMAND_TIMEOUT_MS (lib/command.mjs); the CLI validates and
+# rejects anything higher, so this is the ceiling rather than a guess.
+COMMAND_TIMEOUT_S = 600
 
 
 class AcuvoAgent(BaseInstalledAgent):
@@ -278,13 +299,70 @@ class AcuvoAgent(BaseInstalledAgent):
         The single-file agent. ⚠️ REFUSES RATHER THAN SHIPPING A STALE ONE: a
         bundle from last week silently benchmarks last week's code, and the
         number would be attributed to today's.
+
+        ── ⚠️⚠️ THAT SENTENCE WAS TRUE AND THE CODE DID NOT ENFORCE IT ─────────
+
+        Until 2026-08-29 the only check was `is_file()` — it caught a MISSING
+        bundle and never a stale one, which is the case it was written about.
+        The cost is measured, not hypothetical:
+
+        `full-89` ran at 14:55 on 2026-08-23, **twelve minutes after** the
+        `looksLikeVerification` guard landed at 14:43, and produced 46 runs that
+        stopped `verified` with a command the guard rejects. Every run after
+        17:23 that day produced ZERO. So the archive pools one stale-bundle run
+        with post-fix runs, and that single contaminated batch is the entire
+        source of the "24 runs claimed verified while failing" finding — which
+        cost a full investigation to discover was archaeology.
+
+        It also hid the real number: pass rate **8.6% → 45.5%** across that
+        boundary. A stale bundle does not just mislead, it conceals.
+
+        ⭐ THE RULE IS `test/bundle-is-not-stale.test.mjs`'s, DELIBERATELY —
+        newest mtime across `lib/*.mjs` and `bin/*.mjs`, the files the bundler
+        actually reads. One rule in two languages is a drift risk; two different
+        rules would be a guarantee.
+
+        ⚠️ IT REFUSES RATHER THAN REBUILDING. A benchmark that silently rebuilds
+        its subject is a benchmark that can hide a broken build behind a passing
+        score, and the operator would never see the bundle step fail.
+        `ACUVO_BENCH_ALLOW_STALE=1` exists for deliberately scoring an old
+        bundle — which is a real thing to want, and should be said out loud.
         """
+        import os
+
         bundle = self._repo_root() / "dist" / "acuvo.mjs"
         if not bundle.is_file():
             raise FileNotFoundError(
                 f"{bundle} is missing — run `node scripts/bundle.mjs --out dist/acuvo.mjs` "
                 "before benchmarking, so the number belongs to the code you are testing."
             )
+
+        if os.environ.get("ACUVO_BENCH_ALLOW_STALE") == "1":
+            return bundle
+
+        built = bundle.stat().st_mtime
+        newest_path, newest_at = None, 0.0
+        for sub in ("lib", "bin"):
+            d = self._repo_root() / sub
+            if not d.is_dir():
+                continue
+            for f in d.iterdir():
+                if f.suffix != ".mjs" or not f.is_file():
+                    continue
+                at = f.stat().st_mtime
+                if at > newest_at:
+                    newest_path, newest_at = f"{sub}/{f.name}", at
+
+        if newest_path is not None and newest_at > built:
+            drift = int(newest_at - built)
+            raise RuntimeError(
+                f"dist/acuvo.mjs is STALE — {newest_path} is {drift}s newer. This run would "
+                f"score code you are not testing, and has done: the 2026-08-23 `full-89` batch "
+                f"ran 12 minutes after a fix and measured the version before it.\n"
+                f"  run: node scripts/bundle.mjs --out dist/acuvo.mjs\n"
+                f"  or:  ACUVO_BENCH_ALLOW_STALE=1 (only if you MEAN to score an old bundle)"
+            )
+
         return bundle
 
     def _host_node_tarball(self, arch: str) -> Path:
@@ -343,7 +421,53 @@ class AcuvoAgent(BaseInstalledAgent):
         env = {
             **access.env,
             "OPENROUTER_API_KEY": api_key,
+            #
+            # ── ⭐⭐ EVERY LANGUAGE PRESET IS OFF BY DEFAULT, INCLUDING HERE ─────
+            #
+            # `run_program` and `start_process` allow node, npm, npx and tsc
+            # and nothing else until a preset is switched on. Terminal-Bench is
+            # mostly C, Python, Go and Rust, so out of the box the structured
+            # paths could not compile or test the majority of the benchmark.
+            #
+            # ⚠️ AND THE ASYMMETRY IS WHAT ACTUALLY COST US. `run_command`
+            # under `--shell` deliberately skips the validator, so the agent
+            # COULD run `make` in the FOREGROUND — where the command timeout
+            # kills it — while `start_process` refused it in the BACKGROUND,
+            # where a long build would have survived. deep100/build-pov-ray
+            # round 32: 'start_process: "make" is not a program this agent may
+            # run. Allowed: node, npm, npx, tsc.' The refusal pushed every
+            # build onto the one path that kills it, and four of our measured
+            # round-sinks are builds polling a foreground compile.
+            #
+            # ⭐ THIS IS THE DESIGNED DOOR, NOT A BYPASS. The refusal message
+            # names it itself, presets are curated per language (make still
+            # refuses `-j4`, which caused a proto race in our own transcript),
+            # and it fixes the foreground and background paths together.
+            "ACUVO_ALLOW_COMMANDS": "make,python,go,rust,node-bin",
         }
+
+        # ── ⭐⭐ SPEND OUR OWN DEEPSEEK CREDIT, NOT THE ONE CUSTOMERS RUN ON ──
+        #
+        # Roman, 2026-08-23: *"urgent, you haven't been using our direct
+        # DeepSeek API credits for the benchmark, you've been using OpenRouter,
+        # which we want to save for users. DeepSeek direct, just use it."*
+        #
+        # He is right and it is not only about the money. The OpenRouter key is
+        # the one the GATEWAY holds — the balance every paying customer draws
+        # against. A benchmark is our cost, not theirs, and spending a shared
+        # production balance on our own measurement is the kind of thing that
+        # shows up later as a customer being rate-limited by a test.
+        #
+        # ⚠️ THE OPENROUTER KEY STAYS AS THE FALLBACK. `directDeepSeek` in
+        # lib/model.mjs is gated on BOTH `ACUVO_DEEPSEEK_DIRECT=1` and a key,
+        # and only maps two model ids; anything else falls through to the
+        # OpenRouter ladder. Removing the fallback would turn "our credit ran
+        # out" into "the benchmark failed", which reads as a capability result
+        # when it is an accounting one.
+        deepseek_key = os.environ.get("DEEPSEEK_API_KEY", "").strip()
+        if deepseek_key:
+            env["DEEPSEEK_API_KEY"] = deepseek_key
+            env["ACUVO_DEEPSEEK_DIRECT"] = "1"
         if model_id:
             env["OPENROUTER_CODEGEN_MODEL"] = model_id
 
@@ -360,9 +484,113 @@ class AcuvoAgent(BaseInstalledAgent):
                 # to fail, harbor would raise NonZeroAgentExitCodeError and the
                 # trial would be recorded as an error rather than a miss,
                 # quietly deleting our real failures from the denominator.
-                f"acuvo --json --shell --max-rounds {MAX_ROUNDS} --budget {budget_usd} "
-                f"--timeout {REQUEST_TIMEOUT_S} {escaped} "
-                f"> {RESULT_FILE} 2> {STDERR_FILE} || true"
+                # ── ⭐⭐⭐ `--until-done` — THE ONE THING THAT IS OURS ───────────
+                #
+                # Roman, 2026-08-23: *"we need a fucking exceptional harness no
+                # matter what it takes, and specific to Acuvo as well."*
+                #
+                # ⚠️ MEASURED THE SAME DAY: of eight failures, SIX stopped at
+                # `round-cap` with competent work in flight — installing R and
+                # repairing an interrupted dpkg state at round 26/32, linking .so
+                # files at exit 0 on round 30/32. They ran out of TURNS. They did
+                # not fail the task.
+                #
+                # ⭐ AND PLAIN `--max-rounds` IS THE WRONG FIX. More of the same
+                # attempt is not a strategy. `--until-done` ESCALATES: one
+                # attempt, then a FRESH CONTEXT carrying the failure, then several
+                # parallel attempts at different angles. That ladder is Acuvo's,
+                # not the model's, and it is exactly the shape of a task that
+                # stalls two thirds of the way in.
+                #
+                # ⚠️ IT REFUSES TO RUN WITHOUT `--budget`, and the budget below is
+                # unchanged. So this buys a 6x deeper horizon (200 rounds vs 32)
+                # at the SAME money ceiling — the dollar governor still binds
+                # first, every time, and it is checked before each round.
+                # ── ⚠️⚠️ I TRIED `--until-done` HERE AND THE EXPERIMENT KILLED IT ──
+                #
+                # The reasoning was sound: 6 of 8 failures stopped at `round-cap`
+                # with competent work in flight, and `--until-done` ESCALATES
+                # rather than merely retrying. Measured 2026-08-23 on
+                # `cancel-async-tasks`:
+                #
+                #     2 attempts x 24 rounds, killed at round 19 of attempt 2
+                #     acuvo-result.json -> 0 BYTES -> scored 0
+                #
+                # ⚠️ `--until-done` SPENDS WALL-CLOCK, NOT JUST MONEY. Terminal-Bench
+                # enforces a per-task TIME limit, and blowing it produces NO
+                # document at all — strictly worse than a partial answer that at
+                # least gets verified. It is also why three tasks in the previous
+                # run had "no agent result": same kill, same empty file.
+                #
+                # ⭐ AND ESCALATION IS THE WRONG SHAPE FOR THESE TASKS ANYWAY. A
+                # fresh context RESTARTS the work: the agent that had already
+                # installed R and repaired dpkg throws that away and pays for it
+                # again. What a stalled build needs is MORE ROUNDS INSIDE ONE
+                # ATTEMPT, keeping everything it has learned.
+                #
+                # ⭐ So: one deep attempt. 100 rounds is ~3x the old cap and well
+                # inside the 1000 the CLI now permits, and `--budget` still binds
+                # first — checked before every round, so this cannot raise what a
+                # task costs, only what it may attempt within it.
+                #
+                # ⭐⭐ `--command-timeout` IS A DIFFERENT CLOCK FROM `--timeout`, AND
+                # OMITTING IT WAS COSTING WHOLE TASKS.
+                #
+                # `--timeout` bounds a MODEL REQUEST. The command clock is
+                # `--command-timeout`, and leaving it unset ran every command at
+                # DEFAULT_COMMAND_TIMEOUT_MS = 120s while MAX_COMMAND_TIMEOUT_MS
+                # = 600s sat unused. 120s is under the honest runtime of the
+                # single most common command on this benchmark: an install.
+                #
+                # Measured from our own transcripts: count-dataset-tokens lost
+                # 841s of a 900s budget (93%) to four kills that returned
+                # NOTHING; build-cython-ext lost 358s of 900s to two pip
+                # installs that then succeeded in 52.3s and 21.4s once split.
+                #
+                # ⚠️ AND THE SECOND-ORDER COST IS WORSE THAN THE LOST TIME.
+                # SIGKILLing apt at 120s leaves dpkg mid-transaction, so the next
+                # round inherits a BROKEN machine: build-pmars round 17 reads
+                # "the previous timed-out install left dpkg in a bad state", the
+                # repair is itself killed at 120s, and by round 32 three
+                # identical apt-gets are running. The default manufactured that
+                # loop.
+                #
+                # ⚠️ This raises no cost. `--budget` is checked before every
+                # round and still binds first; this only stops us paying for
+                # work and then throwing it away one second before it lands.
+                f"acuvo --json --shell --max-rounds 100 --budget {budget_usd} "
+                f"--timeout {REQUEST_TIMEOUT_S} --command-timeout {COMMAND_TIMEOUT_S} {escaped} "
+                f"> {RESULT_FILE} 2> {STDERR_FILE} || true; "
+                # ── ⭐⭐ THE TRANSCRIPT ALREADY EXISTS. WE WERE THROWING IT AWAY.
+                #
+                # `session.mjs` writes the WHOLE conversation — every assistant
+                # turn, every tool call with its arguments, every result, with
+                # secrets redacted on the way in — to `<workspace>/.acuvo/sessions/`
+                # on every run. It is what `acuvo --replay` reads.
+                #
+                # ⚠️⚠️ AND IT DIES WITH THE CONTAINER, because only these two
+                # files are synced back. So across 139 recorded runs and 3,021
+                # collected files there is not one `messages` array, and the
+                # question "how much did repeated reads cost us" was
+                # UNANSWERABLE retrospectively — not because the data was never
+                # produced, but because it was never carried out of the room.
+                #
+                # ⚠️ THE STDERR LOG IS NOT A SUBSTITUTE, and that is measurable:
+                # `renderToolRecord`'s `default:` arm prints `· <verb>` with NO
+                # SUBJECT, so `check_process`, `fetch_url`, `search_text`,
+                # `read_lines`, `read_around` and `read_image` appear in the log
+                # as a bare word. Duplicate-argument analysis is possible today
+                # for exactly two verbs — `run_command` and `read_file` — and
+                # impossible for the rest.
+                #
+                # ⭐ COSTS NOTHING: no extra run, no extra model call, no new
+                # privacy surface — the file is already written and already
+                # redacted. It is a copy.
+                #
+                # ⚠️ `|| true` and `2>/dev/null`, like every other line here: a
+                # missing sessions directory (a run that died before its first
+                # save) must never fail the trial.
+                f"cp -r .acuvo/sessions {AGENT_DIR}/sessions 2>/dev/null || true"
             ),
             env=env,
         )

@@ -13,8 +13,13 @@
  * From that round on, every single round is a cache miss, forever.
  *
  * These tests pin the two fixes: fire at a HIGH water mark, compact to a LOW
- * one, and hold the ceiling well under the SMALLEST model in the fallback chain
- * (deepseek-chat, 163,840) rather than under the primary's 1,048,576.
+ * one, and hold the ceiling under the smallest DECLARED window in the fallback
+ * chain (deepseek-chat, 128,000) rather than under the primary's 1,048,576.
+ *
+ * ⚠️ THAT SENTENCE SAID 163,840 UNTIL 2026-09-18 and it was the larger of that
+ * model's two endpoints, not the smaller. Read the constant's comment below
+ * before trusting any figure in this file — and prefer the two instruments it
+ * names to any figure in this file at all.
  */
 
 import { test } from 'node:test';
@@ -24,6 +29,8 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
 import { compactMessages, estimateMessagesTokens } from '../lib/compact.mjs';
+import { extractReply } from '../lib/model.mjs';
+import { isRetryable } from '../lib/chain.mjs';
 
 const turnSource = readFileSync(
   join(dirname(fileURLToPath(import.meta.url)), '..', 'lib', 'turn.mjs'),
@@ -38,8 +45,81 @@ const numberOf = (name) => {
 const HIGH = numberOf('CONTEXT_BUDGET_TOKENS');
 const LOW = numberOf('COMPACT_TARGET_TOKENS');
 
-/** The smallest context window among the models `buildChain` actually falls back to. */
-const SMALLEST_CHAIN_WINDOW = 163_840; // deepseek/deepseek-chat, read from the OpenRouter API
+/**
+ * ── ⭐⭐⭐ THE EXPERIMENT WAS RUN. 2026-09-18. EVERY NUMBER HERE WAS WRONG AND
+ *          THE TWO PROPOSED FIXES WERE BOTH WRONG TOO ─────────────────────────
+ *
+ * This constant read `163_840 // deepseek/deepseek-chat`, described as *"the
+ * smallest context window among the models buildChain falls back to"*. That
+ * model is served by two machines that disagree, so the line named the LARGER
+ * one and called it the smallest. The `todo` below it asked whether an
+ * oversized request could ever reach the smaller one, and
+ * `DECISION-the-first-fallback-is-unpinned.md` §4 wrote down the one
+ * experiment that settles it and priced it at $0.04.
+ *
+ * ⭐ It cost less than that, and it answered a bigger question than it asked.
+ * `scripts/zz-does-the-router-filter-by-context.mjs` and
+ * `scripts/zz-what-can-the-fallback-actually-take.mjs` are the instruments;
+ * run them rather than trusting the figures below, which is the rule this
+ * file has now broken twice.
+ *
+ * ── 1 · THE ROUTER DOES FILTER — and filtering made it WORSE ───────────────
+ *
+ * A 145,000-estimate request, unpinned, was routed AWAY from the 128,000
+ * endpoint and onto the 163,840 one. So the documented exclusion is real for
+ * this account. It is also, here, a trap: the endpoint it selected on the
+ * strength of the larger advertised number is the one that can serve less.
+ *
+ * ── 2 · 🚨 THE ADVERTISED WINDOW IS NOT THE SERVED WINDOW ──────────────────
+ *
+ *     endpoint      advertises   actually serves
+ *     StreamLake       128,000   90,950 real tokens, measured OK
+ *     DeepInfra        163,840   **32,768** — a hard cap named in its own error
+ *
+ * Verbatim, four times at four sizes: *"The sum of prompt length (90948.0),
+ * query length (0) should not exceed max_num_tokens (32768)"*. Five times less
+ * than it advertises. Every number in the decision doc, in OpenRouter's own
+ * admission check, and in this guard was derived from the advertised figure.
+ *
+ * ── 3 · ⭐ OPENROUTER ADMITS ON chars/4 — THE SAME ESTIMATOR THIS PACKAGE USES
+ *
+ * A 738,360-char prompt was refused as *"about 184601 tokens"*. 738,360 / 4 =
+ * 184,590. It does not tokenize before it decides. So the number OpenRouter
+ * compares against a window is the SAME NUMBER `estimateMessagesTokens`
+ * computes — and the `× 1.5` density multiplier this file used was measuring
+ * the wrong thing entirely. The two sides of the assertion below are now in one
+ * currency, which is why it can be asserted at all.
+ *
+ * ── 4 · ⛔ SO BOTH OPTIONS ON THE TABLE WERE WRONG ──────────────────────────
+ *
+ * **Pin to DeepInfra** — the decision doc's *"better value on the numbers"* —
+ * would have made 32,768 the permanent ceiling of the entire fallback leg, at
+ * 24% MORE per input token. It was the worst available move and it looked like
+ * the best one, because the number it was chosen on is advertising.
+ *
+ * **Lower `CONTEXT_BUDGET_TOKENS` 96,000 → ~77,000** buys nothing. 77,000
+ * estimated is still far above 32,768 real; dodging DeepInfra needs a ceiling
+ * near ~25,000, BELOW the 24,000 this whole file exists to have escaped. A
+ * ceiling cannot fix a cap five times under it.
+ *
+ * ⭐ THE FIX IS IN THE ERROR PATH, AND IT SHIPPED. The refusal arrives as an
+ * HTTP **200** carrying an `error` and no `choices`; `extractReply` discarded
+ * the reason and `isRetryable` matched nothing, so the chain STOPPED with
+ * `z-ai/glm-4.6` (200k) untried. See `test/upstream-200-error.test.mjs`.
+ * Unpinned routing was measured at 1 DeepInfra in 12 rolls, so ~8% of fallback
+ * rounds over 32,768 real tokens used to end the session outright.
+ *
+ * ⛔ WHAT IS LEFT IS ROMAN'S, AND IT IS THE OPPOSITE OF WHAT WAS PROPOSED: pin
+ * `deepseek/deepseek-chat` to **StreamLake** — 24% CHEAPER per input token
+ * ($0.2574 vs $0.3200) and 2.8× more usable context. Still a pin.
+ */
+const SMALLEST_CHAIN_WINDOW = 128_000; // the smallest DECLARED window in the chain — deepseek/deepseek-chat on StreamLake
+/**
+ * ⚠️ WHAT THE WORST ENDPOINT IN THE CHAIN REALLY SERVES, which no ceiling this
+ * file could sanely hold. Named here so the number is on the record rather than
+ * folded into an assertion that would have to be false to pass.
+ */
+const WORST_ENDPOINT_SERVED_TOKENS = 32_768; // DeepInfra's undeclared cap, measured
 const REPLY_HEADROOM = 12_000; // DEFAULT_MAX_TOKENS
 
 test('⭐ the ceiling is far above the old 24,000, which wasted the cache', () => {
@@ -47,24 +127,62 @@ test('⭐ the ceiling is far above the old 24,000, which wasted the cache', () =
   assert.ok(HIGH > 24_000, `the budget is still ${HIGH}; the whole point was that 24,000 was too low`);
 });
 
-test('⚠️⚠️ the ceiling still fits the SMALLEST model in the fallback chain', () => {
+test('⚠️⚠️ the ceiling is admitted by the SMALLEST DECLARED window in the chain', () => {
   /**
    * ⚠️ SIZING IT TO THE PRIMARY'S 1,048,576 WINDOW WOULD BE CORRECT UNTIL THE
-   * FIRST FALLBACK, then catastrophic. The chain drops to deepseek-chat at
-   * 163,840, and a transcript built under a 1M assumption cannot be sent there
-   * at all — the failure would arrive as a provider error mid-task, on the
-   * unlucky run where the primary was already down.
+   * FIRST FALLBACK, then catastrophic — a transcript built under a 1M
+   * assumption cannot be sent to a 128k endpoint at all, and the failure
+   * arrives mid-task on the unlucky run where the primary was already down.
    *
-   * ⚠️ AND THE ESTIMATOR UNDERCOUNTS. chars/4 is an English approximation; code
-   * runs denser, so real tokens can be ~1.3-1.5x the estimate. The assertion
-   * uses 1.5x deliberately — the margin has to survive the worst case, not the
-   * average one.
+   * ⭐ MEASURED, NOT MODELLED. OpenRouter's admission check is `chars / 4` —
+   * the identical arithmetic `estimateMessagesTokens` does — so HIGH and the
+   * declared window are the same unit and the comparison is exact. The old
+   * `× 1.5` "the estimator undercounts" margin was a guess applied across a
+   * unit boundary; it is gone, and what replaced it is a wire measurement.
+   *
+   * ⚠️ REPLY_HEADROOM STAYS IN. `max_tokens` counts toward the admission total
+   * — the refusal message reads "184601 tokens (184600 of text input, 1 in the
+   * output)", so the output allowance is explicitly part of the sum.
    */
-  const worstCaseReal = HIGH * 1.5;
   assert.ok(
-    worstCaseReal + REPLY_HEADROOM < SMALLEST_CHAIN_WINDOW,
-    `${HIGH} estimated tokens could be ${worstCaseReal} real, plus ${REPLY_HEADROOM} of reply — `
-    + `that does not fit deepseek-chat's ${SMALLEST_CHAIN_WINDOW}`,
+    HIGH + REPLY_HEADROOM < SMALLEST_CHAIN_WINDOW,
+    `${HIGH} estimated tokens plus ${REPLY_HEADROOM} of reply allowance is ${HIGH + REPLY_HEADROOM}, `
+    + `which OpenRouter will not admit to a ${SMALLEST_CHAIN_WINDOW} endpoint`,
+  );
+});
+
+test('🚨 the chain contains an endpoint NO ceiling can satisfy, and that is on the record', () => {
+  /**
+   * ── ⭐ A GUARD THAT ASSERTS THE PROBLEM IS STILL THE PROBLEM ──────────────
+   *
+   * This replaces a `todo` that asked whether an oversized request could reach
+   * the smaller endpoint. The measurement answered something worse: the LARGER
+   * endpoint serves 32,768. So the honest assertion is not "the ceiling fits"
+   * — it provably does not and cannot — but **that the gap is known, that the
+   * only ceiling which would close it is below the one this file exists to
+   * have escaped, and that the mitigation is therefore in the error path.**
+   *
+   * ⚠️ This goes red if somebody "fixes" it by dropping the budget under the
+   * cap, which would trade the common path for a rare one — the exact move
+   * `DECISION-the-first-fallback-is-unpinned.md` prices and refuses.
+   */
+  assert.ok(
+    HIGH > WORST_ENDPOINT_SERVED_TOKENS,
+    `the budget has been dropped to ${HIGH} to dodge one endpoint's undeclared `
+    + `${WORST_ENDPOINT_SERVED_TOKENS} cap. That protects a RARE fallback leg by compacting more often on `
+    + 'EVERY long run, and each compaction moves the prefix, which is the margin. The mitigation is '
+    + 'test/upstream-200-error.test.mjs — the chain steps to a 200k model — not a lower ceiling.',
+  );
+  /**
+   * ⭐ AND THE MITIGATION IS ASSERTED, NOT ASSUMED. A comment saying "the error
+   * path handles it" is worth nothing if the error path stops handling it; this
+   * is the one line that ties this file to the fix that makes its own
+   * exceedance survivable.
+   */
+  assert.equal(
+    isRetryable(extractReply({ error: { message: 'Upstream error from DeepInfra: max_num_tokens (32768)' } }).error),
+    true,
+    'a capacity refusal must advance the chain, or the gap above ends sessions again',
   );
 });
 

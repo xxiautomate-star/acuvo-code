@@ -102,8 +102,24 @@ test('⚠️⚠️ REACH — the loop emits it BEFORE the await, not after', () 
   const executed = code.indexOf('await executeToolCall', emitted);
   assert.ok(executed > emitted, 'tool-start is not emitted before the tool executes');
 
-  // …and it is inside the per-call loop, so it fires once per call.
-  const loop = code.lastIndexOf('for (const call of calls)', emitted);
+  /**
+   * …and it is inside the per-call loop, so it fires once per call.
+   *
+   * ⚠️⚠️ THIS PINNED THE LOOP'S SHAPE, NOT THE SEAM, AND IT WENT RED FOR THE
+   * WRONG REASON. It matched the literal string `for (const call of calls)`, so
+   * when the round scheduler needed the call's INDEX and the header became
+   * `for (let callIndex = 0; …)` the guard failed a change that moved nothing
+   * it cares about. A guard that fails correct work is the defect this repo has
+   * paid for repeatedly — and the mirror image is worse: had the rewrite kept
+   * the old header while moving the emission, this would have stayed green.
+   *
+   * ⭐ SO IT NOW MATCHES THE FACT: *some* loop over `calls` opens before the
+   * emission. Both headers qualify and a third one would too; what still fails
+   * is the thing the test is named for — the emission leaving the loop.
+   */
+  const loopHeader = /for \((?:const \w+ of calls\)|let \w+ = 0; \w+ < calls\.length)/g;
+  let loop = -1;
+  for (const m of code.slice(0, emitted).matchAll(loopHeader)) loop = m.index;
   assert.ok(loop > 0 && loop < emitted, 'tool-start is outside the per-call loop');
 });
 

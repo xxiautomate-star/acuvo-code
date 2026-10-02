@@ -98,3 +98,55 @@ test('⭐ `board` takes arguments, and "board" in a sentence is still a task', (
   assert.equal(sentence.options.command, null, 'an instruction that mentions a board is not the board command');
   assert.equal(sentence.options.task, 'the board is rendering wrong');
 });
+
+/* ────────────────────────────────────────────────────────────────────────────
+ * THE LONG-HORIZON CEILING
+ * ──────────────────────────────────────────────────────────────────────────── */
+
+test('⭐⭐⭐ the long-horizon ceiling is GONE when money is bounding the run', () => {
+  /**
+   * Roman, 2026-08-23: *"yes we need long horizon ceiling gone."*
+   *
+   * A budget is in force on every ordinary run (`DEFAULT_BUDGET_USD`), and
+   * `turn.mjs` refuses the round it cannot afford BEFORE starting it. So the
+   * round count was never what protected the bill — it was a backstop against a
+   * bug in the governor, pinned at a number that had begun deciding benchmark
+   * scores rather than bounding spend.
+   */
+  const ok = parseArgv(['--max-rounds', '500', 'do the thing']);
+  assert.equal(ok.ok, true, ok.error);
+  assert.equal(ok.options.maxRounds, 500);
+});
+
+test('⚠️⚠️ --budget none KEEPS the low ceiling — both nets must not vanish at once', () => {
+  /**
+   * `--budget none` deliberately removes the money governor. Had the ceiling
+   * risen at the same moment, NOTHING would bound the run — which is precisely
+   * what raising a single constant would have done, silently.
+   */
+  const no = parseArgv(['--max-rounds', '500', '--budget', 'none', 'do the thing']);
+  assert.equal(no.ok, false);
+  assert.match(no.error, /needs a budget to bound it/);
+
+  const fine = parseArgv(['--max-rounds', '64', '--budget', 'none', 'x']);
+  assert.equal(fine.ok, true, fine.error);
+});
+
+test('⚠️⚠️ FLAG ORDER MUST NOT DECIDE WHETHER A RUN IS ALLOWED', () => {
+  /**
+   * The ceiling depends on the budget, and the budget can be typed AFTER
+   * --max-rounds. Validating only inside the parse loop would accept one
+   * ordering and refuse the other — a bug nobody ever reproduces.
+   */
+  const a = parseArgv(['--budget', 'none', '--max-rounds', '500', 'x']);
+  const b = parseArgv(['--max-rounds', '500', '--budget', 'none', 'x']);
+  assert.equal(a.ok, false);
+  assert.equal(b.ok, false);
+  assert.equal(a.error, b.error, 'the same mistake must get the same answer either way round');
+});
+
+test('⚠️ the DEFAULT does not move — a ceiling rising must cost nobody anything', () => {
+  const d = parseArgv(['do the thing']);
+  assert.equal(d.ok, true, d.error);
+  assert.equal(d.options.maxRounds, 24, 'DEFAULT_MAX_ROUNDS must be untouched by this change');
+});
