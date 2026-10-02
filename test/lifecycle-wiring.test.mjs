@@ -39,6 +39,19 @@ import { tmpdir } from 'node:os';
 import { saveSession } from '../lib/session.mjs';
 import { parseAuditLog } from '../lib/audit.mjs';
 
+/**
+ * ⚠️⚠️ SIGNED OUT, STATED EXPLICITLY. `...process.env, ACUVO_HOME: SIGNED_OUT_HOME` carries the developer's
+ * real HOME, so on a machine where somebody has run `acuvo --login` the spawned
+ * CLI gets a REAL account — and a signed-in run routes to our production gateway,
+ * deliberately outranking the loopback test seam. The child then talks to
+ * production instead of the stub and the assertions fail for a reason that has
+ * nothing to do with the code.
+ *
+ * Measured 2026-08-23: seventeen tests went red the moment the product was used
+ * for the first time.
+ */
+const SIGNED_OUT_HOME = join(tmpdir(), `acuvo-signed-out-${process.pid}`);
+
 const CLI = fileURLToPath(new URL('../bin/acuvo.mjs', import.meta.url));
 
 const EXIT_OK = 0;
@@ -58,7 +71,7 @@ function workspace() {
  * mode reads stdin; inheriting the runner's hangs `node --test` on a terminal.
  */
 function runCli(args, { key = DEAD_KEY } = {}) {
-  const env = { ...process.env, NO_COLOR: '1' };
+  const env = { ...process.env, ACUVO_HOME: SIGNED_OUT_HOME, NO_COLOR: '1' };
   if (key === null) delete env.OPENROUTER_API_KEY;
   else env.OPENROUTER_API_KEY = key;
   return spawnSync(process.execPath, [CLI, ...args], {

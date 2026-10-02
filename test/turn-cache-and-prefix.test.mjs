@@ -75,6 +75,18 @@ function workspace(t) {
 const config = { apiKey: 'k', model: 'deepseek/deepseek-chat' };
 
 /** A usage object in OpenRouter's shape. */
+/**
+ * ⚠️ THESE FIXTURES DESCRIBE A BUILD, SO THEY MUST LOOK LIKE ONE. `formatSummary`
+ * now stays silent on a turn that called NO tools — a greeting has no cost
+ * accounting to report (Roman: "it shouldn't say that stuff"). Every test below
+ * is about how a BUILD reports its cache, and a build uses tools; driving them
+ * with `toolCalls: []` made them conversational and the assertions vanished.
+ *
+ * ⭐ The property under test is unchanged. What changed is that the fixture now
+ * states the situation it was always meant to describe.
+ */
+const asBuild = (o) => ({ ...o, executed: [...(o.executed ?? []), { name: 'read_file', args: {}, result: { ok: true }, mutated: false }] });
+
 const usageWith = (prompt, cached, cost = 0.0005) => ({
   cost,
   total_tokens: prompt + 84,
@@ -228,7 +240,7 @@ test('the end-of-run summary states the hit rate next to the cost', async (t) =>
       usage: usageWith(3616, 3072, 0.000168), finishReason: 'stop',
     }),
   });
-  const text = formatSummary(outcome).join('\n');
+  const text = formatSummary(asBuild(outcome)).join('\n');
   const line = text.split('\n').find((l) => l.includes('$0.000168'));
   assert.ok(line, `no cost line in:\n${text}`);
   assert.ok(/cache 85%/.test(line), `cost line did not state the hit rate: ${line}`);
@@ -245,7 +257,7 @@ test('a 0% hit rate is PRINTED — it is a real measurement, and the expensive o
       usage: usageWith(3616, 0, 0.000512), finishReason: 'stop',
     }),
   });
-  const line = formatSummary(outcome).join('\n').split('\n').find((l) => l.includes('$0.000512'));
+  const line = formatSummary(asBuild(outcome)).join('\n').split('\n').find((l) => l.includes('$0.000512'));
   assert.ok(/cache 0%/.test(line), `a measured zero must be shown, got: ${line}`);
 });
 
@@ -259,7 +271,7 @@ test('a provider that reports nothing DEGRADES SILENTLY — never "0% cached"', 
     }),
   });
   assert.equal(outcome.usage.cache, null, 'unknown must be null, not a zeroed object');
-  const text = formatSummary(outcome).join('\n');
+  const text = formatSummary(asBuild(outcome)).join('\n');
   assert.ok(text.includes('$0.000500'), 'the cost line must still print');
   assert.ok(!/cache/i.test(text), `invented a cache claim from nothing:\n${text}`);
 });
@@ -290,7 +302,7 @@ test('a session where only SOME rounds report says how many did not', async (t) 
   // ⚠️ The silent round's prompt tokens are NOT counted as uncached. Doing so
   // would fabricate a low hit rate out of a provider's silence.
   assert.equal(c.promptTokens, 3616);
-  const text = formatSummary(outcome).join('\n');
+  const text = formatSummary(asBuild(outcome)).join('\n');
   assert.ok(/1 round unreported/.test(text), `did not disclose the silent round:\n${text}`);
 });
 
@@ -527,7 +539,7 @@ test('COMPACTION voids the prefix — and the run says so instead of hiding it',
   assert.equal(outcome.compactions, compactions.length,
     'the outcome must count the compactions, so the cost is attributable');
 
-  const text = formatSummary(outcome).join('\n');
+  const text = formatSummary(asBuild(outcome)).join('\n');
   assert.ok(/cache 3%/.test(text), `the collapsed hit rate was not reported:\n${text}`);
   assert.ok(/compact/i.test(text),
     `a low hit rate alongside compaction must name compaction as the cause:\n${text}`);
@@ -542,7 +554,7 @@ test('a healthy hit rate does NOT get the compaction warning', async (t) => {
       usage: usageWith(3616, 3072, 0.000168), finishReason: 'stop',
     }),
   });
-  const text = formatSummary(outcome).join('\n');
+  const text = formatSummary(asBuild(outcome)).join('\n');
   assert.equal(outcome.compactions, 0);
   assert.ok(!/compact/i.test(text), `warned about compaction on a clean run:\n${text}`);
 });
@@ -578,7 +590,7 @@ test('a note the terminal already streamed IN FULL is not printed a second time'
     'the live printer dropped the tail of the note');
 
   assert.equal(outcome.noteAlreadyShown, true);
-  const text = formatSummary(outcome).join('\n');
+  const text = formatSummary(asBuild(outcome)).join('\n');
   assert.ok(!text.includes('All done'),
     `the note was rendered twice — once live, once in the summary:\n${text}`);
 });
@@ -602,14 +614,28 @@ test('⚠️⚠️ the whole terminal prints the note EXACTLY ONCE — measured 
     onEvent: (e) => { const l = renderEvent(e); if (l.length > 0) printed.push(l.join('\n')); },
     script: streamingScript(note),
   });
-  const whole = `${printed.join('\n')}\n${formatSummary(outcome).join('\n')}`;
+  const whole = `${printed.join('\n')}\n${formatSummary(asBuild(outcome)).join('\n')}`;
   const hits = whole.split('src/greet.js now exports').length - 1;
   assert.equal(hits, 1, `the note appeared ${hits}× in the terminal:\n${whole}`);
 });
 
 test('a note too long to stream is PREVIEWED, marked as cut, and printed in full once', async (t) => {
   const dir = workspace(t);
-  const long = Array.from({ length: 9 }, (_, i) => `line ${i} ${'w'.repeat(70)}`).join('\n');
+  /**
+   * ⚠️ 9 LINES → 60, BECAUSE THE THRESHOLD MOVED AND THE PROPERTY DID NOT.
+   *
+   * The live preview cap was 3 lines, which meant nine lines counted as "too
+   * long". That cap turned every ordinary conversational answer into a preview
+   * plus a full reprint — Roman reported it twice as the CLI duplicating itself
+   * — so it is now 40: generous enough that a normal answer streams in full and
+   * is never reprinted, still bounded so a genuine wall of think-aloud cannot
+   * bury the tool lines underneath it.
+   *
+   * ⭐ This test is about what happens when a note EXCEEDS the cap, and that is
+   * still worth guarding. Only the definition of "exceeds" changed. Editing the
+   * assertion instead would have quietly deleted the guard.
+   */
+  const long = Array.from({ length: 60 }, (_, i) => `line ${i} ${'w'.repeat(70)}`).join('\n');
   const shown = [];
   const { outcome } = await driveSession({
     dir,
@@ -624,8 +650,8 @@ test('a note too long to stream is PREVIEWED, marked as cut, and printed in full
   assert.ok(streamed.includes('…'), `a truncated preview carried no ellipsis:\n${streamed}`);
 
   assert.equal(outcome.noteAlreadyShown, false);
-  const text = formatSummary(outcome).join('\n');
-  assert.ok(text.includes('line 8'), 'the full note must appear exactly once, in the summary');
+  const text = formatSummary(asBuild(outcome)).join('\n');
+  assert.ok(text.includes('line 59'), 'the full note must appear exactly once, in the summary');
 });
 
 test('a run nobody watched still prints its note — suppression needs proof it was shown', async (t) => {
@@ -646,6 +672,6 @@ test('a run nobody watched still prints its note — suppression needs proof it 
     }),
   });
   assert.equal(outcome.noteAlreadyShown, false);
-  assert.ok(formatSummary(outcome).join('\n').includes('All done'),
+  assert.ok(formatSummary(asBuild(outcome)).join('\n').includes('All done'),
     'a non-streaming run lost its note');
 });

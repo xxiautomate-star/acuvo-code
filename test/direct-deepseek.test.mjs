@@ -13,19 +13,38 @@
  * two completely different tasks** — the tools JSON alone is 60,799 chars, 92%
  * of it, and never changes. The ceiling is 99.9%.
  *
- * A prompt cache lives on ONE SERVER. Pinning `provider: ['StreamLake']` pins a
- * FLEET, not a machine, so every run rolls the dice and warms whichever server
- * it hit. Nothing we do to the prompt can fix that.
+ * A prompt cache lives on ONE SERVER. An aggregator's `provider` pin names a
+ * COMPANY, and a company is a FLEET, so every run rolls the dice and warms
+ * whichever server it hit. Nothing we do to the prompt can fix that.
  *
  * Going direct removes the lottery: one vendor, one endpoint, their own context
- * cache, no aggregator choosing a server — and no OpenRouter margin.
+ * cache, and no aggregator choosing a server for us.
  */
 import { test } from 'node:test';
 import assert from 'node:assert';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
-import { callModel, directDeepSeek, DEEPSEEK_DIRECT_MODELS } from '../lib/model.mjs';
+import { callModel, directDeepSeek, DEEPSEEK_DIRECT_MODELS, PROVIDER_PIN_BY_MODEL } from '../lib/model.mjs';
+
+/**
+ * ⚠️⚠️ SIGNED OUT, STATED EXPLICITLY. `callModel` resolves the endpoint through
+ * the ACUVO ACCOUNT first, so a bare `env: { ...SIGNED_OUT }` is not "no configuration" — it is
+ * "whatever is in this developer's ~/.acuvo". The moment Roman signed in
+ * (2026-08-23, 11:23) every assertion here started seeing the production gateway
+ * instead of OpenRouter, and the suite went red for a reason that had nothing to
+ * do with DeepSeek routing.
+ */
+const SIGNED_OUT = { ACUVO_HOME: join(tmpdir(), `acuvo-signed-out-${process.pid}`) };
 
 const FLASH = 'deepseek/deepseek-v4-flash-0731';
+/**
+ * ⚠️⚠️ DERIVED, NEVER TYPED. The two assertions below used to name the pin's
+ * lead ('StreamLake', then 'DeepInfra') and went red on every repin — twice, in
+ * a test whose subject is the LOCK and not the endpoint. Which name leads is
+ * pinned deliberately, in one place, by `provider-pin-per-model.test.mjs`.
+ */
+const FLASH_LEAD = PROVIDER_PIN_BY_MODEL[FLASH][0];
 
 function recorder() {
   const seen = [];
@@ -42,7 +61,7 @@ test('⚠️⚠️ with no DeepSeek key NOTHING changes — it still goes to Ope
   // The find-nothing half. This must never silently re-route someone's traffic
   // or spend on an account they did not choose.
   const r = recorder();
-  await callModel({ apiKey: 'or', model: FLASH, messages: [{ role: 'user', content: 'x' }], fetchImpl: r.fetchImpl, env: {} });
+  await callModel({ apiKey: 'or', model: FLASH, messages: [{ role: 'user', content: 'x' }], fetchImpl: r.fetchImpl, env: { ...SIGNED_OUT } });
   assert.match(r.seen[0].url, /openrouter\.ai/);
   assert.equal(r.seen[0].body.model, FLASH, 'the aggregator slug must survive');
   /**
@@ -52,7 +71,13 @@ test('⚠️⚠️ with no DeepSeek key NOTHING changes — it still goes to Ope
    * that pins the SERVER inside a provider's fleet. `only` restricts exactly
    * the same set with no ordering to take priority over.
    */
-  assert.deepEqual(r.seen[0].body.provider.only, ['StreamLake'], 'the warm lock still applies');
+  /**
+   * ⚠️ REPINNED 2026-08-27: flash's lead moved off StreamLake (7.3x the
+   * cheapest reachable endpoint, and the old comment claiming "the three
+   * cheapest within 3%" was false) onto DeepInfra, the corrected fp8-first
+   * lead at $0.08/$0.18/$0.016 — see `provider-pin-per-model.test.mjs`.
+   */
+  assert.deepEqual(r.seen[0].body.provider.only, [FLASH_LEAD], 'the warm lock still applies');
   assert.equal(r.seen[0].body.provider.order, undefined, 'an ORDER here would switch sticky routing off');
 });
 
@@ -60,7 +85,7 @@ test('⭐ with a DeepSeek key it goes DIRECT — one endpoint, one cache', async
   const r = recorder();
   await callModel({
     apiKey: 'or', model: FLASH, messages: [{ role: 'user', content: 'x' }],
-    fetchImpl: r.fetchImpl, env: { DEEPSEEK_API_KEY: 'ds-key', ACUVO_DEEPSEEK_DIRECT: '1' },
+    fetchImpl: r.fetchImpl, env: { ...SIGNED_OUT, DEEPSEEK_API_KEY: 'ds-key', ACUVO_DEEPSEEK_DIRECT: '1' },
   });
   assert.match(r.seen[0].url, /api\.deepseek\.com/);
   assert.equal(r.seen[0].auth, 'Bearer ds-key', 'the DeepSeek key must be used, not the OpenRouter one');
@@ -77,7 +102,7 @@ test('⚠️⚠️ the OpenRouter `provider` field NEVER reaches DeepSeek', asyn
   const r = recorder();
   await callModel({
     apiKey: 'or', model: FLASH, messages: [{ role: 'user', content: 'x' }],
-    fetchImpl: r.fetchImpl, env: { DEEPSEEK_API_KEY: 'ds-key', ACUVO_DEEPSEEK_DIRECT: '1' },
+    fetchImpl: r.fetchImpl, env: { ...SIGNED_OUT, DEEPSEEK_API_KEY: 'ds-key', ACUVO_DEEPSEEK_DIRECT: '1' },
   });
   assert.equal(r.seen[0].body.provider, undefined,
     'an OpenRouter routing field on DeepSeek 400s and reads as "DeepSeek is down"');
@@ -99,10 +124,12 @@ test('⭐⭐⭐ A KEY IS NOT A REQUEST — direct is OFF unless ACUVO_DEEPSEEK_D
    * one, deleting the gate in `directDeepSeek` turns the whole file green while
    * silently routing every build back onto DeepSeek's own API.
    *
-   * ⚠️ THE COST OF THAT REGRESSION IS NOT SMALL. Direct is 3.7x dearer on OUTPUT
-   * ($0.66/M vs OpenRouter's $0.18/M) and DOUBLES for 7 hours a day under peak
-   * billing (01:00-04:00 + 06:00-10:00 UTC = 11am-2pm / 4pm-8pm AEST). Measured
-   * across 95M tokens at 90% cache: 62.3% margin against 85.6%.
+   * ⚠️ THE COST OF THAT REGRESSION IS NOT SMALL. The direct route is several
+   * times dearer on OUTPUT — the token type a coding run is dominated by and
+   * the one that is never cached — and dearer again inside that vendor's daily
+   * peak-rate window (`lib/deepseek-hours.mjs`). A route change that silently
+   * multiplies the cost of every build is exactly the decision an environment
+   * variable must not be able to make by itself.
    */
   assert.equal(
     directDeepSeek(FLASH, { DEEPSEEK_API_KEY: 'ds-key' }),
@@ -156,7 +183,7 @@ test('⚠️⚠️ an UNFUNDED DeepSeek key falls back to OpenRouter instead of 
   const r = failingThenOk(402);
   const out = await callModel({
     apiKey: 'or', model: FLASH, messages: [{ role: 'user', content: 'x' }],
-    fetchImpl: r.fetchImpl, env: { DEEPSEEK_API_KEY: 'ds-key', ACUVO_DEEPSEEK_DIRECT: '1' },
+    fetchImpl: r.fetchImpl, env: { ...SIGNED_OUT, DEEPSEEK_API_KEY: 'ds-key', ACUVO_DEEPSEEK_DIRECT: '1' },
   });
 
   assert.match(r.seen[0].url, /api\.deepseek\.com/, 'direct is still tried FIRST — the cache is why we came');
@@ -169,7 +196,7 @@ test('⚠️ a 401 from DeepSeek falls back too — a bad key THERE is not a bad
   const r = failingThenOk(401);
   await callModel({
     apiKey: 'or', model: FLASH, messages: [{ role: 'user', content: 'x' }],
-    fetchImpl: r.fetchImpl, env: { DEEPSEEK_API_KEY: 'ds-key', ACUVO_DEEPSEEK_DIRECT: '1' },
+    fetchImpl: r.fetchImpl, env: { ...SIGNED_OUT, DEEPSEEK_API_KEY: 'ds-key', ACUVO_DEEPSEEK_DIRECT: '1' },
   });
   assert.match(r.seen[1].url, /openrouter\.ai/);
 });
@@ -186,10 +213,11 @@ test('⭐ the fallback is still PINNED — the ladder is not silently unpinned b
   const r = failingThenOk(402);
   await callModel({
     apiKey: 'or', model: FLASH, messages: [{ role: 'user', content: 'x' }],
-    fetchImpl: r.fetchImpl, env: { DEEPSEEK_API_KEY: 'ds-key', ACUVO_DEEPSEEK_DIRECT: '1' },
+    fetchImpl: r.fetchImpl, env: { ...SIGNED_OUT, DEEPSEEK_API_KEY: 'ds-key', ACUVO_DEEPSEEK_DIRECT: '1' },
   });
   assert.equal(r.seen[0].body.provider, undefined, 'DeepSeek must never see an OpenRouter field');
-  assert.deepEqual(r.seen[1].body.provider.only, ['StreamLake'], 'the OpenRouter leg keeps its warm lock');
+  // ⚠️ REPINNED 2026-08-27 — see the comment above; DeepInfra is flash's corrected lead.
+  assert.deepEqual(r.seen[1].body.provider.only, [FLASH_LEAD], 'the OpenRouter leg keeps its warm lock');
   assert.equal(r.seen[1].body.model, FLASH, 'and the aggregator slug, not the DeepSeek id');
 });
 
@@ -200,7 +228,7 @@ test('⚠️ a SUCCESSFUL direct call makes exactly one request — the fallback
   const r = recorder();
   await callModel({
     apiKey: 'or', model: FLASH, messages: [{ role: 'user', content: 'x' }],
-    fetchImpl: r.fetchImpl, env: { DEEPSEEK_API_KEY: 'ds-key', ACUVO_DEEPSEEK_DIRECT: '1' },
+    fetchImpl: r.fetchImpl, env: { ...SIGNED_OUT, DEEPSEEK_API_KEY: 'ds-key', ACUVO_DEEPSEEK_DIRECT: '1' },
   });
   assert.equal(r.seen.length, 1);
 });
@@ -215,14 +243,14 @@ test('⭐⭐ a session id is sent, and it is what makes stickiness start on requ
   const r = recorder();
   await callModel({
     apiKey: 'or', model: FLASH, messages: [{ role: 'user', content: 'x' }],
-    fetchImpl: r.fetchImpl, env: {}, sessionId: 'conv-abc',
+    fetchImpl: r.fetchImpl, env: { ...SIGNED_OUT }, sessionId: 'conv-abc',
   });
   assert.equal(r.seen[0].body.session_id, 'conv-abc');
 });
 
 test('⚠️ no session id means no field — an existing wire body is unchanged', async () => {
   const r = recorder();
-  await callModel({ apiKey: 'or', model: FLASH, messages: [{ role: 'user', content: 'x' }], fetchImpl: r.fetchImpl, env: {} });
+  await callModel({ apiKey: 'or', model: FLASH, messages: [{ role: 'user', content: 'x' }], fetchImpl: r.fetchImpl, env: { ...SIGNED_OUT } });
   assert.equal('session_id' in r.seen[0].body, false);
 });
 
@@ -230,7 +258,7 @@ test('⚠️ a session id is bounded to the 256 chars OpenRouter accepts', async
   const r = recorder();
   await callModel({
     apiKey: 'or', model: FLASH, messages: [{ role: 'user', content: 'x' }],
-    fetchImpl: r.fetchImpl, env: {}, sessionId: 'x'.repeat(500),
+    fetchImpl: r.fetchImpl, env: { ...SIGNED_OUT }, sessionId: 'x'.repeat(500),
   });
   assert.equal(r.seen[0].body.session_id.length, 256);
 });

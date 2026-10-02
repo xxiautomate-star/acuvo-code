@@ -26,6 +26,7 @@ import {
   diagnostics, definition, references, documentSymbols,
   MAX_WALK_UP, TS_EXTENSIONS,
 } from '../lib/tsserver.mjs';
+import { managedTsserverPath } from '../lib/managed-language-server.mjs';
 
 const made = [];
 after(() => { for (const d of made) { try { rmSync(d, { recursive: true, force: true }); } catch { /* */ } } });
@@ -77,11 +78,57 @@ test('it finds tsserver inside the typescript package, walking up', () => {
 });
 
 test('no typescript is a clean "not available", not a throw', () => {
+  /**
+   * ⚠️⚠️ THIS TEST WENT RED ON 2026-09-19 WITHOUT ITS ASSERTION BEING WRONG,
+   * AND THE CAUSE IS THE ONE THIS REPO KEEPS PAYING FOR: **a guard's universe
+   * matters as much as its assertion.** `findTsserver` gained a fallback to the
+   * copy a user installs with `acuvo lsp install`, which lives under HOME — so
+   * on a machine that has run that command, "a workspace with no typescript"
+   * still has a tsserver, and this passed or failed depending on whose laptop
+   * ran it. That is not a test.
+   *
+   * ⭐ SO IT NAMES A HOME. `home` is the empty temp directory this test already
+   * made, which holds no `.acuvo`, and the question becomes deterministic again.
+   */
   const root = tmp();
-  assert.equal(findTsserver(root), null);
-  assert.equal(tsserverAvailable(root), false);
-  assert.equal(findTsserver(''), null);
-  assert.equal(findTsserver(null), null);
+  const noServerHome = tmp();
+  assert.equal(findTsserver(root, { home: noServerHome }), null);
+  assert.equal(tsserverAvailable(root, { home: noServerHome }), false);
+  assert.equal(findTsserver('', { home: noServerHome }), null);
+  assert.equal(findTsserver(null, { home: noServerHome }), null);
+  /** And the tree question, which is what `allowManaged: false` is for. */
+  assert.equal(findTsserver(root, { allowManaged: false }), null);
+});
+
+test('⭐⭐ a managed tsserver under HOME serves a workspace that has none', () => {
+  /**
+   * The point of `acuvo lsp install`: measured with the real binary on
+   * 2026-09-19, a scratch TS project with NO node_modules went from 56 to 64
+   * offered tools, and `find_references` answered `3 results` across two files.
+   * tsserver does not have to live in the tree it serves — that is how VS Code
+   * ships its own TypeScript.
+   */
+  const root = tmp();
+  const home = tmp();
+  /**
+   * ⚠⚠ `env: {}` IS LOAD-BEARING, AND OMITTING IT MADE THIS PASS ALONE AND FAIL
+   * IN THE SUITE. `accountDir` prefers `ACUVO_HOME` over the home it is handed,
+   * and `scripts/test.mjs` sets `ACUVO_HOME` to a scratch directory for every
+   * run — so `findTsserver(root, { home })` was asking about the RUNNER's home
+   * while the file had been written under this test's. An empty env is how a
+   * test says "no override", and it has to be given to both halves or they are
+   * answering about different directories.
+   */
+  const env = {};
+  const file = managedTsserverPath(env, home);
+  mkdirSync(join(file, '..'), { recursive: true });
+  writeFileSync(file, '// stub\n');
+  assert.equal(findTsserver(root, { env, home }), file);
+  assert.equal(tsserverAvailable(root, { env, home }), true);
+  /** ⚠️ ...and it is a FLOOR, never an upgrade: a project's own copy still wins. */
+  mkdirSync(join(root, 'node_modules', 'typescript', 'lib'), { recursive: true });
+  writeFileSync(join(root, 'node_modules', 'typescript', 'lib', 'tsserver.js'), '// the project own\n');
+  assert.notEqual(findTsserver(root, { env, home }), file);
 });
 
 test('the walk is bounded', () => {

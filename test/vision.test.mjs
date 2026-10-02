@@ -244,8 +244,46 @@ test('with no question it still asks for defects to be called out', async () => 
     writeFileSync(join(ws.root, 'a.png'), png(64, 64));
     let sent = null;
     await readImage({ root: ws.root, path: 'a.png', ...KEY, fetchImpl: async (u, i) => { sent = JSON.parse(i.body); return reply('ok'); } });
-    assert.match(sent.messages[0].content[0].text, /broken|misaligned|garbled/i);
-    assert.match(sent.messages[0].content[0].text, /do not speculate/i);
+    const asked = sent.messages[0].content[0].text;
+    assert.match(asked, /broken|misaligned|garbled/i);
+    /**
+     * ⚠️⚠️ NON-NEGOTIABLE, AND IT SURVIVED A REWRITE THAT NEARLY DROPPED IT.
+     * A model answering about an image it did not receive produces fluent,
+     * confident, wrong prose, and a hallucinated "the layout looks clean" ENDS
+     * the investigation with a false all-clear.
+     */
+    assert.match(asked, /do not speculate/i);
+
+    /**
+     * ── ⭐⭐⭐ AND IT MUST ASK FOR A DEFECT LIST, NOT A DESCRIPTION ───────────
+     *
+     * ⚠️ MEASURED ON REAL LOOKS, 2026-08-28, against a screenshot with three
+     * planted defects. The old wording asked for a description and got one:
+     * **~705 tokens** of markdown headers, guessed hex values, absences listed
+     * as findings ("no navigation bar, footer, scrollbar") and commentary on
+     * its own reply. It found all three defects, so it was CORRECT and still
+     * unusable — the reader is DeepSeek deciding which line to change, not a
+     * person admiring a description.
+     *
+     * After: **114 tokens** on the same image, all three defects still found
+     * and quoted exactly, 16.7s → 3.7s, $0.000100 → $0.0000416. On a clean
+     * version of the page: "No defects found.", 53 tokens, nothing invented.
+     *
+     * ⚠️ THE 900-TOKEN CAP DID NOT DO THIS AND COULD NOT. It bounds the damage;
+     * only the prompt decides whether the answer is a defect list or an essay
+     * that happens to fit under the cap. So the prompt is pinned here.
+     */
+    assert.match(asked, /No defects found/i, 'without this a model asked for defects invents marginal ones to look useful');
+    assert.match(asked, /quote/i, 'the exact text is what makes a misspelling actionable');
+    assert.match(asked, /do not (describe colours|guess hex)/i, 'the essay behaviours must stay forbidden');
+
+    /**
+     * ⚠️ AND NO LABEL THE MODEL CAN ECHO. Measured: "First line: WHAT IT IS —
+     * one sentence" made it emit the literal string "First line: WHAT IT IS —"
+     * as the opening of its answer. A template that looks like content becomes
+     * content.
+     */
+    assert.doesNotMatch(asked, /First line:/i, 'a label phrased as content will be echoed into the verdict');
   } finally { ws.cleanup(); }
 });
 

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { deviceEndpoints, requestDeviceCode, pollForKey, openBrowser } from '../lib/device-login.mjs';
+import { deviceEndpoints, requestDeviceCode, pollForKey, openBrowser, runDeviceLogin } from '../lib/device-login.mjs';
 
 const GATEWAY = 'https://acuvo.xxiautomate.com/api/cli/v1/chat/completions';
 const ok = (body) => ({ ok: true, status: 200, text: async () => JSON.stringify(body), json: async () => body });
@@ -135,4 +135,78 @@ test('⭐ openBrowser uses the right opener per platform', () => {
   assert.equal(seen[0][0], 'open');
   assert.equal(seen[1][0], 'xdg-open');
   assert.equal(seen[2][0], 'cmd');
+});
+
+// ── ⭐⭐⭐ runDeviceLogin — the orchestrator that ties the whole flow together ─
+
+const startPayload = {
+  device_code: 'dc-secret',
+  user_code: 'BKQT-ZRMD',
+  verification_uri_complete: 'https://acuvo.xxiautomate.com/cli-auth?code=BKQT-ZRMD',
+  interval: 2,
+  expires_in: 600,
+};
+
+test('⭐⭐⭐ runDeviceLogin drives the whole grant and saves the account', async () => {
+  const written = [];
+  const calls = [];
+  const granted = { api_key: 'xxi_live_abc', tenant_id: 't-1' };
+  const flow = await runDeviceLogin({
+    gatewayUrl: GATEWAY,
+    write: (s) => written.push(s),
+    spawn: () => ({ unref() {} }),
+    requestCode: async () => startPayload,
+    poll: async () => granted,
+    open: () => true,
+    saveAccount: (token) => { calls.push(token); return { ok: true, restricted: true, note: null }; },
+  });
+
+  assert.equal(flow.token, 'xxi_live_abc');
+  assert.equal(flow.userCode, 'BKQT-ZRMD');
+  assert.equal(flow.restricted, true, 'the save result must be surfaced so bin/ can warn');
+  assert.deepEqual(calls, ['xxi_live_abc'], 'the granted key must be handed to saveAccount');
+  assert.ok(written.some((s) => s.includes('BKQT-ZRMD')), 'the code must be printed');
+  assert.ok(written.some((s) => s.includes('Opened your browser')), 'the browser-open message must be printed');
+});
+
+test('⚠️ when the browser cannot open, the URL is printed instead — never stranded', async () => {
+  const written = [];
+  const flow = await runDeviceLogin({
+    gatewayUrl: GATEWAY,
+    write: (s) => written.push(s),
+    spawn: () => ({ unref() {} }),
+    requestCode: async () => startPayload,
+    poll: async () => ({ api_key: 'xxi_live_abc', tenant_id: null }),
+    open: () => false,
+  });
+  assert.equal(flow.token, 'xxi_live_abc');
+  assert.ok(written.some((s) => s.includes('Open this to approve it')), 'the URL must be printed when no browser opens');
+  assert.ok(written.some((s) => s.includes('cli-auth?code=BKQT-ZRMD')), 'the full URL must be shown');
+});
+
+test('⚠️ a save that could not restrict permissions is surfaced, not swallowed', async () => {
+  const flow = await runDeviceLogin({
+    gatewayUrl: GATEWAY,
+    write: () => {},
+    spawn: () => ({ unref() {} }),
+    requestCode: async () => startPayload,
+    poll: async () => ({ api_key: 'xxi_live_abc', tenant_id: null }),
+    open: () => true,
+    saveAccount: () => ({ ok: true, restricted: false, note: 'could not restrict' }),
+  });
+  assert.equal(flow.restricted, false, 'bin/ must be able to warn the user about an unlocked file');
+});
+
+test('⚠️ runDeviceLogin throws when the flow is denied — it does not exit', async () => {
+  await assert.rejects(
+    () => runDeviceLogin({
+      gatewayUrl: GATEWAY,
+      write: () => {},
+      spawn: () => ({ unref() {} }),
+      requestCode: async () => startPayload,
+      poll: async () => { throw new Error('login was denied in the browser.'); },
+      open: () => true,
+    }),
+    /denied/i,
+  );
 });

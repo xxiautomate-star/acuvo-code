@@ -141,6 +141,19 @@ test('an absent loader (old node) is a no-op, not a crash', () => {
 
 // ── ⭐⭐ the capability this exists to unlock ───────────────────────────────
 
+/**
+ * ⚠️⚠️ A HOME THAT CANNOT HOLD A CREDENTIAL, AND IT IS NOT DECORATION. Since
+ * 2026-08-26 the media half is ACCOUNT-aware — a signed-in customer is offered
+ * `see_page`, `speak`, `transcribe`, `make_document`, `read_document` and
+ * `read_table` with no Modal variables at all. So "offered here" genuinely
+ * depends on `~/.acuvo/credentials.json`, and a test that inherits the real home
+ * passes on a signed-out laptop and fails on a signed-in one. Naming a path that
+ * cannot exist makes the assertion mean what it says. (`renderVia`'s header
+ * records why this matters beyond flakiness: a sibling test printed a live
+ * `xxi_live_…` token into node's own failure output.)
+ */
+const NO_ACCOUNT_HOME = '/acuvo-test-no-such-home';
+
 test('loading a .env.local with a media secret offers the whole media half', async () => {
   const { toolNamesForRounds } = await import('../lib/tools.mjs');
   const { mediaToolNames } = await import('../lib/media.mjs');
@@ -148,8 +161,8 @@ test('loading a .env.local with a media secret offers the whole media half', asy
   const withSecret = { ...bare, ACUVO_MEDIA_SECRET: 'test-secret', RENDER_AUDIT_URL: 'https://example.invalid/render' };
 
   const root = tree({ 'package.json': '{"name":"x"}\n' });
-  const before = toolNamesForRounds(10, { allowRun: true, root, env: bare });
-  const after = toolNamesForRounds(10, { allowRun: true, root, env: withSecret });
+  const before = toolNamesForRounds(10, { allowRun: true, root, env: bare, home: NO_ACCOUNT_HOME });
+  const after = toolNamesForRounds(10, { allowRun: true, root, env: withSecret, home: NO_ACCOUNT_HOME });
 
   /**
    * ⚠️ DERIVED FROM `media.mjs`, NEVER TYPED OUT. The first version of this test
@@ -158,7 +171,7 @@ test('loading a .env.local with a media secret offers the whole media half', asy
    * restating another module's strings caused a false failure. Asking the module
    * what its tools are makes the two impossible to drift.
    */
-  const expected = mediaToolNames(withSecret);
+  const expected = mediaToolNames(withSecret, NO_ACCOUNT_HOME);
   assert.ok(expected.length >= 6, `the media half should be substantial, got ${expected.length}`);
 
   const gained = after.filter((n) => !before.includes(n));

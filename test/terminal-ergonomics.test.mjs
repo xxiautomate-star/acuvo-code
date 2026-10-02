@@ -31,6 +31,7 @@ import { parseArgv, USAGE, MAX_ROUNDS_LIMIT, DEFAULT_MAX_ROUNDS } from '../lib/c
 import { TIERS } from '../lib/escalate.mjs';
 import { DEFAULT_BUDGET_USD } from '../lib/budget.mjs';
 import { DEFAULT_MODEL, DEFAULT_TIMEOUT_MS } from '../lib/model.mjs';
+import { ACUVO_MODELS, selectableModels } from '../lib/acuvo-models.mjs';
 import {
   SUPPORTED_SHELLS, SUBCOMMANDS, SUBCOMMAND_VERBS, FLAGS,
   completionScript, bashCompletion, zshCompletion, fishCompletion,
@@ -454,10 +455,29 @@ test('⭐ a model name means the same thing in a file as on the flag', () => {
   const viaFlag = parseArgv(['--model', 'acuvo-pro', 't']);
   assert.equal(r.options.model, viaFlag.options.model);
 
-  // ⚠️ And the internal reviewer is refused here exactly as it is there.
-  const internal = resolveConfig({ argv: ['t'], homeText: '{"model": "acuvo-review"}' });
-  assert.equal(internal.ok, false);
-  assert.match(internal.error, /self-review/);
+  /**
+   * ⚠️⚠️ THE INTERNAL MODEL IS FOUND, NOT NAMED. This used to type
+   * `"acuvo-review"` and match `/self-review/`; `acuvo-review` was **deleted on
+   * 2026-09-09** (`acuvo-models.mjs`: its blurb promised review "from a
+   * different model family" and a grep across this package AND `console/` found
+   * the name only in its own definition — nothing ever called a reviewer), and
+   * this assertion went red for naming a model that no longer exists rather
+   * than for any change in behaviour.
+   *
+   * ⭐ The PROPERTY is the durable half: an internal model must be refused in a
+   * config FILE exactly as it is on the FLAG, and the refusal must name what
+   * can be chosen instead. Asked of the registry, that survives the next
+   * deletion too.
+   */
+  const [internalName] = Object.keys(ACUVO_MODELS).filter((n) => ACUVO_MODELS[n].internal);
+  assert.ok(internalName, 'no model is marked internal — this assertion has no subject and is not silently passing');
+  const internal = resolveConfig({ argv: ['t'], homeText: `{"model": ${JSON.stringify(internalName)}}` });
+  assert.equal(internal.ok, false, `${internalName} is internal and must not be selectable from a config file`);
+  assert.match(internal.error, /is used internally|self-review/);
+  for (const m of selectableModels()) {
+    assert.match(internal.error, new RegExp(m.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')),
+      `a refusal must name every model that CAN be chosen — ${m.name} is missing`);
+  }
 });
 
 test('⭐ seconds in the file, milliseconds in the options — one conversion, stated once', () => {
@@ -485,7 +505,7 @@ test('⭐ the legacy variable still names the model, and ACUVO_MODEL wins over i
   assert.match(legacy.options.model, /deepseek-v4-pro/);
 
   const both = resolveConfig({ argv: ['t'], env: { ACUVO_MODEL: 'acuvo-flash', OPENROUTER_CODEGEN_MODEL: 'acuvo-pro' } });
-  assert.match(both.options.model, /deepseek-v4-flash/);
+  assert.match(both.options.model, /deepseek-v4\.1-flash/); // acuvo-flash = v4.1 since 2026-09-28
 });
 
 test('⭐ an empty variable is not a value — it is an unset variable spelled badly', () => {

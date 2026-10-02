@@ -94,16 +94,29 @@ test('a commit message that would parse as a flag is refused', () => {
   assert.strictEqual(validateCommitMessage('fix: a real message').ok, true);
 });
 
+/**
+ * ⚠️⚠️ A HOME THAT CANNOT HOLD A CREDENTIAL, AND IT IS NOT DECORATION. Since
+ * 2026-08-26 the media half is ACCOUNT-aware — a signed-in customer is offered
+ * `see_page`, `speak`, `transcribe`, `make_document`, `read_document` and
+ * `read_table` with no Modal variables at all. So "offered here" genuinely
+ * depends on `~/.acuvo/credentials.json`, and a test that inherits the real home
+ * passes on a signed-out laptop and fails on a signed-in one. Naming a path that
+ * cannot exist makes the assertion mean what it says. (`renderVia`'s header
+ * records why this matters beyond flakiness: a sibling test printed a live
+ * `xxi_live_…` token into node's own failure output.)
+ */
+const NO_ACCOUNT_HOME = '/acuvo-test-no-such-home';
+
 test('⭐ a tool whose service is absent is never offered', () => {
   // The dead-button rule: presenting a control that cannot work teaches the
   // model to press it, wait, and apologise — a whole round for nothing.
-  assert.deepStrictEqual(mediaToolNames({}), []);
-  assert.deepStrictEqual(mediaToolNames({ RENDER_AUDIT_URL: 'https://x' }), ['see_page']);
+  assert.deepStrictEqual(mediaToolNames({}, NO_ACCOUNT_HOME), []);
+  assert.deepStrictEqual(mediaToolNames({ RENDER_AUDIT_URL: 'https://x' }, NO_ACCOUNT_HOME), ['see_page']);
 });
 
 test('every offered tool exists in the registry', () => {
   // The drift this stops: telling the model about a tool nothing dispatches.
-  for (const n of toolNamesForRounds(3, { env: {} })) {
+  for (const n of toolNamesForRounds(3, { env: {}, home: NO_ACCOUNT_HOME })) {
     assert.ok(TOOL_NAMES.includes(n), `${n} is offered but not in the registry`);
   }
 });
@@ -432,9 +445,43 @@ test('⚠️ the config is validated, never coerced — it names programs we wil
     writeFileSync(join(ws, '.acuvo', 'mcp.json'), JSON.stringify({ mcpServers: { broken: {} } }));
     assert.strictEqual(readMcpConfig(ws).ok, false);
 
-    // A name that could collide with the namespace separator is refused.
-    writeFileSync(join(ws, '.acuvo', 'mcp.json'), JSON.stringify({ mcpServers: { 'bad name!': { command: 'x' } } }));
-    assert.strictEqual(readMcpConfig(ws).ok, false);
+    /**
+     * ── ⚠️⚠️ RE-ANCHORED 2026-08-23: THE PROPERTY IS NAMESPACE SAFETY, NOT
+     *      REJECTION ──────────────────────────────────────────────────────────
+     *
+     * This asserted that `'bad name!'` makes the WHOLE CONFIG fail. That rule
+     * also rejected `@21st-dev/magic` — a real MCP server whose own README tells
+     * people to use exactly that key — and because the failure was a whole-file
+     * `ok: false`, ONE scoped package disabled every other server in the file.
+     * Roman saw the complaint on every single run.
+     *
+     * ⭐ THE CONCERN BEHIND IT IS REAL AND IS NOW ASSERTED DIRECTLY. The
+     * separator is DOUBLE underscore (`mcp__server__tool`), so what must never
+     * happen is a name containing `__` — that could forge another server's
+     * namespace. Names are normalised into an id we control, and runs of `_`
+     * are collapsed, so no input can manufacture a separator.
+     *
+     * ⚠️ This is STRICTER than what it replaced: the old rule only refused names
+     * with characters outside its set, and would have happily accepted a
+     * hand-written `foo__bar`.
+     */
+    writeFileSync(join(ws, '.acuvo', 'mcp.json'), JSON.stringify({
+      mcpServers: {
+        'bad name!': { command: 'x' },
+        '@21st-dev/magic': { command: 'npx', args: ['-y', '@21st-dev/magic'] },
+        'forged__namespace': { command: 'x' },
+      },
+    }));
+    const normalised = readMcpConfig(ws);
+    assert.strictEqual(normalised.ok, true, 'one awkward key must not disable the whole file');
+    for (const srv of normalised.servers) {
+      assert.ok(!srv.name.includes('__'), `"${srv.name}" could forge a namespace`);
+      assert.match(srv.name, /^[a-z0-9][a-z0-9_-]{0,30}$/i, `"${srv.name}" is not a safe id`);
+    }
+    assert.ok(
+      normalised.servers.some((s) => s.name === '21st-dev_magic'),
+      'a scoped package name must survive normalisation, not be refused',
+    );
   } finally { rmSync(ws, { recursive: true, force: true }); }
 });
 
@@ -458,6 +505,53 @@ test('⭐ remote tools are NAMESPACED so a server can never shadow ours', async 
   // The origin is in the description: a model choosing between similar tools
   // needs to know which system it is about to touch.
   assert.match(schemas[0].function.description, /^\[linear\]/);
+});
+
+/**
+ * ── ⚠️⚠️⭐ A TOOL NAME THAT STARTS WITH `_` USED TO EAT THE SERVER NAME ──────
+ *
+ * Found 2026-09-19 by calling the catalogue's `awsdocs` entry THROUGH our own
+ * `callMcpTool` rather than directly. All five of its tools are named `aws___*`,
+ * and `parseNamespaced`'s server half was GREEDY over a class containing `_`,
+ * so `mcp__awsdocs__aws___search_documentation` parsed as server
+ * `awsdocs__aws_` — a server that is never connected. Every call to a verified,
+ * shipped, keyless knowledge server failed with "is not connected", and the
+ * shortlist filed its schemas under the same phantom name, so `use_toolset`
+ * advertised a server id that could not be revealed either.
+ *
+ * ⭐ MUTATION-PROVED: putting the `?` back on the quantifier turns this red.
+ */
+test('⚠️⭐ a tool whose own name starts with `_` still resolves to ITS server', async () => {
+  const { namespacedName, parseNamespaced } = await import('../lib/mcp.mjs');
+
+  // The real, shipped case — `awsdocs` tools are all `aws___*`.
+  const id = namespacedName('awsdocs', 'aws___search_documentation');
+  assert.strictEqual(id, 'mcp__awsdocs__aws___search_documentation');
+  assert.deepStrictEqual(
+    parseNamespaced(id),
+    { server: 'awsdocs', tool: 'aws___search_documentation' },
+    'the server half must stop at the FIRST `__`, or a verified server is uncallable',
+  );
+
+  // A server name may contain a single `_` and must survive — the lazy match
+  // cannot cut it short, because `github` is not followed by `__`.
+  assert.deepStrictEqual(
+    parseNamespaced(namespacedName('github_remote', 'search_code')),
+    { server: 'github_remote', tool: 'search_code' },
+  );
+
+  /**
+   * ⚠️ THE SAFETY HALF. `readMcpConfig` collapses runs of `_`, so a SERVER
+   * name can never hold `__`; a TOOL name is a stranger's string and can. The
+   * shortest prefix means a namespaced id can only ever route to the server
+   * that owns it — greedy let a tool called `_b__x` on server `a` parse as a
+   * request aimed at some other server id.
+   */
+  assert.deepStrictEqual(
+    parseNamespaced(namespacedName('a', '_b__write_file')),
+    { server: 'a', tool: '_b__write_file' },
+    'a hostile tool name must never re-address the call to another server',
+  );
 });
 
 test('⚠️ isError on a successful RPC is a FAILURE, not a result', async () => {

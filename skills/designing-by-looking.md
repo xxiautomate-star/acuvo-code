@@ -1,7 +1,7 @@
 ---
 name: designing-by-looking
-description: Render it and LOOK — the see_page loop, not better CSS written blind
-when: After building or restyling any page, component or app, and before telling anyone it is done
+description: Design judgement and the see_page loop — plan it, audit the plan for defaults, then render it and LOOK
+when: Before choosing a palette or layout, and after building or restyling any page, component or app
 ---
 
 # Designing By Looking
@@ -19,6 +19,61 @@ viewport, a delete button stretched across the full width.
 
 Those are the exact defects that shipped in real builds here. Every one of them
 is invisible in the source and obvious in a screenshot.
+
+## ⭐⭐ Before the loop: decide what you are aiming at, then audit that decision
+
+Looking tells you whether a page is broken. It does not, on its own, tell you
+whether it is *good* — you can loop ten times on a page that works perfectly and
+still looks like every other generated page. That is decided before the first
+line of CSS.
+
+### The plan is four lines, and it takes a minute
+
+Write it out before building:
+
+1. **4–6 named hex values** and what each is for (paper, ink, accent, line).
+2. **Type roles** — the display face, the text face, and the one size that
+   dominates.
+3. **A one-sentence layout concept.** *"A wide left column of prose with the
+   numbers pinned in a narrow right rail."*
+4. **What the design is saying.** Fast? Careful? Expensive? Playful?
+
+### ⭐⭐ Then audit it once, with one question
+
+> **"Would I have produced this exact plan for any other brief?"**
+
+If yes, it is not a design, it is a default — and defaults are what make output
+read as generated. Change the generic parts and only the generic parts.
+
+⚠️ **The tells, all of which are defaults rather than decisions:** slate
+`#0f172a` and indigo; Inter for everything; a centred hero over three equal
+cards; rounded corners and a soft shadow on every surface; a purple-to-blue
+gradient; emoji standing in for icons; "Empower your workflow" as a headline.
+Any two of those together and the page has no point of view.
+
+**Revising is concrete, not vague.** *"A recap of terminal releases"* → near-black
+green paper, phosphor text, one amber accent, a mono face, and the layout
+following the release timeline rather than a card grid. Same content, and now it
+could not be any other page.
+
+### ⭐ Structure must encode something true
+
+Every structural device is a claim, and a false claim is noise:
+
+- Numbered steps (01 / 02 / 03) **only when the order actually matters.**
+- Eyebrow labels **only when they classify** something into a real group.
+- Dividers **only at genuine seams**, not every 200px.
+- A card **only when the contents are a unit** you could pick up and move.
+- An icon **only when it means something** — decorative icons are visual noise
+  wearing a uniform.
+
+⭐ And precedence when they conflict: **the user's stated wishes first, then the
+project's existing design system** (its tokens, its component styles, whatever
+is already on screen), then your own taste. Check for existing tokens before
+inventing a palette — a "better" palette that matches nothing around it is worse.
+
+*(Plan-then-audit heuristic adapted from nicobailon/visual-explainer, MIT — see
+`LICENSE-visual-explainer`.)*
 
 ## ⭐⭐ The loop, in order
 

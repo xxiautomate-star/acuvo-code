@@ -283,14 +283,29 @@ test('the dispatch options hold the boundary explicitly, not by inheriting a def
   assert.equal(GENERAL_DISPATCH_OPTIONS.subagentImpl, null, 'no nested model sessions');
 });
 
-test('generate_image is refused — it is the one tool that spends our GPU with no credential set', async () => {
+/**
+ * ── ⚠️ THIS TEST USED TO ASSERT `/unmetered GPU/` AND THE WORD WAS THE POINT ──
+ *
+ * `generate_image` is no longer refused OUTRIGHT; it is refused UNTIL an
+ * operator types a dollar ceiling, and the ceiling is what closed the
+ * "unmetered" half of the old reason (mcp-server.mjs header §10). The effect
+ * this test actually cared about is unchanged and is still what is asserted:
+ * with the default configuration, calling it directly does nothing and puts no
+ * file on disk.
+ *
+ * ⚠️ AND THE ASSERTION IS ON THE ABSENCE FIRST, then the message — the ordering
+ * this file's header argues for, because a wording mismatch must never be the
+ * loudest failure when the question is whether an image was generated.
+ */
+test('generate_image does nothing on a server whose operator set no spending ceiling', async () => {
   const dir = scratchWorkspace();
   try {
     const server = createMcpServer({ env: { ...NO_MEDIA }, workspaceRoot: dir, allowWrite: true });
+    assert.ok(!listNames(server).includes('generate_image'), 'it must not be listed without a ceiling');
     const reply = await call(server, 'generate_image', { prompt: 'a cat', path: 'cat.png' });
+    assert.equal(existsSync(join(dir, 'cat.png')), false, 'an image was generated despite the refusal');
     assert.equal(reply.result.isError, true);
-    assert.match(reply.result.content[0].text, /unmetered GPU/);
-    assert.equal(existsSync(join(dir, 'cat.png')), false);
+    assert.match(reply.result.content[0].text, /ACUVO_MCP_SPEND/, 'the refusal must name the switch that is off');
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
@@ -323,6 +338,67 @@ test('a credential file is refused even inside the workspace', async () => {
     const reply = await call(server, 'read_file', { path: '.env' });
     assert.equal(reply.result.isError, true);
     assert.ok(!reply.result.content[0].text.includes('super-secret-canary'), 'the secret leaked into the reply');
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+/**
+ * ── ⚠️⚠️ EVERY READ VERB THAT CAN RETURN BYTES MUST REFUSE `.env`, NOT JUST
+ *        `read_file` — AND THE TEST ABOVE ONLY EVER CHECKED ONE OF THEM ───────
+ *
+ * `git_diff` is refused in this file precisely because it returns file contents
+ * with no credential-path filter. Serving a second verb with the same property
+ * would reopen that hole through a door marked "forensics": `inspect_binary`'s
+ * `strings` mode reads any file's bytes and is explicitly the tool you reach for
+ * *"whenever read_file refused a file as binary"*.
+ *
+ * ⭐ THE ASSERTION IS ON THE CANARY, IN EVERY MODE. A refusal message is what
+ * the code says happened; the absence of `super-secret-canary` in the reply is
+ * what actually happened, and `strings` is the mode that would leak it.
+ */
+test('no served read verb will dump a credential file — checked per verb, not once', async () => {
+  const dir = scratchWorkspace();
+  try {
+    writeFileSync(join(dir, '.env'), 'API_KEY=super-secret-canary\n', 'utf8');
+    const server = createMcpServer({ env: { ...NO_MEDIA }, workspaceRoot: dir });
+    const probes = [
+      ['read_file', { path: '.env' }],
+      ['read_lines', { path: '.env' }],
+      ['read_around', { path: '.env', pattern: 'API' }],
+      ['inspect_binary', { path: '.env', mode: 'strings', min_length: 3 }],
+      ['inspect_binary', { path: '.env', mode: 'hex' }],
+      ['profile_table', { path: '.env' }],
+      ['review_code', { path: '.env' }],
+    ];
+    for (const [name, args] of probes) {
+      assert.ok(listNames(server).includes(name), `${name} should be served`);
+      const reply = await call(server, name, args);
+      const text = JSON.stringify(reply.result);
+      assert.ok(
+        !text.includes('super-secret-canary'),
+        `${name} (${args.mode ?? 'default'}) LEAKED the credential: ${text.slice(0, 300)}`,
+      );
+    }
+
+    /**
+     * ── ⭐⭐ THE POSITIVE CONTROL, AND WITHOUT IT THE LOOP ABOVE PROVES NOTHING
+     *
+     * ⚠️ "The canary was absent" has two explanations and only one of them is
+     * the one being claimed: the tool refused, or the probe never worked. A
+     * `strings` call with the wrong argument name, a mode that silently no-ops,
+     * a `min_length` above the canary's length — every one of those produces a
+     * clean pass on a guard that is checking nothing.
+     *
+     * ⭐ So the SAME verb, in the SAME mode, with the SAME canary, at a path
+     * that is NOT a credential file MUST return it. That is what makes the
+     * seven refusals above evidence rather than absence.
+     */
+    writeFileSync(join(dir, 'notes.txt'), 'API_KEY=super-secret-canary\n', 'utf8');
+    const control = await call(server, 'inspect_binary', { path: 'notes.txt', mode: 'strings', min_length: 3 });
+    assert.ok(
+      JSON.stringify(control.result).includes('super-secret-canary'),
+      'the probe itself is broken: inspect_binary strings did not return the canary from an ordinary file, '
+      + `so the seven refusals above prove nothing. Got: ${JSON.stringify(control.result).slice(0, 300)}`,
+    );
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 

@@ -1,0 +1,1711 @@
+[
+ {
+  "description": "One row",
+  "input": "A,b,c",
+  "expected": {
+   "data": [
+    [
+     "A",
+     "b",
+     "c"
+    ]
+   ],
+   "errors": [],
+   "meta": {
+    "delimiter": ",",
+    "linebreak": "\n",
+    "aborted": false,
+    "truncated": false,
+    "cursor": 5,
+    "renamedHeaders": null
+   }
+  }
+ },
+ {
+  "description": "Two rows",
+  "input": "A,b,c\nd,E,f",
+  "expected": {
+   "data": [
+    [
+     "A",
+     "b",
+     "c"
+    ],
+    [
+     "d",
+     "E",
+     "f"
+    ]
+   ],
+   "errors": [],
+   "meta": {
+    "delimiter": ",",
+    "linebreak": "\n",
+    "aborted": false,
+    "truncated": false,
+    "cursor": 11,
+    "renamedHeaders": null
+   }
+  }
+ },
+ {
+  "description": "Three rows",
+  "input": "A,b,c\nd,E,f\nG,h,i",
+  "expected": {
+   "data": [
+    [
+     "A",
+     "b",
+     "c"
+    ],
+    [
+     "d",
+     "E",
+     "f"
+    ],
+    [
+     "G",
+     "h",
+     "i"
+    ]
+   ],
+   "errors": [],
+   "meta": {
+    "delimiter": ",",
+    "linebreak": "\n",
+    "aborted": false,
+    "truncated": false,
+    "cursor": 17,
+    "renamedHeaders": null
+   }
+  }
+ },
+ {
+  "description": "Whitespace at edges of unquoted field",
+  "input": "a,\tb ,c",
+  "expected": {
+   "data": [
+    [
+     "a",
+     "\tb ",
+     "c"
+    ]
+   ],
+   "errors": [],
+   "meta": {
+    "delimiter": ",",
+    "linebreak": "\n",
+    "aborted": false,
+    "truncated": false,
+    "cursor": 7,
+    "renamedHeaders": null
+   }
+  }
+ },
+ {
+  "description": "Quoted field",
+  "input": "A,\"B\",C",
+  "expected": {
+   "data": [
+    [
+     "A",
+     "B",
+     "C"
+    ]
+   ],
+   "errors": [],
+   "meta": {
+    "delimiter": ",",
+    "linebreak": "\n",
+    "aborted": false,
+    "truncated": false,
+    "cursor": 7,
+    "renamedHeaders": null
+   }
+  }
+ },
+ {
+  "description": "Quoted field with extra whitespace on edges",
+  "input": "A,\" B  \",C",
+  "expected": {
+   "data": [
+    [
+     "A",
+     " B  ",
+     "C"
+    ]
+   ],
+   "errors": [],
+   "meta": {
+    "delimiter": ",",
+    "linebreak": "\n",
+    "aborted": false,
+    "truncated": false,
+    "cursor": 10,
+    "renamedHeaders": null
+   }
+  }
+ },
+ {
+  "description": "Quoted field with delimiter",
+  "input": "A,\"B,B\",C",
+  "expected": {
+   "data": [
+    [
+     "A",
+     "B,B",
+     "C"
+    ]
+   ],
+   "errors": [],
+   "meta": {
+    "delimiter": ",",
+    "linebreak": "\n",
+    "aborted": false,
+    "truncated": false,
+    "cursor": 9,
+    "renamedHeaders": null
+   }
+  }
+ },
+ {
+  "description": "Quoted field with line break",
+  "input": "A,\"B\nB\",C",
+  "expected": {
+   "data": [
+    [
+     "A",
+     "B\nB",
+     "C"
+    ]
+   ],
+   "errors": [],
+   "meta": {
+    "delimiter": ",",
+    "linebreak": "\n",
+    "aborted": false,
+    "truncated": false,
+    "cursor": 9,
+    "renamedHeaders": null
+   }
+  }
+ },
+ {
+  "description": "Quoted fields with line breaks",
+  "input": "A,\"B\nB\",\"C\nC\nC\"",
+  "expected": {
+   "data": [
+    [
+     "A",
+     "B\nB",
+     "C\nC\nC"
+    ]
+   ],
+   "errors": [],
+   "meta": {
+    "delimiter": ",",
+    "linebreak": "\n",
+    "aborted": false,
+    "truncated": false,
+    "cursor": 15,
+    "renamedHeaders": null
+   }
+  }
+ },
+ {
+  "description": "Quoted fields at end of row with delimiter and line break",
+  "input": "a,b,\"c,c\nc\"\nd,e,f",
+  "expected": {
+   "data": [
+    [
+     "a",
+     "b",
+     "c,c\nc"
+    ],
+    [
+     "d",
+     "e",
+     "f"
+    ]
+   ],
+   "errors": [],
+   "meta": {
+    "delimiter": ",",
+    "linebreak": "\n",
+    "aborted": false,
+    "truncated": false,
+    "cursor": 17,
+    "renamedHeaders": null
+   }
+  }
+ },
+ {
+  "description": "Quoted field with escaped quotes",
+  "input": "A,\"B\"\"B\"\"B\",C",
+  "expected": {
+   "data": [
+    [
+     "A",
+     "B\"B\"B",
+     "C"
+    ]
+   ],
+   "errors": [],
+   "meta": {
+    "delimiter": ",",
+    "linebreak": "\n",
+    "aborted": false,
+    "truncated": false,
+    "cursor": 13,
+    "renamedHeaders": null
+   }
+  }
+ },
+ {
+  "description": "Quoted field with escaped quotes at boundaries",
+  "input": "A,\"\"\"B\"\"\",C",
+  "expected": {
+   "data": [
+    [
+     "A",
+     "\"B\"",
+     "C"
+    ]
+   ],
+   "errors": [],
+   "meta": {
+    "delimiter": ",",
+    "linebreak": "\n",
+    "aborted": false,
+    "truncated": false,
+    "cursor": 11,
+    "renamedHeaders": null
+   }
+  }
+ },
+ {
+  "description": "Unquoted field with quotes at end of field",
+  "input": "A,B\",C",
+  "expected": {
+   "data": [
+    [
+     "A",
+     "B\"",
+     "C"
+    ]
+   ],
+   "errors": [],
+   "meta": {
+    "delimiter": ",",
+    "linebreak": "\n",
+    "aborted": false,
+    "truncated": false,
+    "cursor": 6,
+    "renamedHeaders": null
+   }
+  }
+ },
+ {
+  "description": "Quoted field with quotes around delimiter",
+  "input": "A,\"\"\",\"\"\",C",
+  "expected": {
+   "data": [
+    [
+     "A",
+     "\",\"",
+     "C"
+    ]
+   ],
+   "errors": [],
+   "meta": {
+    "delimiter": ",",
+    "linebreak": "\n",
+    "aborted": false,
+    "truncated": false,
+    "cursor": 11,
+    "renamedHeaders": null
+   }
+  }
+ },
+ {
+  "description": "Quoted field with quotes on right side of delimiter",
+  "input": "A,\",\"\"\",C",
+  "expected": {
+   "data": [
+    [
+     "A",
+     ",\"",
+     "C"
+    ]
+   ],
+   "errors": [],
+   "meta": {
+    "delimiter": ",",
+    "linebreak": "\n",
+    "aborted": false,
+    "truncated": false,
+    "cursor": 9,
+    "renamedHeaders": null
+   }
+  }
+ },
+ {
+  "description": "Quoted field with quotes on left side of delimiter",
+  "input": "A,\"\"\",\",C",
+  "expected": {
+   "data": [
+    [
+     "A",
+     "\",",
+     "C"
+    ]
+   ],
+   "errors": [],
+   "meta": {
+    "delimiter": ",",
+    "linebreak": "\n",
+    "aborted": false,
+    "truncated": false,
+    "cursor": 9,
+    "renamedHeaders": null
+   }
+  }
+ },
+ {
+  "description": "Quoted field with 5 quotes in a row and a delimiter in there, too",
+  "input": "\"1\",\"cnonce=\"\"\"\",nc=\"\"\"\"\",\"2\"",
+  "expected": {
+   "data": [
+    [
+     "1",
+     "cnonce=\"\",nc=\"\"",
+     "2"
+    ]
+   ],
+   "errors": [],
+   "meta": {
+    "delimiter": ",",
+    "linebreak": "\n",
+    "aborted": false,
+    "truncated": false,
+    "cursor": 29,
+    "renamedHeaders": null
+   }
+  }
+ },
+ {
+  "description": "Quoted field with whitespace around quotes",
+  "input": "A, \"B\" ,C",
+  "expected": {
+   "data": [
+    [
+     "A",
+     " \"B\" ",
+     "C"
+    ]
+   ],
+   "errors": [],
+   "meta": {
+    "delimiter": ",",
+    "linebreak": "\n",
+    "aborted": false,
+    "truncated": false,
+    "cursor": 9,
+    "renamedHeaders": null
+   }
+  }
+ },
+ {
+  "description": "Misplaced quotes in data, not as opening quotes",
+  "input": "A,B \"B\",C",
+  "expected": {
+   "data": [
+    [
+     "A",
+     "B \"B\"",
+     "C"
+    ]
+   ],
+   "errors": [],
+   "meta": {
+    "delimiter": ",",
+    "linebreak": "\n",
+    "aborted": false,
+    "truncated": false,
+    "cursor": 9,
+    "renamedHeaders": null
+   }
+  }
+ },
+ {
+  "description": "Quoted field has no closing quote",
+  "input": "a,\"b,c\nd,e,f",
+  "expected": {
+   "data": [
+    [
+     "a",
+     "b,c\nd,e,f"
+    ]
+   ],
+   "errors": [
+    {
+     "type": "Quotes",
+     "code": "MissingQuotes",
+     "message": "Quoted field unterminated",
+     "row": 0,
+     "index": 3
+    }
+   ],
+   "meta": {
+    "delimiter": ",",
+    "linebreak": "\n",
+    "aborted": false,
+    "truncated": false,
+    "cursor": 12,
+    "renamedHeaders": null
+   }
+  }
+ },
+ {
+  "description": "Quoted field has invalid trailing quote after delimiter with a valid closer",
+  "input": "\"a,\"b,c\"\nd,e,f",
+  "expected": {
+   "data": [
+    [
+     "a,\"b,c"
+    ],
+    [
+     "d",
+     "e",
+     "f"
+    ]
+   ],
+   "errors": [
+    {
+     "type": "Quotes",
+     "code": "InvalidQuotes",
+     "message": "Trailing quote on quoted field is malformed",
+     "row": 0,
+     "index": 1
+    }
+   ],
+   "meta": {
+    "delimiter": ",",
+    "linebreak": "\n",
+    "aborted": false,
+    "truncated": false,
+    "cursor": 14,
+    "renamedHeaders": null
+   }
+  }
+ },
+ {
+  "description": "Quoted field has invalid trailing quote after delimiter",
+  "input": "a,\"b,\"c\nd,e,f",
+  "expected": {
+   "data": [
+    [
+     "a",
+     "b,\"c\nd,e,f"
+    ]
+   ],
+   "errors": [
+    {
+     "type": "Quotes",
+     "code": "InvalidQuotes",
+     "message": "Trailing quote on quoted field is malformed",
+     "row": 0,
+     "index": 3
+    },
+    {
+     "type": "Quotes",
+     "code": "MissingQuotes",
+     "message": "Quoted field unterminated",
+     "row": 0,
+     "index": 3
+    }
+   ],
+   "meta": {
+    "delimiter": ",",
+    "linebreak": "\n",
+    "aborted": false,
+    "truncated": false,
+    "cursor": 13,
+    "renamedHeaders": null
+   }
+  }
+ },
+ {
+  "description": "Quoted field has invalid trailing quote before delimiter",
+  "input": "a,\"b\"c,d\ne,f,g",
+  "expected": {
+   "data": [
+    [
+     "a",
+     "b\"c,d\ne,f,g"
+    ]
+   ],
+   "errors": [
+    {
+     "type": "Quotes",
+     "code": "InvalidQuotes",
+     "message": "Trailing quote on quoted field is malformed",
+     "row": 0,
+     "index": 3
+    },
+    {
+     "type": "Quotes",
+     "code": "MissingQuotes",
+     "message": "Quoted field unterminated",
+     "row": 0,
+     "index": 3
+    }
+   ],
+   "meta": {
+    "delimiter": ",",
+    "linebreak": "\n",
+    "aborted": false,
+    "truncated": false,
+    "cursor": 14,
+    "renamedHeaders": null
+   }
+  }
+ },
+ {
+  "description": "Quoted field has invalid trailing quote after new line",
+  "input": "a,\"b,c\nd\"e,f,g",
+  "expected": {
+   "data": [
+    [
+     "a",
+     "b,c\nd\"e,f,g"
+    ]
+   ],
+   "errors": [
+    {
+     "type": "Quotes",
+     "code": "InvalidQuotes",
+     "message": "Trailing quote on quoted field is malformed",
+     "row": 0,
+     "index": 3
+    },
+    {
+     "type": "Quotes",
+     "code": "MissingQuotes",
+     "message": "Quoted field unterminated",
+     "row": 0,
+     "index": 3
+    }
+   ],
+   "meta": {
+    "delimiter": ",",
+    "linebreak": "\n",
+    "aborted": false,
+    "truncated": false,
+    "cursor": 14,
+    "renamedHeaders": null
+   }
+  }
+ },
+ {
+  "description": "Quoted field has valid trailing quote via delimiter",
+  "input": "a,\"b\",c\nd,e,f",
+  "expected": {
+   "data": [
+    [
+     "a",
+     "b",
+     "c"
+    ],
+    [
+     "d",
+     "e",
+     "f"
+    ]
+   ],
+   "errors": [],
+   "meta": {
+    "delimiter": ",",
+    "linebreak": "\n",
+    "aborted": false,
+    "truncated": false,
+    "cursor": 13,
+    "renamedHeaders": null
+   }
+  }
+ },
+ {
+  "description": "Quoted field has valid trailing quote via \\n",
+  "input": "a,b,\"c\"\nd,e,f",
+  "expected": {
+   "data": [
+    [
+     "a",
+     "b",
+     "c"
+    ],
+    [
+     "d",
+     "e",
+     "f"
+    ]
+   ],
+   "errors": [],
+   "meta": {
+    "delimiter": ",",
+    "linebreak": "\n",
+    "aborted": false,
+    "truncated": false,
+    "cursor": 13,
+    "renamedHeaders": null
+   }
+  }
+ },
+ {
+  "description": "Quoted field has valid trailing quote via EOF",
+  "input": "a,b,c\nd,e,\"f\"",
+  "expected": {
+   "data": [
+    [
+     "a",
+     "b",
+     "c"
+    ],
+    [
+     "d",
+     "e",
+     "f"
+    ]
+   ],
+   "errors": [],
+   "meta": {
+    "delimiter": ",",
+    "linebreak": "\n",
+    "aborted": false,
+    "truncated": false,
+    "cursor": 13,
+    "renamedHeaders": null
+   }
+  }
+ },
+ {
+  "description": "Quoted field contains delimiters and \\n with valid trailing quote",
+  "input": "a,\"b,c\nd,e,f\"",
+  "expected": {
+   "data": [
+    [
+     "a",
+     "b,c\nd,e,f"
+    ]
+   ],
+   "errors": [],
+   "meta": {
+    "delimiter": ",",
+    "linebreak": "\n",
+    "aborted": false,
+    "truncated": false,
+    "cursor": 13,
+    "renamedHeaders": null
+   }
+  }
+ },
+ {
+  "description": "Line starts with quoted field",
+  "input": "a,b,c\n\"d\",e,f",
+  "expected": {
+   "data": [
+    [
+     "a",
+     "b",
+     "c"
+    ],
+    [
+     "d",
+     "e",
+     "f"
+    ]
+   ],
+   "errors": [],
+   "meta": {
+    "delimiter": ",",
+    "linebreak": "\n",
+    "aborted": false,
+    "truncated": false,
+    "cursor": 13,
+    "renamedHeaders": null
+   }
+  }
+ },
+ {
+  "description": "Line starts with unquoted empty field",
+  "input": ",b,c\n\"d\",e,f",
+  "expected": {
+   "data": [
+    [
+     "",
+     "b",
+     "c"
+    ],
+    [
+     "d",
+     "e",
+     "f"
+    ]
+   ],
+   "errors": [],
+   "meta": {
+    "delimiter": ",",
+    "linebreak": "\n",
+    "aborted": false,
+    "truncated": false,
+    "cursor": 12,
+    "renamedHeaders": null
+   }
+  }
+ },
+ {
+  "description": "Line ends with quoted field",
+  "input": "a,b,c\nd,e,f\n\"g\",\"h\",\"i\"\n\"j\",\"k\",\"l\"",
+  "expected": {
+   "data": [
+    [
+     "a",
+     "b",
+     "c"
+    ],
+    [
+     "d",
+     "e",
+     "f"
+    ],
+    [
+     "g",
+     "h",
+     "i"
+    ],
+    [
+     "j",
+     "k",
+     "l"
+    ]
+   ],
+   "errors": [],
+   "meta": {
+    "delimiter": ",",
+    "linebreak": "\n",
+    "aborted": false,
+    "truncated": false,
+    "cursor": 35,
+    "renamedHeaders": null
+   }
+  }
+ },
+ {
+  "description": "Line ends with quoted field, first field of next line is empty, \\n",
+  "input": "a,b,c\n,e,f\n,\"h\",\"i\"\n,\"k\",\"l\"",
+  "config": {
+   "newline": "\n"
+  },
+  "expected": {
+   "data": [
+    [
+     "a",
+     "b",
+     "c"
+    ],
+    [
+     "",
+     "e",
+     "f"
+    ],
+    [
+     "",
+     "h",
+     "i"
+    ],
+    [
+     "",
+     "k",
+     "l"
+    ]
+   ],
+   "errors": [],
+   "meta": {
+    "delimiter": ",",
+    "linebreak": "\n",
+    "aborted": false,
+    "truncated": false,
+    "cursor": 28,
+    "renamedHeaders": null
+   }
+  }
+ },
+ {
+  "description": "Quoted field at end of row (but not at EOF) has quotes",
+  "input": "a,b,\"c\"\"c\"\"\"\nd,e,f",
+  "expected": {
+   "data": [
+    [
+     "a",
+     "b",
+     "c\"c\""
+    ],
+    [
+     "d",
+     "e",
+     "f"
+    ]
+   ],
+   "errors": [],
+   "meta": {
+    "delimiter": ",",
+    "linebreak": "\n",
+    "aborted": false,
+    "truncated": false,
+    "cursor": 18,
+    "renamedHeaders": null
+   }
+  }
+ },
+ {
+  "description": "Empty quoted field at EOF is empty",
+  "input": "a,b,\"\"\na,b,\"\"",
+  "expected": {
+   "data": [
+    [
+     "a",
+     "b",
+     ""
+    ],
+    [
+     "a",
+     "b",
+     ""
+    ]
+   ],
+   "errors": [],
+   "meta": {
+    "delimiter": ",",
+    "linebreak": "\n",
+    "aborted": false,
+    "truncated": false,
+    "cursor": 13,
+    "renamedHeaders": null
+   }
+  }
+ },
+ {
+  "description": "Multiple consecutive empty fields",
+  "input": "a,b,,,c,d\n,,e,,,f",
+  "expected": {
+   "data": [
+    [
+     "a",
+     "b",
+     "",
+     "",
+     "c",
+     "d"
+    ],
+    [
+     "",
+     "",
+     "e",
+     "",
+     "",
+     "f"
+    ]
+   ],
+   "errors": [],
+   "meta": {
+    "delimiter": ",",
+    "linebreak": "\n",
+    "aborted": false,
+    "truncated": false,
+    "cursor": 17,
+    "renamedHeaders": null
+   }
+  }
+ },
+ {
+  "description": "Empty input string",
+  "input": "",
+  "expected": {
+   "data": [],
+   "errors": [],
+   "meta": {
+    "delimiter": ",",
+    "linebreak": "\n",
+    "aborted": false,
+    "truncated": false,
+    "cursor": 0,
+    "renamedHeaders": null
+   }
+  }
+ },
+ {
+  "description": "Input is just the delimiter (2 empty fields)",
+  "input": ",",
+  "expected": {
+   "data": [
+    [
+     "",
+     ""
+    ]
+   ],
+   "errors": [],
+   "meta": {
+    "delimiter": ",",
+    "linebreak": "\n",
+    "aborted": false,
+    "truncated": false,
+    "cursor": 1,
+    "renamedHeaders": null
+   }
+  }
+ },
+ {
+  "description": "Input is just empty fields",
+  "input": ",,\n,,,",
+  "expected": {
+   "data": [
+    [
+     "",
+     "",
+     ""
+    ],
+    [
+     "",
+     "",
+     "",
+     ""
+    ]
+   ],
+   "errors": [],
+   "meta": {
+    "delimiter": ",",
+    "linebreak": "\n",
+    "aborted": false,
+    "truncated": false,
+    "cursor": 6,
+    "renamedHeaders": null
+   }
+  }
+ },
+ {
+  "description": "Input is just a string (a single field)",
+  "input": "Abc def",
+  "expected": {
+   "data": [
+    [
+     "Abc def"
+    ]
+   ],
+   "errors": [],
+   "meta": {
+    "delimiter": ",",
+    "linebreak": "\n",
+    "aborted": false,
+    "truncated": false,
+    "cursor": 7,
+    "renamedHeaders": null
+   }
+  }
+ },
+ {
+  "description": "Commented line at beginning",
+  "input": "# Comment!\na,b,c",
+  "config": {
+   "comments": true
+  },
+  "expected": {
+   "data": [
+    [
+     "a",
+     "b",
+     "c"
+    ]
+   ],
+   "errors": [],
+   "meta": {
+    "delimiter": ",",
+    "linebreak": "\n",
+    "aborted": false,
+    "truncated": false,
+    "cursor": 16,
+    "renamedHeaders": null
+   }
+  }
+ },
+ {
+  "description": "Commented line in middle",
+  "input": "a,b,c\n# Comment\nd,e,f",
+  "config": {
+   "comments": true
+  },
+  "expected": {
+   "data": [
+    [
+     "a",
+     "b",
+     "c"
+    ],
+    [
+     "d",
+     "e",
+     "f"
+    ]
+   ],
+   "errors": [],
+   "meta": {
+    "delimiter": ",",
+    "linebreak": "\n",
+    "aborted": false,
+    "truncated": false,
+    "cursor": 21,
+    "renamedHeaders": null
+   }
+  }
+ },
+ {
+  "description": "Commented line at end",
+  "input": "a,true,false\n# Comment",
+  "config": {
+   "comments": true
+  },
+  "expected": {
+   "data": [
+    [
+     "a",
+     "true",
+     "false"
+    ]
+   ],
+   "errors": [],
+   "meta": {
+    "delimiter": ",",
+    "linebreak": "\n",
+    "aborted": false,
+    "truncated": false,
+    "cursor": 13,
+    "renamedHeaders": null
+   }
+  }
+ },
+ {
+  "description": "Two comment lines consecutively",
+  "input": "a,b,c\n#comment1\n#comment2\nd,e,f",
+  "config": {
+   "comments": true
+  },
+  "expected": {
+   "data": [
+    [
+     "a",
+     "b",
+     "c"
+    ],
+    [
+     "d",
+     "e",
+     "f"
+    ]
+   ],
+   "errors": [],
+   "meta": {
+    "delimiter": ",",
+    "linebreak": "\n",
+    "aborted": false,
+    "truncated": false,
+    "cursor": 31,
+    "renamedHeaders": null
+   }
+  }
+ },
+ {
+  "description": "Two comment lines consecutively at end of file",
+  "input": "a,b,c\n#comment1\n#comment2",
+  "config": {
+   "comments": true
+  },
+  "expected": {
+   "data": [
+    [
+     "a",
+     "b",
+     "c"
+    ]
+   ],
+   "errors": [],
+   "meta": {
+    "delimiter": ",",
+    "linebreak": "\n",
+    "aborted": false,
+    "truncated": false,
+    "cursor": 6,
+    "renamedHeaders": null
+   }
+  }
+ },
+ {
+  "description": "Three comment lines consecutively at beginning of file",
+  "input": "#comment1\n#comment2\n#comment3\na,b,c",
+  "config": {
+   "comments": true
+  },
+  "expected": {
+   "data": [
+    [
+     "a",
+     "b",
+     "c"
+    ]
+   ],
+   "errors": [],
+   "meta": {
+    "delimiter": ",",
+    "linebreak": "\n",
+    "aborted": false,
+    "truncated": false,
+    "cursor": 35,
+    "renamedHeaders": null
+   }
+  }
+ },
+ {
+  "description": "Entire file is comment lines",
+  "input": "#comment1\n#comment2\n#comment3",
+  "config": {
+   "comments": true
+  },
+  "expected": {
+   "data": [],
+   "errors": [],
+   "meta": {
+    "delimiter": ",",
+    "linebreak": "\n",
+    "aborted": false,
+    "truncated": false,
+    "cursor": 0,
+    "renamedHeaders": null
+   }
+  }
+ },
+ {
+  "description": "Comment with non-default character",
+  "input": "a,b,c\n!Comment goes here\nd,e,f",
+  "config": {
+   "comments": "!"
+  },
+  "expected": {
+   "data": [
+    [
+     "a",
+     "b",
+     "c"
+    ],
+    [
+     "d",
+     "e",
+     "f"
+    ]
+   ],
+   "errors": [],
+   "meta": {
+    "delimiter": ",",
+    "linebreak": "\n",
+    "aborted": false,
+    "truncated": false,
+    "cursor": 30,
+    "renamedHeaders": null
+   }
+  }
+ },
+ {
+  "description": "Bad comments value specified",
+  "input": "a,b,c\n5comment\nd,e,f",
+  "config": {
+   "comments": 5
+  },
+  "expected": {
+   "data": [
+    [
+     "a",
+     "b",
+     "c"
+    ],
+    [
+     "5comment"
+    ],
+    [
+     "d",
+     "e",
+     "f"
+    ]
+   ],
+   "errors": [],
+   "meta": {
+    "delimiter": ",",
+    "linebreak": "\n",
+    "aborted": false,
+    "truncated": false,
+    "cursor": 20,
+    "renamedHeaders": null
+   }
+  }
+ },
+ {
+  "description": "Multi-character comment string",
+  "input": "a,b,c\n=N(Comment)\nd,e,f",
+  "config": {
+   "comments": "=N("
+  },
+  "expected": {
+   "data": [
+    [
+     "a",
+     "b",
+     "c"
+    ],
+    [
+     "d",
+     "e",
+     "f"
+    ]
+   ],
+   "errors": [],
+   "meta": {
+    "delimiter": ",",
+    "linebreak": "\n",
+    "aborted": false,
+    "truncated": false,
+    "cursor": 23,
+    "renamedHeaders": null
+   }
+  }
+ },
+ {
+  "description": "Input with only a commented line",
+  "input": "#commented line",
+  "config": {
+   "comments": true,
+   "delimiter": ","
+  },
+  "expected": {
+   "data": [],
+   "errors": [],
+   "meta": {
+    "delimiter": ",",
+    "linebreak": "\n",
+    "aborted": false,
+    "truncated": false,
+    "cursor": 0,
+    "renamedHeaders": null
+   }
+  }
+ },
+ {
+  "description": "Input with only a commented line and blank line after",
+  "input": "#commented line\n",
+  "config": {
+   "comments": true,
+   "delimiter": ","
+  },
+  "expected": {
+   "data": [
+    [
+     ""
+    ]
+   ],
+   "errors": [],
+   "meta": {
+    "delimiter": ",",
+    "linebreak": "\n",
+    "aborted": false,
+    "truncated": false,
+    "cursor": 16,
+    "renamedHeaders": null
+   }
+  }
+ },
+ {
+  "description": "Input with only a commented line, without comments enabled",
+  "input": "#commented line",
+  "config": {
+   "delimiter": ","
+  },
+  "expected": {
+   "data": [
+    [
+     "#commented line"
+    ]
+   ],
+   "errors": [],
+   "meta": {
+    "delimiter": ",",
+    "linebreak": "\n",
+    "aborted": false,
+    "truncated": false,
+    "cursor": 15,
+    "renamedHeaders": null
+   }
+  }
+ },
+ {
+  "description": "Input without comments with line starting with whitespace",
+  "input": "a\n b\nc",
+  "config": {
+   "delimiter": ","
+  },
+  "expected": {
+   "data": [
+    [
+     "a"
+    ],
+    [
+     " b"
+    ],
+    [
+     "c"
+    ]
+   ],
+   "errors": [],
+   "meta": {
+    "delimiter": ",",
+    "linebreak": "\n",
+    "aborted": false,
+    "truncated": false,
+    "cursor": 6,
+    "renamedHeaders": null
+   }
+  }
+ },
+ {
+  "description": "Multiple rows, one column (no delimiter found)",
+  "input": "a\nb\nc\nd\ne",
+  "expected": {
+   "data": [
+    [
+     "a"
+    ],
+    [
+     "b"
+    ],
+    [
+     "c"
+    ],
+    [
+     "d"
+    ],
+    [
+     "e"
+    ]
+   ],
+   "errors": [],
+   "meta": {
+    "delimiter": ",",
+    "linebreak": "\n",
+    "aborted": false,
+    "truncated": false,
+    "cursor": 9,
+    "renamedHeaders": null
+   }
+  }
+ },
+ {
+  "description": "One column input with empty fields",
+  "input": "a\nb\n\n\nc\nd\ne\n",
+  "expected": {
+   "data": [
+    [
+     "a"
+    ],
+    [
+     "b"
+    ],
+    [
+     ""
+    ],
+    [
+     ""
+    ],
+    [
+     "c"
+    ],
+    [
+     "d"
+    ],
+    [
+     "e"
+    ],
+    [
+     ""
+    ]
+   ],
+   "errors": [],
+   "meta": {
+    "delimiter": ",",
+    "linebreak": "\n",
+    "aborted": false,
+    "truncated": false,
+    "cursor": 12,
+    "renamedHeaders": null
+   }
+  }
+ },
+ {
+  "description": "Fast mode, basic",
+  "input": "a,b,c\nd,e,f",
+  "config": {
+   "fastMode": true
+  },
+  "expected": {
+   "data": [
+    [
+     "a",
+     "b",
+     "c"
+    ],
+    [
+     "d",
+     "e",
+     "f"
+    ]
+   ],
+   "errors": [],
+   "meta": {
+    "delimiter": ",",
+    "linebreak": "\n",
+    "aborted": false,
+    "truncated": false,
+    "cursor": 11,
+    "renamedHeaders": null
+   }
+  }
+ },
+ {
+  "description": "Fast mode with comments",
+  "input": "// Commented line\na,b,c",
+  "config": {
+   "fastMode": true,
+   "comments": "//"
+  },
+  "expected": {
+   "data": [
+    [
+     "a",
+     "b",
+     "c"
+    ]
+   ],
+   "errors": [],
+   "meta": {
+    "delimiter": ",",
+    "linebreak": "\n",
+    "aborted": false,
+    "truncated": false,
+    "cursor": 23,
+    "renamedHeaders": null
+   }
+  }
+ },
+ {
+  "description": "Fast mode with preview",
+  "input": "a,b,c\nd,e,f\nh,j,i\n",
+  "config": {
+   "fastMode": true,
+   "preview": 2
+  },
+  "expected": {
+   "data": [
+    [
+     "a",
+     "b",
+     "c"
+    ],
+    [
+     "d",
+     "e",
+     "f"
+    ]
+   ],
+   "errors": [],
+   "meta": {
+    "delimiter": ",",
+    "linebreak": "\n",
+    "aborted": false,
+    "truncated": true,
+    "cursor": 18,
+    "renamedHeaders": null
+   }
+  }
+ },
+ {
+  "description": "Fast mode with blank line at end",
+  "input": "a,b,c\n",
+  "config": {
+   "fastMode": true
+  },
+  "expected": {
+   "data": [
+    [
+     "a",
+     "b",
+     "c"
+    ],
+    [
+     ""
+    ]
+   ],
+   "errors": [],
+   "meta": {
+    "delimiter": ",",
+    "linebreak": "\n",
+    "aborted": false,
+    "truncated": false,
+    "cursor": 6,
+    "renamedHeaders": null
+   }
+  }
+ },
+ {
+  "description": "Simple duplicated header names",
+  "input": "A,A,A,A\n1,2,3,4",
+  "config": {
+   "header": true
+  },
+  "expected": {
+   "data": [
+    [
+     "A",
+     "A_1",
+     "A_2",
+     "A_3"
+    ],
+    [
+     "1",
+     "2",
+     "3",
+     "4"
+    ]
+   ],
+   "errors": [],
+   "meta": {
+    "delimiter": ",",
+    "linebreak": "\n",
+    "aborted": false,
+    "truncated": false,
+    "cursor": 15,
+    "renamedHeaders": {
+     "A_1": "A",
+     "A_2": "A",
+     "A_3": "A"
+    }
+   }
+  }
+ },
+ {
+  "description": "Duplicated header names with headerTransform",
+  "input": "A,A,A,A\n1,2,3,4",
+  "config": {
+   "header": true
+  },
+  "expected": {
+   "data": [
+    [
+     "A",
+     "A_1",
+     "A_2",
+     "A_3"
+    ],
+    [
+     "1",
+     "2",
+     "3",
+     "4"
+    ]
+   ],
+   "errors": [],
+   "meta": {
+    "delimiter": ",",
+    "linebreak": "\n",
+    "aborted": false,
+    "truncated": false,
+    "cursor": 15,
+    "renamedHeaders": {
+     "A_1": "A",
+     "A_2": "A",
+     "A_3": "A"
+    }
+   }
+  }
+ },
+ {
+  "description": "Duplicated header names existing column",
+  "input": "c,c,c,c_1\n1,2,3,4",
+  "config": {
+   "header": true
+  },
+  "expected": {
+   "data": [
+    [
+     "c",
+     "c_2",
+     "c_3",
+     "c_1"
+    ],
+    [
+     "1",
+     "2",
+     "3",
+     "4"
+    ]
+   ],
+   "errors": [],
+   "meta": {
+    "delimiter": ",",
+    "linebreak": "\n",
+    "aborted": false,
+    "truncated": false,
+    "cursor": 17,
+    "renamedHeaders": {
+     "c_2": "c",
+     "c_3": "c"
+    }
+   }
+  }
+ },
+ {
+  "description": "Duplicate header names with __proto__ field",
+  "input": "__proto__,__proto__,__proto__\n1,2,3",
+  "config": {
+   "header": true
+  },
+  "expected": {
+   "data": [
+    [
+     "__proto__",
+     "__proto___1",
+     "__proto___2"
+    ],
+    [
+     "1",
+     "2",
+     "3"
+    ]
+   ],
+   "errors": [],
+   "meta": {
+    "delimiter": ",",
+    "linebreak": "\n",
+    "aborted": false,
+    "truncated": false,
+    "cursor": 35,
+    "renamedHeaders": {
+     "__proto___1": "__proto__",
+     "__proto___2": "__proto__"
+    }
+   }
+  }
+ }
+]

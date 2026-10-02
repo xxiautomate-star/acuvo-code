@@ -48,7 +48,25 @@ import { DEFAULT_COMMAND_TIMEOUT_MS, ALLOWED_BINARIES } from '../lib/command.mjs
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const read = (rel) => readFileSync(join(ROOT, rel), 'utf8');
 
-const README = read('README.md');
+/**
+ * ── ⚠️⚠️ THE DOCUMENT THIS GUARDS MOVED ON 2026-09-15, AND IT STILL GUARDS IT ──
+ *
+ * `README.md` was 1,459 lines carrying 66 warning markers and a "do not read
+ * this page as…" disclaimer — the right content in the wrong place. A front door
+ * that leads with its own caveats reads as unfinished to a stranger, so the
+ * honest engineering record moved VERBATIM to `docs/STATUS.md` and the README
+ * became a front door.
+ *
+ * ⭐ NOTHING HERE IS WEAKENED. Every assertion below still runs, against the
+ * same text, at its new address — the flag-defaults table is in STATUS.md
+ * (51 rows, counted). The rule this file exists for is unchanged: a default a
+ * READER sees must equal the exported constant. Repointing a guard at a moved
+ * document is correct; deleting an assertion because the file got shorter is
+ * not, and that is the mistake this note exists to prevent.
+ */
+const README = read('docs/STATUS.md');
+/** ⭐ and the new front door must not silently lose the install line */
+const FRONT_DOOR = read('README.md');
 const CHANGELOG = read('CHANGELOG.md');
 const ENTERPRISE = read('ENTERPRISE.md');
 const IMAGEGEN = read('lib/imagegen.mjs');
@@ -117,11 +135,39 @@ test('README documents the REAL --command-timeout and --timeout defaults', () =>
   );
 });
 
-test('README names the REAL default model', () => {
+/**
+ * ── ⚠️⚠️ INVERTED 2026-08-26. THIS REQUIRED THE VENDOR MODEL ID IN THE README ─
+ *
+ * It asserted the `--model` row contains `DEFAULT_MODEL` — the raw upstream id.
+ * The intent was right and worth keeping in spirit: a README that names a
+ * default which is not the default is a lie a reader cannot check.
+ *
+ * ⭐ BUT THE README IS SHIPPED IN THE NPM TARBALL AND RENDERED ON THE PACKAGE
+ * PAGE, which is the surface someone reads while deciding whether to subscribe.
+ * Roman: *"we don't want to sound unprofessional nor advertise our business
+ * mechanics — we might as well say: don't pay for us, just pay directly to
+ * these guys!!!"* An outside reader already reached that exact conclusion once,
+ * in writing, from the website's install block.
+ *
+ * ⭐ THE HONESTY REQUIREMENT SURVIVES, RE-AIMED AT OUR OWN NAMES. The row must
+ * still name the real default — `acuvo-flash` — and `acuvo-models.mjs` is the
+ * one mapping from that name to whatever we route to, so the README stays
+ * checkable without publishing the supply chain. The mapping itself is already
+ * pinned by `labelForModelId` tests.
+ *
+ * ⚠️ A raw upstream id still PARSES, so no existing script breaks. It is simply
+ * not the spelling these docs use.
+ */
+test('README names the real default model by ITS ACUVO NAME, never the vendor id', () => {
   const row = optionRow('--model');
   assert.ok(
-    row.includes(DEFAULT_MODEL),
-    `README's --model row does not name ${DEFAULT_MODEL}. Row: ${row}`,
+    /acuvo-flash/.test(row),
+    `README's --model row does not name the default (acuvo-flash). Row: ${row}`,
+  );
+  assert.ok(
+    !row.includes(DEFAULT_MODEL),
+    `README's --model row publishes the upstream id ${DEFAULT_MODEL}. The README ships in the npm `
+    + 'tarball and renders on the package page — use the Acuvo name.',
   );
 });
 
@@ -193,25 +239,56 @@ for (const [label, text] of [
   });
 }
 
-test('the docs do not promise an install route that does not exist', () => {
+test('the README installs the package that is ACTUALLY published', () => {
   /**
-   * SHAKEDOWN.md defect #1: the README told strangers to clone a URL that 404s,
-   * for a package that is unpublished — so a reader had zero working routes and
-   * no way to tell that from a typo of their own. Publishing is the owner's
-   * call. Instructing people to do something impossible is not.
+   * ── ⚠️⚠️ THIS GUARD OUTLIVED ITS OWN PREMISE, AND IT COST US THE FRONT DOOR
    *
-   * ⚠️ The URL may still be MENTIONED (it is in package.json's `repository`,
-   * and the README explains that it 404s). What it may not be is presented as
-   * an instruction — i.e. inside a fenced block as a command to run.
+   * It was written for SHAKEDOWN.md defect #1: the README told strangers to
+   * clone a URL that 404'd, for a package that was unpublished. Correct then.
+   *
+   * ⭐ BOTH FACTS STOPPED BEING TRUE. Verified 2026-08-27:
+   *     registry.npmjs.org/acuvo-code   → 0.6.17, published 2026-08-23
+   *     github.com/xxiautomate-star/acuvo-code → 200, public
+   *
+   * ⚠️ So the guard was banning a WORKING install command from the README, and
+   * the README duly had none — the single most important line for a stranger,
+   * absent, enforced by a test that was green. **A guard that pins a fact which
+   * has since changed is worse than no guard**, because it is trusted.
+   *
+   * ⭐ IT IS NOT DELETED. It is INVERTED to the claim that is true now and still
+   * worth protecting: the README must install the name that exists. The old
+   * failure mode — telling people to install something that 404s — is caught by
+   * checking the name against `package.json` rather than banning the command.
+   *
+   * ⚠️ `acuvo` (unscoped) is NOT ours — the registry 404s for it. CLAUDE.md
+   * still says "npm `acuvo`" and is wrong; the published name is `acuvo-code`.
    */
+  const pkgName = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8')).name;
   const fences = README.match(/```[\s\S]*?```/g) ?? [];
-  const offenders = fences
-    .filter((b) => /git clone\s+https?:\/\/github\.com/.test(b) || /npm (?:i|install)\s+(?:-g\s+)?acuvo/.test(b))
-    .map((b) => b.split('\n').find((l) => /git clone|npm i/.test(l))?.trim());
+  /**
+   * ⚠️ ONLY LINES THAT INSTALL *OUR* PACKAGE. The first version of this checked
+   * every `npm i` in the file and went red on
+   * `npm i -g @modelcontextprotocol/server-filesystem` — a correct example of
+   * installing somebody ELSE's MCP server. A guard that fails on legitimate
+   * documentation is a guard people delete.
+   */
+  const installs = fences
+    .flatMap((b) => b.split('\n'))
+    .filter((l) => /npm (?:i|install)\s+(?:-g\s+)?(?:@?acuvo|\S*\bacuvo\b)/i.test(l))
+    .map((l) => l.trim());
+
+  assert.ok(
+    installs.length > 0,
+    'The README has no command installing this package in a fenced block. A stranger cannot run '
+    + 'a package they are not told how to install, and it is the first thing anybody looks for.',
+  );
+
+  const wrong = installs.filter((l) => !l.includes(pkgName));
   assert.deepEqual(
-    offenders,
+    wrong,
     [],
-    `README tells the reader to run an install command that cannot work today (the repo 404s and the package is unpublished):\n${offenders.join('\n')}`,
+    `The README installs a package name that is not the one this repo publishes ("${pkgName}"):\n`
+    + `${wrong.join('\n')}\nThe unscoped name "acuvo" is NOT ours — registry.npmjs.org/acuvo 404s.`,
   );
 });
 
@@ -503,4 +580,302 @@ test('⭐⭐ the caching claim is split into the half we control and the half we
   // ⭐ And the README has to name the lever, since it is the difference between
   // the two numbers and it is off by default.
   assert.ok(README.includes('ACUVO_PROVIDER_ORDER'), 'the README must name the variable that moves the hit rate');
+});
+
+// ── ⭐⭐⭐ THE CLASS THIS FILE COULD NOT SEE: A NUMBER STATED IN PROSE ────────
+
+/**
+ * ── ⚠️⚠️ EVERY NUMERIC ASSERTION ABOVE PARSES THE README'S OPTIONS TABLE ────
+ *
+ * MEASURED 2026-08-29. `ENTERPRISE.md` said **"5 rounds, ceiling 16"** in §1.4,
+ * §4.2 and §5.2 while the real constants were `DEFAULT_MAX_ROUNDS` 24 /
+ * `MAX_ROUNDS_LIMIT` 64 / `MAX_ROUNDS_LIMIT_BUDGETED` 1000 — stale by two
+ * revisions. Worse, §3.8, the section whose entire subject is the 2026-08-11
+ * "the docs said 3, it is 5" correction, still asserted "it is 5" in the
+ * present tense. **This file was green throughout**, because `optionRow()`
+ * reads a markdown TABLE and `ENTERPRISE.md` is read only to check that the
+ * files it cites exist. Nothing in the package read a number out of a sentence.
+ *
+ * ── ⚠️ THE SHAPE, WHICH IS THE ONLY REASON THIS IS NOT A TAX ────────────────
+ * The lazy version — flag every number near every constant — is deleted the
+ * first week it fires wrongly, and this file's own header says so. So the
+ * binding is deliberately narrow, and each rule below is here because the loose
+ * version produced a false positive that is named with it:
+ *
+ *   1. **Clause, not paragraph.** "`MAX_ROUNDS_LIMIT` = 64, `lib/cli-args.mjs`;
+ *      `DEFAULT_COMMAND_TIMEOUT_MS` + output caps" is ONE table cell and TWO
+ *      claims. A paragraph-wide window read the 64 as a claim about the timeout.
+ *   2. **The cited module resolves an ambiguous name.** Nineteen exported names
+ *      exist twice with different values — `DEFAULT_BUDGET_TOKENS` is 24,000 in
+ *      `compact.mjs` and 9,000 in `repo-map.mjs`. When the clause names the
+ *      file, only that file's value counts, and that is what caught the README.
+ *   3. **A released CHANGELOG section is frozen.** "The round ceiling is 16,
+ *      raised from 8" is the true record of a shipped release and rewriting it
+ *      would be the lie. `## [Unreleased]` is not frozen.
+ *   4. **Citations are not values.** ``clampOutput` `:1506`` and
+ *      `lib/command.mjs:1654` are line numbers; dates, `§` refs and semver are
+ *      not values either. A build-failing number satisfied by a LINE NUMBER is
+ *      the exact defect the shipped-file test above already records.
+ *
+ * ⭐ THE ESCAPE IS THE TRUTH, NOT A COMMENT. A clause may quote any number of
+ * superseded figures as long as it also states the real one — which is what
+ * §5.2 does today ("previously said 3, then 8, then 5") and why it is green.
+ * There is no prose allow-list to game.
+ *
+ * ⚠️ WHAT IT STILL CANNOT SEE, said plainly rather than pretended away: prose
+ * that binds a number to a MODULE rather than to the constant name — §3.8's
+ * "one in `lib/turn.mjs` (value 3 …) and one in `lib/cli-args.mjs` (value 5 …)"
+ * passes, because 3 is a real value of that name and the clause states it.
+ * Catching that needs a parser for English, not one for numbers.
+ *
+ * VERIFIED TO BITE: run against `git show 47a23fc5e^:acuvo-code/ENTERPRISE.md`
+ * it reports 4 wrong claims, at §1.4, §4.2 and §5.2 — all three stale lines —
+ * and 0 against the file as it stands.
+ */
+
+/** Every `export const NAME = <number>` in lib/ and bin/: name -> module -> value. */
+function exportedNumericConstants() {
+  const byName = new Map();
+  for (const dir of ['lib', 'bin']) {
+    for (const f of readdirSync(join(ROOT, dir))) {
+      if (!f.endsWith('.mjs')) continue;
+      const src = readFileSync(join(ROOT, dir, f), 'utf8');
+      for (const m of src.matchAll(/^export const ([A-Z][A-Z0-9_]{2,}) = (-?\d[\d_]*(?:\.\d+)?(?:e-?\d+)?);/gm)) {
+        const value = Number(m[2].replace(/_/g, ''));
+        if (!Number.isFinite(value)) continue;
+        if (!byName.has(m[1])) byName.set(m[1], new Map());
+        byName.get(m[1]).set(`${dir}/${f}`, value);
+      }
+    }
+  }
+  return byName;
+}
+
+/**
+ * ⚠️ A DOC MAY LEGITIMATELY RESCALE A CONSTANT. `DEFAULT_COMMAND_TIMEOUT_MS` is
+ * 120,000 and every sentence about it says "120s" — demanding the raw literal
+ * would fail correct writing, which is the failure mode this file fears most.
+ */
+function acceptableRenderings(value) {
+  const out = new Set([value]);
+  if (value % 1000 === 0) out.add(value / 1000);        // ms -> s, 400_000 -> "400k"
+  if (value % 60000 === 0) out.add(value / 60000);      // ms -> minutes
+  if (value % 1024 === 0) out.add(value / 1024);        // bytes -> KiB
+  if (value > 0 && value < 1) out.add(value * 100);     // a fraction -> a percentage
+  return out;
+}
+
+/** Numbers a sentence ASSERTS — never a citation, a date, a § ref or a version. */
+function assertedNumbers(text) {
+  return [...text
+    .replace(/\b\d{4}-\d{2}-\d{2}\b/g, ' ')
+    .replace(/§\s?\d+(?:\.\d+)*/g, ' ')
+    .replace(/`:\d+(?:-\d+)?`/g, ' ')
+    .replace(/\.(?:mjs|ts|tsx|js|json|md|sh|py):\d+(?:-\d+)?/g, ' ')
+    .replace(/\bv?\d+\.\d+\.\d+\b/g, ' ')
+    .matchAll(/\b(\d[\d,_]*(?:\.\d+)?)\b/g)]
+    .map((m) => Number(m[1].replace(/[,_]/g, '')))
+    .filter(Number.isFinite);
+}
+
+/**
+ * Split into the units English binds a number inside: a table cell, a
+ * semicolon-separated item, a sentence, a list entry. A parenthetical citation
+ * — "(`DEFAULT_MAX_ROUNDS`, `lib/cli-args.mjs`)" — stays inside the clause it
+ * annotates, which is the whole point.
+ */
+const CLAUSE_BREAK = /\||;\s|(?<=[a-z)\]`*_,])[.!?](?:\*\*)?\s+(?=[A-Z`*(⭐⚠])|\n\s*(?=[-*+]\s|\d+\.\s)/;
+
+function clausesOf(text) {
+  const out = [];
+  let at = 0;
+  for (const para of text.split(/\n\s*\n/)) {
+    let inner = 0;
+    for (const c of para.split(CLAUSE_BREAK)) {
+      if (c === undefined) continue;
+      out.push({ text: c, offset: at + inner });
+      inner += c.length + 1;
+    }
+    at += para.length + 2;
+  }
+  return out;
+}
+
+/** Byte ranges of a CHANGELOG's released sections — a historical record. */
+function frozenRanges(doc, text) {
+  if (doc !== 'CHANGELOG.md') return [];
+  const heads = [...text.matchAll(/^## \[([^\]]+)\]/gm)];
+  return heads
+    .map((h, i) => (/unreleased/i.test(h[1]) ? null : [h.index, heads[i + 1]?.index ?? text.length]))
+    .filter(Boolean);
+}
+
+function proseNumberClaims(doc, text, constants, nameRx) {
+  const frozen = frozenRanges(doc, text);
+  const claims = [];
+  for (const clause of clausesOf(text)) {
+    if (frozen.some(([a, b]) => clause.offset >= a && clause.offset < b)) continue;
+    const named = new Set([...clause.text.matchAll(nameRx)].map((m) => m[1]));
+    if (named.size === 0) continue;
+    const stated = new Set(assertedNumbers(clause.text));
+    if (stated.size === 0) continue;
+    for (const name of named) {
+      const byModule = constants.get(name);
+      const cited = [...byModule.keys()].filter((m) => clause.text.includes(m));
+      const values = cited.length > 0 ? cited.map((m) => byModule.get(m)) : [...byModule.values()];
+      const ok = new Set();
+      for (const v of values) for (const r of acceptableRenderings(v)) ok.add(r);
+      claims.push({
+        doc,
+        name,
+        values,
+        cited,
+        satisfied: [...ok].some((r) => stated.has(r)),
+        line: text.slice(0, clause.offset).split('\n').length,
+        stated: [...stated],
+        clause: clause.text.replace(/\s+/g, ' ').trim().slice(0, 180),
+      });
+    }
+  }
+  return claims;
+}
+
+test('⭐⭐⭐ every number the prose docs state about an exported constant is the real one', () => {
+  const constants = exportedNumericConstants();
+  assert.ok(constants.size > 200, `only ${constants.size} exported numeric constants found — the regex has rotted`);
+  const nameRx = new RegExp(`(?<![A-Za-z0-9_])(${[...constants.keys()].join('|')})(?![A-Za-z0-9_])`, 'g');
+
+  /**
+   * ⚠️ `readdirSync`, NOT A TYPED LIST — so it is tarball-safe by construction.
+   * The published package ships four of these (README, CHANGELOG, ENTERPRISE,
+   * ROADMAP) and the repo has more; a reviewer running `npm test` against the
+   * tarball sees fewer files, never a red test whose subject is absent. Same
+   * rule the caching test above states in longhand.
+   */
+  const docs = readdirSync(ROOT).filter((f) => f.endsWith('.md'));
+  assert.ok(docs.includes('README.md') && docs.includes('ENTERPRISE.md'), `the docs are missing: ${docs.join(', ')}`);
+
+  const claims = docs.flatMap((doc) => proseNumberClaims(doc, read(doc), constants, nameRx));
+  /**
+   * ⚠️ A POPULATION FLOOR, BECAUSE THE EXPENSIVE FAILURE HERE IS SILENCE. If
+   * the clause splitter or the name regex rots, every claim disappears and the
+   * assertion below passes on an empty list forever — the "guard that passes
+   * while checking nothing" this repo has found five times in one day.
+   */
+  assert.ok(
+    claims.length >= 10,
+    `only ${claims.length} numeric claims found across ${docs.length} documents — the binder has rotted `
+    + 'and this test would now pass by finding nothing. It found 30 on 2026-08-29.',
+  );
+
+  const wrong = claims.filter((c) => !c.satisfied);
+  assert.deepEqual(
+    wrong.map((c) => `${c.doc}:~${c.line} states ${c.stated.join('/')} for ${c.name}`
+      + ` (really ${c.values.join(' or ')}${c.cited.length ? ` in ${c.cited.join(', ')}` : ''}) — "${c.clause}"`),
+    [],
+    'A document states a number for an exported constant that the code does not agree with. Either the '
+    + 'sentence is stale, or it quotes a superseded figure without also stating the current one — state '
+    + 'both, the way ENTERPRISE.md §5.2 does, and this passes.',
+  );
+});
+
+/**
+ * ── ⚠️⚠️⚠️ A CORRECTION THAT DOES NOT DELETE THE THING IT CORRECTS ─────────
+ *
+ * Found 2026-09-10, in **two documents at once**, and no test above could see
+ * it. `README.md` carried, on consecutive lines:
+ *
+ *     The registry holds **84 tools** (`TOOL_SCHEMAS`, `lib/tools.mjs` — count it yourself, and
+ *     The registry holds **85 tools** (`TOOL_SCHEMAS`, `lib/tools.mjs` — count it yourself, and
+ *
+ * and `ENTERPRISE.md` carried two "the package ships **N files**" sentences the
+ * same way — 172 immediately above 173. Somebody inserted the corrected sentence
+ * and never deleted the old one. Both counts were then ALSO wrong (87 and 174),
+ * so the freshness tests above fired and this shape was repaired as a side
+ * effect rather than as itself.
+ *
+ * ⭐ IT IS ITS OWN DEFECT AND IT SURVIVES A CORRECT NUMBER. Fix one twin and the
+ * document reads "**87 tools**" above "**85 tools**": every freshness assertion
+ * in this file passes, and the page still cannot be quoted, because a reader has
+ * no way to tell which line is live. Only the SHAPE catches that.
+ *
+ * ⚠️ NARROW ON PURPOSE — adjacent lines, both carrying a digit, identical once
+ * every number is masked, and long enough that coincidence is implausible. A
+ * markdown table of numbered rows differs in its prose and does not match.
+ * Measured across all four shipped documents: it finds nothing today, and it
+ * finds both twins when either is put back.
+ */
+test('⚠️⚠️ no document carries the SAME sentence twice with two different numbers', () => {
+  const MIN_MASKED_LENGTH = 25;
+  const mask = (line) => line.replace(/[0-9][0-9,.]*/g, '#').trim();
+  const twins = [];
+  for (const doc of ['README.md', 'ENTERPRISE.md', 'CHANGELOG.md', 'ROADMAP.md']) {
+    const lines = read(doc).split('\n').map((l) => l.replace(/\r$/, ''));
+    for (let i = 1; i < lines.length; i += 1) {
+      const a = lines[i - 1];
+      const b = lines[i];
+      if (a === b) continue;                              // an exact repeat is not this defect
+      if (!/[0-9]/.test(a) || !/[0-9]/.test(b)) continue; // the defect is about a NUMBER that moved
+      const masked = mask(a);
+      if (masked.length < MIN_MASKED_LENGTH || masked !== mask(b)) continue;
+      twins.push(`${doc}:${i} — "${a.trim().slice(0, 80)}" / "${b.trim().slice(0, 80)}"`);
+    }
+  }
+  assert.deepEqual(
+    twins, [],
+    'Two adjacent lines say the same sentence with different numbers. One of them is a correction that '
+    + 'was inserted without deleting what it corrected — delete the stale one, or say in the prose which '
+    + 'is superseded, so a reader can tell them apart.',
+  );
+});
+
+/**
+ * ── ⚠️⚠️ THE README STATES A TEST-FILE COUNT, SO IT GETS THE SAME TREATMENT ─
+ * AS EVERY OTHER NUMBER ON THE PAGE.
+ *
+ * It said **455**, then **1,378 tests across 61 files**, and by 2026-09-10 the real
+ * figures were 5,690 across 383 — quadrupled underneath a sentence in the section
+ * whose entire job is to tell a reviewer what running the suite will show them.
+ * Nothing in this file could see it: the guards above bind the TOOL registry and
+ * the SHIPPED file/line counts, and the test corpus is neither.
+ *
+ * ⭐ THE FILE COUNT IS PINNED AND THE TEST TOTAL IS NOT, and the split is the whole
+ * design. A file lands when somebody adds one — rarely, deliberately, and worth a
+ * one-word edit. A test total moves on almost every commit, and an exact pin on it
+ * is a check that fails correct work, which this repo has paid for repeatedly.
+ *
+ * ⚠️ ANCHORED TO THE WORD "files", never a bare substring — the same reason the two
+ * ENTERPRISE guards are: a build-failing number satisfied by a line number inside a
+ * citation is not a guard, and that has happened in this file once already.
+ */
+test('⚠️⚠️ the README states the real number of TEST FILES', () => {
+  const realFiles = readdirSync(join(ROOT, 'test')).filter((f) => f.endsWith('.test.mjs')).length;
+  assert.match(
+    README,
+    new RegExp('\\b' + realFiles + '\\s+files\\b'),
+    'README.md does not say "' + realFiles + ' files" — the real count of test/*.test.mjs. The Tests '
+    + 'section has now been wrong twice (455, then "1,378 tests across 61 files"), each time for weeks, '
+    + 'in the paragraph that tells a reviewer what to expect when they run it.',
+  );
+});
+
+/**
+ * ── ⭐ THE FRONT DOOR MUST STAY A FRONT DOOR ────────────────────────────────
+ *
+ * Roman, 2026-09-15: make it read *"exactly how a billion dollar company would
+ * do it."* Every winner in this niche has the same shape — one promise, one
+ * install line, a few features, links — and the failure mode is a README that
+ * grows back into an engineering log one honest caveat at a time. This is the
+ * ratchet against that.
+ */
+test('README is a front door, not a status report', () => {
+  /** ⚠️ counted without a newline escape on purpose — four have been eaten by a
+   *  shell heredoc in this session alone; `split(/\r?\n/)` needs none. */
+  const lines = FRONT_DOOR.split(/\r?\n/).length;
+  assert.ok(lines < 200, `README is ${lines} lines — the caveats belong in docs/STATUS.md`);
+  assert.ok(/npm i -g acuvo-code/.test(FRONT_DOOR), 'the install line is gone from the front door');
+  assert.ok(/docs\/STATUS\.md/.test(FRONT_DOOR), 'the front door no longer links the honest record');
+
+  const warnings = (FRONT_DOOR.match(/⚠|⛔/g) || []).length;
+  assert.ok(warnings <= 2, `${warnings} warning markers on the front door — move them to docs/STATUS.md`);
 });

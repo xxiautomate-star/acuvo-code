@@ -32,7 +32,9 @@ import { existsSync } from 'node:fs';
 import { join, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { createMcpServer, serve, SERVER_VERSION } from '../lib/mcp-server.mjs';
+import {
+  createMcpServer, serve, SERVER_VERSION, DEFAULT_MCP_SPEND_USD, MAX_MCP_SPEND_USD,
+} from '../lib/mcp-server.mjs';
 
 /**
  * ── ⚠️ WHY THE ROOT IS AN ARGUMENT AND NOT `process.cwd()` ──────────────────
@@ -100,7 +102,7 @@ async function main() {
       'acuvo-mcp — expose Acuvo\'s browser-backed capabilities over MCP (stdio).',
       '',
       'It speaks JSON-RPC on stdin/stdout and is meant to be spawned by an MCP host,',
-      'not run by hand. Four gated groups, and nothing outside them:',
+      'not run by hand. Five gated groups, and nothing outside them:',
       '',
       '  browser (needs a service URL)',
       '    see_page       render HTML in a real browser; get the measured',
@@ -110,20 +112,34 @@ async function main() {
       '',
       '  workspace reads (needs --root)',
       '    read_file  read_lines  read_around  list_dir  find_files  search_text',
+      '    find_symbol  review_code  profile_table',
       '',
       '  document reads (needs --root and a reader service)',
       '    read_document  read_table    PDF / DOCX / XLSX / scans -> text',
       '',
       '  workspace writes (needs --root AND --allow-write)',
-      '    write_file  write_files  edit_file  delete_file',
+      '    write_file  write_files  edit_file  delete_file  move_file  apply_patch',
+      '',
+      '  CREATIVE (needs --root AND --allow-write AND --allow-spend <usd>)',
+      '    list_engines   what each Acuvo engine costs, before you spend one',
+      '    generate_image draw a real image from a prompt, into the workspace',
+      '    speak          read text aloud into an audio file (a FIXED voice —',
+      '                   it cannot clone anybody; clone_voice is refused)',
+      '    ⚠ These spend real money. Every call is priced, counted against the',
+      '      ceiling you set, journalled to <root>/.acuvo/spend.jsonl so a restart',
+      '      cannot refill it, and written to <root>/.acuvo/audit/ where',
+      '      `acuvo spend` reads it. A call that would cross the ceiling is',
+      '      refused before anything is sent.',
       '',
       'NOTHING STARTS A PROCESS. run_command, run_program, evaluate, repl,',
       'start_process, the acceptance verbs, git and the four LSP verbs are refused',
       'unconditionally, and there is no flag to turn them on: the calling agent',
       'already has a shell, and write + run composes into arbitrary code execution.',
-      'generate_image is refused too — it is the one tool that reaches an',
-      'XXIautomate endpoint with no credential set at all, so every call would be',
-      'unmetered GPU on our bill.',
+      'The identity verbs — clone_voice, character_lock, talking_head — are refused',
+      'unconditionally too, and NOT because of the money: they render a real',
+      'person\'s voice or face, and there is nobody on the other end of a pipe to',
+      'ask whether the caller has the right to it. generate_video and design_voice',
+      'are refused because one call exhausts any sane ceiling for this transport.',
       '',
       'Options:',
       '  --root <dir>         the ONE directory the workspace tools may touch.',
@@ -134,14 +150,21 @@ async function main() {
       '  --allow-write        also serve write_file, write_files, edit_file and',
       '                       delete_file. Off by default; a read-only Acuvo is a',
       '                       lens, a writing one changes somebody\'s repository.',
+      '  --allow-spend <usd>  serve the creative group, with a hard ceiling of',
+      '                       <usd> for the life of this server. A DOLLAR AMOUNT,',
+      '                       not a yes/no — "--allow-spend true" is an error, not',
+      '                       a default, because nobody is watching this run.',
+      `                       Default with no number: $${DEFAULT_MCP_SPEND_USD}. Maximum: $${MAX_MCP_SPEND_USD}.`,
       '',
       'Environment:',
       '  ACUVO_MCP_ROOT       same as --root (the flag wins)',
       '  ACUVO_MCP_WRITE=1    same as --allow-write (only 1/true/yes/on count)',
+      '  ACUVO_MCP_SPEND=0.25 same as --allow-spend (a dollar amount, never a yes)',
       '  RENDER_AUDIT_URL     render service (without it, see_page is not offered)',
       '  MODAL_PRESS_URL      document service (without it, make_document is not offered)',
       '  MODAL_DOC_READ_URL   document reader (without it, read_document is not offered)',
       '  MODAL_TABLE_READ_URL table reader (without it, read_table is not offered)',
+      '  MODAL_TTS_URL        speech service (without it, speak is not offered)',
       '  MODAL_VIDEO_SECRET   shared secret for those services, if they require one',
       '  ACUVO_MCP_OUT        where rendered files are written (default: <tmp>/acuvo-mcp)',
       '  ACUVO_MCP_MAX_CALLS  lifetime render cap (default 200) — renders cost money',
@@ -164,7 +187,21 @@ async function main() {
   const rootArg = flagValue(process.argv, '--root') ?? process.env.ACUVO_MCP_ROOT ?? null;
   const allowWrite = process.argv.includes('--allow-write') ? true : undefined;
 
-  const server = createMcpServer({ env: process.env, workspaceRoot: rootArg, allowWrite });
+  /**
+   * ── ⚠️ `--allow-spend` TAKES A NUMBER, AND BARE MEANS THE SMALL DEFAULT ─────
+   *
+   * `flagValue` returns null for a flag with nothing usable after it, so a bare
+   * `--allow-spend` lands on `DEFAULT_MCP_SPEND_USD` rather than on "off" — an
+   * operator who typed the flag meant to turn it on, and silently ignoring them
+   * is the dead-switch failure this package keeps paying for. Everything else
+   * about the value (yes-words, the cap, a negative) is refused inside
+   * `resolveSpendCeiling`, which is where the message lives.
+   */
+  const spendFlag = process.argv.includes('--allow-spend') || process.argv.some((a) => a.startsWith('--allow-spend='))
+    ? (flagValue(process.argv, '--allow-spend') ?? String(DEFAULT_MCP_SPEND_USD))
+    : undefined;
+
+  const server = createMcpServer({ env: process.env, workspaceRoot: rootArg, allowWrite, allowSpend: spendFlag });
 
   /**
    * ⭐ SAY WHAT IS LIVE, ON STDERR, BEFORE THE FIRST MESSAGE. Hosts surface a
@@ -186,6 +223,20 @@ async function main() {
   else if (server.workspaceRoot) log(`workspace: ${server.workspaceRoot} (${server.writeEnabled ? 'read + WRITE' : 'read-only'})`);
   else log('workspace: none — pass --root <dir> to serve the file tools');
   log(`output directory: ${server.root}`);
+
+  /**
+   * ⚠️ THE LEDGER IS ANNOUNCED WHETHER OR NOT ANYTHING CAN SPEND, because the
+   * question an operator asks after the fact is "where did the money go" and
+   * the answer has to be visible before they need it. A refused ceiling is
+   * SHOUTED for the same reason a refused root is: they typed a number and got
+   * a server without creative tools, and the reason must not require reading
+   * the source.
+   */
+  if (server.spendError) log(`SPEND CEILING REFUSED — ${server.spendError}`);
+  else if (server.spendCeilingUsd === null) log('creative tools: off — pass --allow-spend <usd> to serve list_engines, generate_image and speak');
+  else log(`creative tools: ON, ceiling $${server.spendCeilingUsd} for the life of this server${server.creativeEnabled ? '' : ' — but they also need --root and --allow-write, so they are NOT being served'}`);
+  if (server.resumeNote) log(`spend ceiling carried over: ${server.resumeNote}`);
+  log(`spend ledger: ${server.ledgerPath} (and .acuvo/audit/ beside it — read it with \`acuvo spend\`)`);
 
   /**
    * ⚠️ A CRASH MUST NOT BE SILENT. Without these the process vanishes and the

@@ -39,6 +39,7 @@ function workspace() {
   mkdirSync(join(root, '.acuvo', 'board'), { recursive: true });
   mkdirSync(join(root, '.acuvo', 'audit'), { recursive: true });
   mkdirSync(join(root, '.acuvo', 'sessions'), { recursive: true });
+  mkdirSync(join(root, '.acuvo', 'index'), { recursive: true });
   writeFileSync(join(root, '.acuvo', 'policy.json'), '{"maxUsd":5,"widget":true}\n');
   writeFileSync(join(root, '.acuvo', 'board', 't3.json'), '{"title":"wire the widget"}\n');
   writeFileSync(join(root, '.acuvo', 'audit', '2026-08-15.jsonl'), '{"cmd":"npm test","widget":1}\n');
@@ -49,62 +50,110 @@ function workspace() {
     join(root, '.acuvo', 'sessions', '20260815-0001.json'),
     JSON.stringify({ messages: [{ role: 'assistant', content: 'I think widget is probably unused.' }] }),
   );
+  /**
+   * The derived symbol index, shaped like the real one: every exported name in
+   * the repository, serialised. `widget` is in here because it is in `src/app.js`
+   * — which is exactly the problem. A grep that returns this file has answered
+   * a question about the SOURCE with a copy of the source.
+   */
+  writeFileSync(
+    join(root, '.acuvo', 'index', 'symbols.json'),
+    JSON.stringify({ version: 1, files: { 'src/app.js': { exports: ['widget'] } } }),
+  );
   return root;
 }
 
 /** `findFiles` returns `files` (strings); `searchText` returns `matches` (objects). */
 const paths = (r) => (r.files ?? r.matches).map((m) => (typeof m === 'string' ? m : m.path));
 
-test('⭐⭐ find_files reaches .acuvo — the plan, the board and the audit log are findable', () => {
+test('⭐⭐ find_files reaches .acuvo — the plan, the board and the audit log are findable', async () => {
   const root = workspace();
   const found = paths(findFiles(root, '**/*.json'));
   assert.ok(found.includes('.acuvo/policy.json'), `policy.json missing from: ${found.join(', ')}`);
   assert.ok(found.includes('.acuvo/board/t3.json'), 'the board must be reachable at depth');
 });
 
-test('⭐ search_text reads .acuvo content — this is the half that answers "what did I already do?"', () => {
+test('⭐ search_text reads .acuvo content — this is the half that answers "what did I already do?"', async () => {
   const root = workspace();
-  const hits = searchText(root, 'widget');
+  const hits = await searchText(root, 'widget');
   const files = new Set(paths(hits));
   assert.ok(files.has('.acuvo/policy.json'), `expected policy.json in: ${[...files].join(', ')}`);
   assert.ok(files.has('.acuvo/audit/2026-08-15.jsonl'), 'the audit log must be searchable');
   assert.ok(files.has('src/app.js'), 'ordinary source must still be found — this is not a swap');
 });
 
-test('⚠️⚠️ the TOKEN never comes back, even though the directory is now walked', () => {
+test('⚠️⚠️ the TOKEN never comes back, even though the directory is now walked', async () => {
   const root = workspace();
   // Search for the token itself: the most direct exfiltration attempt there is.
-  const direct = searchText(root, 'acuvo_live_');
+  const direct = await searchText(root, 'acuvo_live_');
   assert.equal(
     JSON.stringify(direct).includes(TOKEN), false,
     'the account token appeared in a search result — the credential is reachable',
   );
   // And a search that would match its neighbours must not drag it along.
-  const wide = searchText(root, 'a@b.c');
+  const wide = await searchText(root, 'a@b.c');
   assert.equal(JSON.stringify(wide).includes(TOKEN), false, 'the token leaked via an adjacent match');
 });
 
-test('⭐ the credential is NAMED, not silently dropped — withholding quietly is the lie this module was fixed for', () => {
+test('⭐ the credential is NAMED, not silently dropped — withholding quietly is the lie this module was fixed for', async () => {
   const root = workspace();
-  const hits = searchText(root, 'acuvo_live_');
+  const hits = await searchText(root, 'acuvo_live_');
   const text = JSON.stringify(hits);
   assert.match(text, /credentials\.json/, 'the model must be told the file exists and its contents are not coming');
   assert.match(text, /credential file/i);
 });
 
-test('⚠️ .acuvo/sessions is skipped, and the reply SAYS SO', () => {
+test('⚠️ .acuvo/sessions is skipped, and the reply SAYS SO', async () => {
   const root = workspace();
   // `widget` appears in the session transcript as the agent's own guess
   // ("probably unused"). Returned in a result list it is indistinguishable from
   // source, and the older speculation reads as evidence.
-  const hits = searchText(root, 'widget');
+  const hits = await searchText(root, 'widget');
   assert.equal(paths(hits).some((p) => p.includes('sessions')), false, 'a transcript was returned as if it were source');
   const skipped = JSON.stringify(hits.skipped ?? hits.hiddenSkipped ?? []);
   assert.match(skipped, /sessions/, 'the skip must be recorded, or the reply means "not there"');
   assert.match(skipped, /acuvo --sessions/, 'a skip without the way through is a dead end');
 });
 
-test('⚠️ the sessions rule is DEPTH-ONE — a src/sessions directory is ordinary source', () => {
+test('⚠️⚠️ .acuvo/index is skipped — the symbol cache must never answer for the source', async () => {
+  /**
+   * MEASURED ON THIS PACKAGE 2026-08-28: `search_text` for `rankFiles` returned
+   * exactly one hit and it was `.acuvo/index/symbols.json`, not
+   * `lib/repo-map.mjs`. Not an empty answer the model would distrust — a
+   * confident one pointing at a derived file nobody edits.
+   */
+  const root = workspace();
+  const hits = await searchText(root, 'widget');
+  const found = paths(hits);
+  assert.equal(
+    found.some((p) => p.includes('.acuvo/index')), false,
+    `the derived symbol index was returned as if it were source: ${found.join(', ')}`,
+  );
+  assert.ok(found.includes('src/app.js'), 'the real definition site must still come back');
+});
+
+test('⭐ the index skip NAMES its way through — and it is find_symbol, not --sessions', async () => {
+  /**
+   * The reason string used to be one hardcoded sentence about transcripts, so
+   * a second skipped child would have been reported as a session — a skip
+   * pointing at the wrong door is the dead end this module was fixed for.
+   */
+  const root = workspace();
+  const hits = await searchText(root, 'widget');
+  const entry = (hits.skipped ?? hits.hiddenSkipped ?? []).find((s) => s.path.includes('index'));
+  assert.ok(entry, 'the skip must be recorded, or the reply means "not there"');
+  assert.match(entry.reason, /find_symbol/, 'a skip without the way through is a dead end');
+  assert.doesNotMatch(entry.reason, /session/i, 'the index was reported as a session transcript');
+});
+
+test('⚠️ the index rule is DEPTH-ONE — a src/index directory is ordinary source', async () => {
+  const root = workspace();
+  mkdirSync(join(root, 'src', 'index'), { recursive: true });
+  writeFileSync(join(root, 'src', 'index', 'home.js'), 'export const widget = 3;\n');
+  assert.ok(paths(await searchText(root, 'widget')).includes('src/index/home.js'));
+});
+
+test('⚠️ the sessions rule is DEPTH-ONE — a src/sessions directory is ordinary source', async () => {
   /**
    * The rule keys on "direct child of .acuvo", not on the name `sessions`
    * anywhere. A project with `src/sessions/login.js` must be unaffected; a rule
@@ -113,12 +162,12 @@ test('⚠️ the sessions rule is DEPTH-ONE — a src/sessions directory is ordi
   const root = workspace();
   mkdirSync(join(root, 'src', 'sessions'), { recursive: true });
   writeFileSync(join(root, 'src', 'sessions', 'login.js'), 'export const widget = 2;\n');
-  assert.ok(paths(searchText(root, 'widget')).includes('src/sessions/login.js'));
+  assert.ok(paths(await searchText(root, 'widget')).includes('src/sessions/login.js'));
 });
 
-test('⚠️ .env inside .acuvo is still never read — the hidden-FILE rule is untouched', () => {
+test('⚠️ .env inside .acuvo is still never read — the hidden-FILE rule is untouched', async () => {
   const root = workspace();
   writeFileSync(join(root, '.acuvo', '.env'), 'OPENROUTER_API_KEY=sk-should-never-appear\n');
-  const hits = searchText(root, 'OPENROUTER_API_KEY');
+  const hits = await searchText(root, 'OPENROUTER_API_KEY');
   assert.equal(JSON.stringify(hits).includes('sk-should-never-appear'), false);
 });

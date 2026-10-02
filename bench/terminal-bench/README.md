@@ -52,6 +52,39 @@ harbor run \
 **Docker must be running**, and each task pulls its own container image — budget
 disk before a full run, not after.
 
+## ⚠️⚠️ CONCURRENCY IS WHAT LOST THE LAST TWO RUNS
+
+Measured, not guessed. `deep100` attempted 89 tasks, scored **16**, and lost
+**63 to one fact** — `RuntimeError: Docker compose command failed`, the daemon
+collapsing under concurrent containers on a Windows laptop. `run-fixed` lost 71
+the same way. Every percentage quoted from those runs was arithmetic over the
+survivors.
+
+⚠️ **A crashed trial is invisible in the worst way.** It writes `exception.txt`
+and no `reward.txt`, so it is neither a pass nor a fail — it simply is not there.
+A run can read "37.5%" while three quarters of it never started.
+
+**So:**
+
+1. **`-n 1` on Windows.** `-n 4` is what killed both runs. Slower and finished
+   beats faster and lost.
+2. **Score honestly.** `node score.mjs <dir>` refuses to print a bare percentage
+   when the run is incomplete, and groups the crash causes.
+3. **Re-run what the HOST lost, not what you failed:**
+
+```bash
+node retry-crashed.mjs results/<run>            # what died on the host, and why
+node retry-crashed.mjs results/<run> --command  # the harbor line, at -n 1
+```
+
+⭐ It separates a Docker collapse (retryable — the host gave up) from an
+`AgentTimeoutError` (**not** retryable — that one is ours). Re-running a task
+that genuinely failed would inflate the score, which is the opposite of the point.
+
+⚠️ **The real fix is an x86-64 Linux host.** Until then every number here
+measures Docker Desktop as much as it measures the agent. Not the Oracle ARM box
+— the images are amd64 and emulation already made `apt` take 20+ minutes.
+
 ## ⚠️⚠️ The published examples are out of date
 
 Blog posts and third-party adapter repos implement

@@ -27,7 +27,10 @@ import { after } from 'node:test';
 import { TOOL_SCHEMAS, toolNamesForRounds, toolSchemasFor } from '../lib/tools.mjs';
 import { alwaysOfferedNames, orderForCachePrefix } from '../lib/tool-prefix.mjs';
 import { sharedPrefixBytes } from '../lib/cache-floor.mjs';
-import { runSession } from '../lib/turn.mjs';
+// ⭐ `stableToolOrderKey` is the SAME function turn.mjs feeds to
+// `orderForCachePrefix`; the REACH test below asserts against it rather than
+// against a re-typed copy of which tools are task-selected.
+import { runSession, stableToolOrderKey } from '../lib/turn.mjs';
 import { createLocalExecutor } from '../lib/workspace.mjs';
 
 const made = [];
@@ -42,7 +45,22 @@ function workspace() {
 }
 
 const ROUNDS = 8;
-const names = (opts) => toolNamesForRounds(ROUNDS, { root: '/acuvo-cache-core-probe-no-such-workspace', env: {}, ...opts });
+/**
+ * ── ⚠️⚠️ `home` IS NAMED, AND IT HAD TO BE (2026-08-31) ─────────────────────
+ *
+ * The root was already a deliberate nowhere; the HOME was left to chance, and
+ * since the media half became account-aware the offer is a function of
+ * `~/.acuvo/credentials.json` too. Caught by `viral`/`podcast` moving onto the
+ * account route: on a SIGNED-IN laptop the `MODAL_TTS_URL set` variant stopped
+ * differing from the reference at all — both blocks became byte-identical — and
+ * this test failed with "ordering did not help (67268 -> 67268)" while nothing
+ * about the ordering had changed. `alwaysOfferedNames` already passes
+ * `home: NOWHERE` for exactly this reason; this call site did not.
+ */
+const NO_ACCOUNT_HOME = '/acuvo-cache-core-probe-no-such-home';
+const names = (opts) => toolNamesForRounds(ROUNDS, {
+  root: '/acuvo-cache-core-probe-no-such-workspace', env: {}, home: NO_ACCOUNT_HOME, ...opts,
+});
 const block = (opts, ordered) => {
   const picked = toolSchemasFor(names(opts));
   return JSON.stringify(ordered ? orderForCachePrefix(picked, { maxRounds: ROUNDS }) : picked);
@@ -338,15 +356,59 @@ test('⭐ REACH: the head really is at the front of what the model receives', as
     onEvent: () => {},
   });
 
+  /**
+   * ── ⚠️⚠️ INVERTED 2026-08-25, AND THE OLD ASSERTION IS QUOTED HERE BECAUSE IT
+   *    WAS RIGHT FOR TWO TIERS AND THE REAL PATH NOW HAS FOUR ─────────────────
+   *
+   * It read:
+   *
+   *     const firstConditional = offered.findIndex((n) => !core.has(n));
+   *     const lastCore = offered.reduce((acc, n, i) => (core.has(n) ? i : acc), -1);
+   *     assert.ok(lastCore < firstConditional, '… the partition did not apply');
+   *
+   * i.e. EVERY always-offered tool precedes EVERY conditional one. That is
+   * `orderForCachePrefix`'s contract when it is called with no `shortlist` —
+   * `rank = isCore ? 0 : 1` — and it is NOT the contract on the real path.
+   * `turn.mjs:3095` passes `shortlist: orderKey`, where `stableToolOrderKey`
+   * strips every tool belonging to a `TOOL_GROUPS` entry, which turns the rank
+   * into the four tiers its own header documents:
+   *
+   *     0  invariant ∧ always-offered   1  invariant ∧ machine-gated
+   *     2  task-selected ∧ always-offered   3  task-selected ∧ machine-gated
+   *
+   * ⚠️ THE OLD ASSERTION HELD ONLY BY ACCIDENT: until `chart` was added, every
+   * grouped tool was also machine-gated, so tier 2 was always EMPTY and the
+   * four tiers collapsed back into two. `chart` needs no key, no service and no
+   * project shape (so it is always offered) AND belongs to the `docs` group (so
+   * it is task-selected) — the first tool to be both. It correctly sorts to
+   * tier 2, behind the invariant head, and the old assertion read that as a
+   * broken partition.
+   *
+   * ⭐ THIS VERSION IS STRICTLY STRONGER, WHICH IS THE ONLY ACCEPTABLE WAY TO
+   * CHANGE A GUARD. It asserts the tier index is NON-DECREASING across the whole
+   * block — which implies the old lastCore/firstConditional property WITHIN the
+   * head, and additionally catches a task-selected tool leaking INTO the head,
+   * a regression the old two-tier form could not see at all.
+   */
   const core = alwaysOfferedNames(ROUNDS);
   const offered = sent.map((t) => t.function.name);
-  const firstConditional = offered.findIndex((n) => !core.has(n));
-  const lastCore = offered.reduce((acc, n, i) => (core.has(n) ? i : acc), -1);
-  assert.ok(firstConditional > 0, 'the request should begin with unconditional tools');
-  assert.ok(
-    lastCore < firstConditional,
-    `"${offered[lastCore]}" (unconditional) is behind "${offered[firstConditional]}" (conditional) — the partition did not apply`,
-  );
+  // The order key derived the same way the real path derives it — imported,
+  // never re-typed, because a second copy of "which tools are conditional" is
+  // the copy that goes stale (turn.mjs says so about this exact list).
+  const invariant = new Set(stableToolOrderKey(offered));
+  const tier = (n) => (invariant.has(n) ? 0 : 2) + (core.has(n) ? 0 : 1);
+
+  assert.ok(!core.has(offered.at(-1)) || !invariant.has(offered.at(-1)),
+    'every tool in the block is tier 0 — this test is measuring nothing');
+  assert.equal(tier(offered[0]), 0, 'the request does not begin with an invariant, always-offered tool');
+
+  for (let i = 1; i < offered.length; i++) {
+    assert.ok(
+      tier(offered[i]) >= tier(offered[i - 1]),
+      `"${offered[i]}" (tier ${tier(offered[i])}) is behind "${offered[i - 1]}" (tier ${tier(offered[i - 1])}) `
+      + '— the partition did not apply, so a task-varying tool sits inside the cached head',
+    );
+  }
 });
 
 test('⚠️ the derivation touches no disk and answers the same on the second call', () => {
@@ -361,4 +423,61 @@ test('⚠️ the derivation touches no disk and answers the same on the second c
   const first = [...alwaysOfferedNames(ROUNDS)].sort();
   assert.equal(existsSync(probe), false, 'the derivation created its own probe root');
   assert.deepEqual([...alwaysOfferedNames(ROUNDS)].sort(), first, 'the second derivation disagreed with the first');
+});
+
+test('💰⭐⭐⭐ the narrow offer is a BYTE-PREFIX of the widened one', async () => {
+  /**
+   * ── THE MEASUREMENT THAT FOUND THIS ─────────────────────────────────────────
+   *
+   * Real brief, 2026-08-22: narrow offer 27 tools / 24,602 bytes; widened 64 /
+   * 62,470; **shared prefix 6,866 bytes — 27.9%.** So widening rewrote 72% of
+   * the tools block, and this file's own header measures that block at 94% of
+   * the shared head. One widen threw away roughly 68% of everything cacheable.
+   *
+   * ⭐ AND CORE-FIRST ORDERING DID NOT PREVENT IT. Sorting core-before-optional
+   * is right and insufficient: the SHORTLIST cuts across that split, so
+   * re-admitting the missing tools INTERLEAVES them into the middle of the block
+   * instead of appending to the end.
+   *
+   * The fix is order, not content — so this asserts the property directly rather
+   * than asserting an implementation detail that could drift away from it.
+   */
+  const { shortlistTools } = await import('../lib/tool-shortlist.mjs');
+  const { TOOL_NAMES, toolSchemasFor } = await import('../lib/tools.mjs');
+
+  const all = [...TOOL_NAMES];
+  const task = 'add a dark mode toggle to the settings page';
+  const narrow = shortlistTools(task, all, { widened: false });
+  const wide = shortlistTools(task, all, { widened: true });
+
+  assert.ok(narrow.length < wide.length, 'the shortlist did not narrow anything — this brief no longer exercises it');
+
+  const render = (names) => JSON.stringify(
+    orderForCachePrefix(toolSchemasFor(names, { shell: false }), { maxRounds: 24, shortlist: narrow }),
+  );
+  const a = render(narrow);
+  const b = render(wide);
+
+  let shared = 0;
+  while (shared < a.length && shared < b.length && a[shared] === b[shared]) shared += 1;
+
+  /**
+   * ⚠️ The `-1` is the closing `]` of the narrow array, which the wide one has
+   * further along. Everything before it must match byte for byte.
+   */
+  assert.equal(
+    shared, a.length - 1,
+    `widening rewrote the cached prefix: only ${shared} of ${a.length} bytes survived `
+    + `(${((shared / a.length) * 100).toFixed(1)}%). The narrow offer must be a prefix of the wide one.`,
+  );
+});
+
+test('⚠️ omitting the shortlist keeps the previous ordering exactly', async () => {
+  // Nothing that does not know about this may change behaviour.
+  const { toolSchemasFor, TOOL_NAMES } = await import('../lib/tools.mjs');
+  const schemas = toolSchemasFor([...TOOL_NAMES], { shell: false });
+  const before = orderForCachePrefix(schemas, { maxRounds: 24 }).map((t) => t.function.name);
+  const core = alwaysOfferedNames(24);
+  const coreFirst = [...before].sort((x, y) => (core.has(y) ? 1 : 0) - (core.has(x) ? 1 : 0));
+  assert.deepEqual(before, coreFirst, 'core-first ordering changed for callers that pass no shortlist');
 });

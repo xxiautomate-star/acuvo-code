@@ -20,6 +20,7 @@ import {
   MAX_SEARCHES_PER_PROCESS,
   MAX_QUERY_CHARS,
 } from '../lib/websearch.mjs';
+import { resetPackageDocsState } from '../lib/package-docs.mjs';
 
 /* ── fixtures: real shapes, double quotes on /html/, SINGLE on /lite/ ─────── */
 
@@ -251,4 +252,138 @@ test('the tool schema tells the model a snippet is not a source', () => {
   assert.match(s.function.description, /snippet is a hint, not a source/);
   assert.match(s.function.description, /NOT evidence that nothing exists/);
   assert.deepEqual(s.function.parameters.required, ['query']);
+});
+
+/* ── ⭐⭐⭐ THE PACKAGE FACT REACHES THE MODEL ─────────────────────────────────
+ *
+ * `package-docs.test.mjs` proves the lookup is CORRECT. These prove it is
+ * REACHED — through `webSearch` and out through `formatResults`, which is the
+ * text the dispatcher actually hands back. The repo's standing lesson is that
+ * only the end-to-end path proves reach; a green unit test on a module the
+ * search never calls is the false green this section exists to make impossible.
+ *
+ * ⚠️ STILL ZERO NETWORK. `fetchImpl` covers BOTH legs (see the note in
+ * `websearch.mjs`), so nothing here touches npm.
+ * ────────────────────────────────────────────────────────────────────────── */
+
+test.beforeEach(() => resetPackageDocsState());
+
+const NPM_DEPRECATED = JSON.stringify({
+  name: 'request',
+  version: '2.88.2',
+  deprecated: 'request has been deprecated, see https://github.com/request/request/issues/3142',
+});
+const NPM_ZOD = JSON.stringify({ name: 'zod', version: '4.4.3', homepage: 'https://zod.dev' });
+
+test('⭐⭐ a deprecation is prepended ABOVE the results the model reads', async () => {
+  const r = await webSearch({
+    query: 'request npm http client',
+    fetchImpl: routed({ 'registry.npmjs.org': NPM_DEPRECATED, duckduckgo: DDG_HTML }),
+  });
+  assert.equal(r.ok, true);
+  const rendered = formatResults(r);
+  assert.match(rendered, /DEPRECATED/);
+  assert.ok(
+    rendered.indexOf('DEPRECATED') < rendered.indexOf('nodejs.org'),
+    'the authoritative line must sit ABOVE the ranked ones — a model that has read ten links has already chosen',
+  );
+});
+
+test('⭐ the current version and canonical docs URL ride along with an ordinary search', async () => {
+  const r = await webSearch({
+    query: 'zod schema api docs',
+    fetchImpl: routed({ 'registry.npmjs.org': NPM_ZOD, duckduckgo: DDG_HTML }),
+  });
+  const rendered = formatResults(r);
+  assert.match(rendered, /4\.4\.3/);
+  assert.match(rendered, /https:\/\/zod\.dev/);
+});
+
+test('⚠️⚠️ the fact SURVIVES a total search failure — the case it matters most in', async () => {
+  // Every search leg blocked, and the library is still dead. Reporting a clean
+  // network error here would hand the model the exact outcome this prevents.
+  const r = await webSearch({
+    query: 'request npm deprecated',
+    fetchImpl: async (url) => (url.includes('registry.npmjs.org')
+      ? { status: 200, body: NPM_DEPRECATED }
+      : { status: 503, body: '' }),
+  });
+  assert.equal(r.ok, false);
+  assert.match(r.error, /no search provider could be reached/);
+  assert.match(r.error, /DEPRECATED/, 'a blocked search must not swallow a deprecation we already have');
+});
+
+test('⚠️ a registry outage NEVER sinks the search', async () => {
+  const r = await webSearch({
+    query: 'zod api docs',
+    fetchImpl: async (url) => {
+      if (url.includes('registry.npmjs.org')) throw new Error('ECONNREFUSED');
+      return { status: 200, body: DDG_HTML };
+    },
+  });
+  assert.equal(r.ok, true, 'an enrichment that can fail its host is a liability');
+  assert.equal(r.packageNote, '');
+  assert.equal(/npm registry/.test(formatResults(r)), false, 'silence, not an apology');
+});
+
+test('⚠️ an ordinary question costs NO registry request at all', async () => {
+  const seen = [];
+  await webSearch({
+    query: 'best practices for naming css variables',
+    fetchImpl: async (url) => { seen.push(url); return { status: 200, body: DDG_HTML }; },
+  });
+  assert.equal(seen.some((u) => u.includes('registry.npmjs.org')), false);
+});
+
+test('⭐ the schema gives the ORDER, not the get-out clause it replaced', () => {
+  const [s] = webSearchToolSchemas();
+  assert.match(s.function.description, /BEFORE you write code against any library/);
+  assert.match(s.function.description, /Do not wait until you feel unsure/);
+  assert.equal(
+    /Use it when you do not know/.test(s.function.description),
+    false,
+    '"when you do not know" is a condition a confident model never evaluates as true',
+  );
+  assert.match(s.function.description, /DEPRECATED/);
+});
+
+/**
+ * ── ⭐⭐⭐ THROUGH THE REAL DISPATCHER — the only thing that proves reach ─────
+ *
+ * Everything above drives `webSearch` directly. This drives `executeToolCall`,
+ * which is the function the turn loop actually calls, and asserts on
+ * `result.text` — the exact string handed back to the model. The repo's own
+ * lesson is that a green unit test on a module the runtime routes around is
+ * the false green worth the most money; `tools.mjs` composes
+ * `formatResults(result)` itself, so nothing but this catches a dispatcher
+ * that keeps the structure and drops the rendered text.
+ *
+ * ⚠️ OFFLINE. `parseToolArguments` accepts an OBJECT, so the seam goes through
+ * the dispatcher untouched — `case 'web_search'` spreads the model's args into
+ * `webSearch` in whole. No network, no key.
+ */
+test('⭐⭐⭐ the deprecation reaches the model through executeToolCall', async () => {
+  const { executeToolCall } = await import('../lib/tools.mjs');
+  const NPM = JSON.stringify({
+    name: 'request',
+    version: '2.88.2',
+    deprecated: 'request has been deprecated, see https://github.com/request/request/issues/3142',
+  });
+  const record = await executeToolCall(
+    {
+      id: 'c1',
+      function: {
+        name: 'web_search',
+        arguments: {
+          query: 'request npm http client',
+          fetchImpl: async (url) => ({ status: 200, body: url.includes('registry.npmjs.org') ? NPM : DDG_HTML }),
+        },
+      },
+    },
+    { root: process.cwd() },
+  );
+  assert.equal(record.result.ok, true);
+  assert.match(record.result.text, /DEPRECATED/, 'the dispatcher must hand the model the rendered fact, not just the structure');
+  assert.match(record.result.text, /Do NOT write new code against it/);
+  assert.equal(record.mutated, false);
 });

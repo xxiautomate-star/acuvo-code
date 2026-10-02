@@ -409,3 +409,54 @@ test('⭐ `engines.node` is declared, so an old Node fails at install and not at
   const major = Number(/(\d+)/.exec(pkg.engines.node)?.[1]);
   assert.ok(major >= 20, `engines.node is "${pkg.engines.node}"; this code requires Node 20 or newer`);
 });
+
+test('🚨 and the README states THAT number — it said 18 while npm enforced 20', () => {
+  /**
+   * ── ⚠️⚠️ THE ONE FACTUAL CLAIM A README CANNOT GET WRONG ─────────────────
+   *
+   * Found by installing the published package and reading it as a stranger,
+   * 2026-09-18. `package.json` has enforced `>=20` — the test directly above
+   * asserts it — while the README said, in two places:
+   *
+   *     [![node](…/badge/node-≥18-…)]
+   *     ## Requirements
+   *     Node 18 or newer. Nothing else.
+   *
+   * So the Requirements section promised a runtime npm refuses to install on.
+   * The doctor derives its minimum from `engines` and was right all along; only
+   * the front door was wrong, and the front door is what a stranger reads.
+   *
+   * ⭐ DERIVED FROM `engines`, never typed. A second hardcoded "20" here would
+   * be a third copy of the same fact and would go stale the same way — which is
+   * this repo's most-repeated defect, and is exactly how the README got to
+   * disagree with the package in the first place.
+   */
+  const major = Number(/(\d+)/.exec(pkg.engines.node)?.[1]);
+  const readme = readFileSync(join(ROOT, 'README.md'), 'utf8');
+
+  /**
+   * ⚠️ The badge encodes ≥ as the URL escape `%E2%89%A5`, so a plain `>=${major}`
+   * search would miss it and this guard would only ever check half the claim —
+   * the half that is prose. Both spellings are asserted by name.
+   */
+  assert.match(
+    readme,
+    new RegExp(`node-%E2%89%A5${major}-`),
+    `the Node badge does not say ≥${major}, which is what package.json enforces`,
+  );
+  assert.match(
+    readme,
+    new RegExp(`Node ${major} or newer`),
+    `the Requirements section does not say "Node ${major} or newer"`,
+  );
+
+  /**
+   * ⚠️ AND NO LOWER VERSION MAY SURVIVE ANYWHERE IN IT. Correcting the two
+   * places I found would leave a third if there were one, and "I fixed the
+   * instances I noticed" is how this class comes back.
+   */
+  const stale = [...readme.matchAll(/Node (\d+) or newer|node-%E2%89%A5(\d+)-/g)]
+    .map((m) => Number(m[1] ?? m[2]))
+    .filter((n) => n < major);
+  assert.deepEqual(stale, [], `the README still promises Node ${stale.join('/')} somewhere`);
+});

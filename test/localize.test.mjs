@@ -20,6 +20,10 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { TOOL_SCHEMAS } from '../lib/tools.mjs';
 
 import {
   buildDirIndex,
@@ -507,4 +511,82 @@ test('the tool handler refuses a request it cannot satisfy instead of returning 
   const res = await runLocalizeTool({ task: 'fix login' }, { paths: [], askImpl: async () => [] });
   assert.equal(res.ok, false);
   assert.ok(res.error.length > 0);
+});
+
+/**
+ * ── ⭐⭐⭐ THE DECISION IS PART OF THE CODEBASE, AND THESE GUARD IT ──────────
+ *
+ * ⚠️ WHY A GUARD AT ALL. `test/wiring-reach.test.mjs` carried this module on
+ * `KNOWN_UNWIRED` for a month behind a comment whose load-bearing clause —
+ * *"the tool dispatch layer may not make model calls, which no other verb
+ * does"* — was **already false when it was written**: `lib/tools.mjs`'s
+ * `delegate` case says in its own words that it is the first tool that calls a
+ * model itself. A stale excuse in a guard is not a harmless leftover; the next
+ * reader takes it as a live statement and the capability stays dark for
+ * another month. So the reasoning now lives in a file, and these assert the
+ * file and the pointer to it are both still there.
+ *
+ * ⚠️ THESE DO NOT ASSERT THE DECISION IS RIGHT — nothing in a test suite can.
+ * They assert it is FINDABLE. `DECISION-localize-files.md` §5 names the one
+ * experiment that reopens it, and that experiment needs a real model on a real
+ * large repo, which is precisely what `localize()`'s injected `askImpl` makes
+ * impossible from here. That is the right design and it is also why the answer
+ * is not in this file.
+ */
+
+const HERE = path.dirname(fileURLToPath(import.meta.url));
+const PKG_ROOT = path.join(HERE, '..');
+
+test('⭐ the decision not to wire localize_files is written down, with its numbers', () => {
+  const doc = fs.readFileSync(path.join(PKG_ROOT, 'DECISION-localize-files.md'), 'utf8');
+  // The cost side: the schema figure, and the fact that the schema is NOT the price.
+  assert.match(doc, /741/, 'the measured per-round schema cost is missing');
+  assert.match(doc, /model calls/i, 'the decision does not mention the real price — the extra model calls');
+  // The benefit side: the one sentence the whole decision turns on.
+  assert.match(doc, /no-file baseline/i, 'the decision does not say what the 15-17x is measured against');
+  // And the exit: a decision with no reopening condition is a closed door.
+  assert.match(doc, /REOPENS IT/i, 'the decision names no experiment that would reopen it');
+});
+
+test('⚠️ the instrument the decision quotes still runs and still exports what it imports', async () => {
+  const script = fs.readFileSync(path.join(PKG_ROOT, 'scripts', 'zz-what-localize-would-cost.mjs'), 'utf8');
+  assert.match(script, /localizeToolSchemas/, 'the cost script no longer measures the schema it claims to');
+  /**
+   * ⚠️ THE IMPORTS ARE CHECKED AGAINST THE MODULE, NOT ASSUMED. A decision
+   * whose instrument crashes on a renamed export is a decision nobody can
+   * re-derive — and "re-run it rather than trusting a figure typed here" is
+   * the first line of that document.
+   */
+  const mod = await import('../lib/localize.mjs');
+  for (const name of ['localizeToolSchemas', 'renderTree', 'DEFAULT_TREE_BUDGET_TOKENS', 'MAX_LOCALIZE_ROUNDS']) {
+    assert.ok(name in mod, `zz-what-localize-would-cost.mjs imports ${name}, which lib/localize.mjs no longer exports`);
+  }
+});
+
+test('⚠️ the dark-module allowlist points at the decision instead of an expired date', () => {
+  const guard = fs.readFileSync(path.join(PKG_ROOT, 'test', 'wiring-reach.test.mjs'), 'utf8');
+  const i = guard.indexOf('KNOWN_UNWIRED');
+  const entry = guard.slice(i, guard.indexOf("'lib/localize.mjs'", i));
+  assert.match(entry, /DECISION-localize-files\.md/,
+    'the allowlist entry for lib/localize.mjs does not point at the decision document');
+  /**
+   * ⭐ THE STALE CLAIM IS PINNED OUT — BUT NOT BY BANNING THE WORDS, because the
+   * comment that replaced it QUOTES them in order to correct them, and a guard
+   * that cannot tell a quotation from an assertion would fail the fix. So the
+   * rule is: if that sentence appears at all, the counter-evidence must appear
+   * with it. A naive reinstatement of the old paragraph carries the claim and
+   * not the word `delegate`, and that is exactly what this catches.
+   */
+  if (/which no other verb does/.test(entry)) {
+    assert.match(entry, /delegate/,
+      'the "no other verb calls a model" claim is back without its correction — '
+      + 'lib/tools.mjs `delegate` has called a model from the dispatcher all along');
+  }
+});
+
+test('⭐ localize_files is still offered to no model — the decision and the code agree', () => {
+  const names = TOOL_SCHEMAS.map((t) => t.function.name);
+  assert.ok(!names.includes('localize_files'),
+    'localize_files is registered but DECISION-localize-files.md says it is not — '
+    + 'if it was wired deliberately, update the decision in the same commit');
 });

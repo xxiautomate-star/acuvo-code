@@ -141,6 +141,68 @@ test('the recorded facts come from executed, not from the prose', () => {
   assert.match(s.commands[0].output, /AssertionError/);
 });
 
+test('🚨 apply_patch counts — the session said "0 files" for a run that wrote two', () => {
+  /**
+   * ── ⚠️⚠️ MEASURED ON A REAL RUN, 2026-09-18 ──────────────────────────────
+   *
+   *     acuvo --sessions
+   *     20260918-024158-70wt · 4r · 0 files · 1 cmd · …
+   *
+   * while `acuvo rewind` said `2 files` about the same run and the audit record
+   * named both. The tool was `apply_patch`; `extractActivity` tested four
+   * hardcoded tool names and it was not one of them.
+   *
+   * ⭐ `turn.mjs` had already hit this and written down the cure — filter on
+   * `mutated`, the flag every tool sets — but only the run summary was changed.
+   * Two places counting files, one of them fixed.
+   *
+   * ⚠️ AND IT IS NOT COSMETIC: `--sessions` is how you pick what to `--resume`,
+   * and the resumed context is built from this record, so the run resumed as
+   * one that had done nothing.
+   */
+  const root = ws();
+  const executed = [
+    {
+      name: 'apply_patch',
+      args: {},
+      mutated: true,
+      result: {
+        ok: true,
+        written: [
+          { path: 'slug.mjs', bytes: 150, previousBytes: 120, created: false },
+          { path: 'slug.test.mjs', bytes: 737, created: true },
+        ],
+      },
+    },
+  ];
+  const saved = saveSession(root, outcome({ messages: conversation(), executed }), { task: 't' });
+  const s = loadSession(root, saved.id).session;
+
+  assert.deepEqual(
+    s.files.map((f) => [f.path, f.action]),
+    [['slug.mjs', 'changed'], ['slug.test.mjs', 'created']],
+    'one record naming two files must record two files',
+  );
+});
+
+test('⚠️ evaluate is still not a file change — it writes a snippet and deletes it', () => {
+  /**
+   * ⚠️ THE RISK THE FIX ABOVE CREATES. Widening to `mutated` would double-count
+   * anything that both touches disk and is a command. `tools.mjs` marks
+   * `evaluate` `mutated: false` precisely for this, and that agreement is worth
+   * asserting rather than assuming — it is one word in another file.
+   */
+  const root = ws();
+  const executed = [
+    { name: 'evaluate', args: {}, mutated: false, result: { ok: true, passed: true, exitCode: 0, command: 'evaluate', stdout: 'ok' } },
+  ];
+  const saved = saveSession(root, outcome({ messages: conversation(), executed }), { task: 't' });
+  const s = loadSession(root, saved.id).session;
+
+  assert.deepEqual(s.files, [], 'the scratch file it deletes is not a change to the workspace');
+  assert.equal(s.commands.length, 1, 'and it is still recorded as a command');
+});
+
 // ───────────────────────────────────────────────────────────────────────────
 // ⚠️ THE LEAK
 // ───────────────────────────────────────────────────────────────────────────

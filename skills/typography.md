@@ -2,6 +2,9 @@
 name: typography
 description: Type scale, pairing, measure and rhythm — the largest single lever on whether a page reads as designed
 when: Any page with words on it, which is every page. Read before choosing fonts or sizes.
+triggers: premium design, looks cheap, looks generic, ai slop, visual design, typography, font, fonts, type scale, headings, spacing, rhythm, make it look good, polish, elegant, luxury, beautiful
+version: 2
+applies-to: both
 ---
 
 # Typography
@@ -90,6 +93,25 @@ is usually right; five is almost never.
 | technical, developer | Space Grotesk | IBM Plex Sans |
 | warm, human, local trade | Bricolage Grotesque | Karla |
 | luxury, restrained | Cormorant Garamond | Jost |
+| clinical, calm, health | Newsreader | Public Sans |
+| food, hospitality | Instrument Serif | Figtree |
+| sport, gym, high energy | Anton / Archivo Black | Barlow |
+| kids, school, playful | Baloo 2 | Nunito |
+| finance, legal, trust | Libre Baskerville | Source Sans 3 |
+| gallery, photography | Syne | Work Sans |
+| events, nightlife | Unbounded | Manrope |
+| craft, handmade, market | Gloock | Outfit |
+
+⚠️⚠️ **PICK FOR THE BRIEF — DO NOT DEFAULT TO THE FIRST ROW.** Measured across 40
+shipped artifacts: **28 of 34 set `--font-text: 'Inter'`**, and the display face
+was Fraunces or Space Grotesk in 28 of 34. Three rows of this table became three
+looks, so a visitor who saw two of our sites would recognise the third. A florist,
+a law firm and a metal band should not be reaching for the same two faces.
+
+⭐ **Read the row that matches the DOMAIN, not the row you read last time.** If the
+brief names a trade, a mood or an audience, that is the choice already made for
+you. Inter is the right answer for a SaaS dashboard and the lazy answer everywhere
+else.
 
 ⭐ **One family, two weights, is a legitimate and often superior answer.** Inter
 600 over Inter 400 with a real size scale looks intentional. Two display faces
@@ -118,8 +140,15 @@ p  { font-size: 1rem; line-height: 1.65; max-width: 68ch; }
 ## 6. Details that separate careful from careless
 
 - Use real punctuation: `"` `"` `'` `—` `…`, not `"` and `--`.
-- `text-wrap: balance` on headings, `text-wrap: pretty` on paragraphs. Two
-  lines, no orphans, free.
+- ⭐ **`text-wrap: balance` on headings is the cheapest polish that exists.**
+  Baseline since May 2024, one line, and it is what stops a seven-word hero
+  breaking 6 + 1. The orphan is the loudest amateur tell on a landing page.
+  `acuvo-ui.css` already applies it to `h1`–`h4`.
+  ⚠️ `text-wrap: pretty` is **not** baseline — support is still limited. It is
+  harmless (unsupported browsers ignore it) but do not rely on it to fix a
+  paragraph; cap the measure instead.
+- ⚠️ Balance is capped by the spec at a few lines, so it does nothing for body
+  copy. That is `max-width: 68ch`'s job, not this property's.
 - Numbers in tables: `font-variant-numeric: tabular-nums`, or columns jitter.
 - ⚠️ Never centre a paragraph longer than two lines. Centred ragged-left text
   is hard to read because the eye loses the line start.
@@ -133,3 +162,34 @@ p  { font-size: 1rem; line-height: 1.65; max-width: 68ch; }
 - At most three weights are loaded, and all of them are used.
 - Headings have tighter line-height than body, and more space above than below.
 - The page still reads correctly at 320px and at 200% browser zoom.
+
+## ⭐ Tested pattern — a fluid type scale from two numbers
+
+Premium pages use FEW sizes, related by one ratio, that grow smoothly with the
+viewport. Generate them instead of typing seven unrelated `px` values.
+
+```js
+// @selftest — a modular scale emitted as clamp() custom properties
+function typeScale({ base = 16, ratio = 1.25, steps = [-1, 0, 1, 2, 3, 4, 5], minVw = 360, maxVw = 1280, grow = 1.15 } = {}) {
+  const out = {};
+  for (const s of steps) {
+    const min = base * ratio ** s, max = min * (s > 0 ? grow : 1);
+    const slope = (max - min) / (maxVw - minVw);
+    const intercept = min - slope * minVw;
+    out[`--step-${s}`] = min === max
+      ? `${(min / 16).toFixed(3)}rem`
+      : `clamp(${(min / 16).toFixed(3)}rem, ${(intercept / 16).toFixed(3)}rem + ${(slope * 100).toFixed(3)}vw, ${(max / 16).toFixed(3)}rem)`;
+  }
+  return out;
+}
+const t = typeScale();
+assert.equal(t['--step-0'], '1.000rem');
+assert.match(t['--step-3'], /^clamp\(1\.953rem, .*vw, 2\.246rem\)$/);
+assert.equal(Object.keys(t).length, 7);                  // seven sizes is the whole system
+```
+
+Emit it once into `:root`, then use only `var(--step-N)`. Pair with a
+spacing scale on the same ratio (`--space-N`), a measure of **60–75
+characters** (`max-width: 68ch`) for body text, `line-height` 1.5 for body
+and 1.1 for display, and letter-spacing tightened (`-0.02em`) only on large
+headings. Those five decisions separate "designed" from "template".

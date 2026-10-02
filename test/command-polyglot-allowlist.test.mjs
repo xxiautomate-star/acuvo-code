@@ -47,6 +47,19 @@ import {
   executeRunCommand,
 } from '../lib/command.mjs';
 
+/**
+ * ⚠️⚠️ SIGNED OUT, STATED EXPLICITLY. `...process.env, ACUVO_HOME: SIGNED_OUT_HOME` carries the developer's
+ * real HOME, so on a machine where somebody has run `acuvo --login` the spawned
+ * CLI gets a REAL account — and a signed-in run routes to our production gateway,
+ * deliberately outranking the loopback test seam. The child then talks to
+ * production instead of the stub and the assertions fail for a reason that has
+ * nothing to do with the code.
+ *
+ * Measured 2026-08-23: seventeen tests went red the moment the product was used
+ * for the first time.
+ */
+const SIGNED_OUT_HOME = join(tmpdir(), `acuvo-signed-out-${process.pid}`);
+
 /** Build an allowlist from preset names, the way a config file would. */
 const withPresets = (...names) => {
   const r = resolveCommandAllowlist({ configText: JSON.stringify({ presets: names }) });
@@ -392,7 +405,7 @@ test('⚠️⚠️ OPENROUTER_API_KEY REACHES NO CHILD — asserted through the 
       ? { ok: true, content: JSON.stringify({ presets: ['python'] }) }
       : { ok: false, error: `no such file: ${p}` }),
   };
-  const before = { ...process.env };
+  const before = { ...process.env, ACUVO_HOME: SIGNED_OUT_HOME };
   process.env.OPENROUTER_API_KEY = 'sk-should-never-leave';
   process.env.MY_DEPLOY_TOKEN = 'nope';
   try {

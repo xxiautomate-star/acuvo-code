@@ -56,6 +56,40 @@ everything.
 
 Debounce input handlers; throttle scroll and resize.
 
+### ⚠️⚠️ A canvas or WebGL loop — the naive version drains the battery
+
+```js
+function tick() { renderer.render(scene, camera); requestAnimationFrame(tick); }  // ✗
+```
+
+That redraws 60 times a second forever, whether or not a pixel changed or the
+canvas is even on screen. On a laptop it is a measurable fan; on a phone it is
+thermal throttling and a flat battery.
+
+```js
+let needsRender = true;
+const invalidate = () => { needsRender = true; };   // on interact / resize / data change
+function tick() {
+  if (needsRender) { renderer.render(scene, camera); needsRender = false; }
+  raf = requestAnimationFrame(tick);
+}
+```
+
+Then add the three that matter more than any shader optimisation:
+
+- **Stop when it is off screen.** An `IntersectionObserver` that
+  `cancelAnimationFrame`s when the canvas leaves the viewport. A footer scene
+  should not run while someone reads the top of the page.
+- **Stop when the tab is hidden** (`visibilitychange`) — browsers throttle rAF in
+  background tabs but do not always stop it, and audio/physics loops keep going.
+- ⚠️ **Cap the pixel ratio.** `renderer.setPixelRatio(Math.min(devicePixelRatio, 2))`.
+  A 3× phone renders **nine times** the pixels of a 1× screen and the difference
+  from 2× is invisible. This one line is often the whole performance fix.
+
+A scene that must animate continuously is driven by elapsed time
+(`clock.getDelta()`), never frame count — otherwise it runs half speed at 120Hz
+and double at 30fps, the same bug as a game loop that forgets `delta`.
+
 ## ⚠️ Every dependency is bytes the user downloads
 
 Before adding one, check what it costs and whether a few lines would do. A date

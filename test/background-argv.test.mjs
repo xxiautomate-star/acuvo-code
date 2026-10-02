@@ -389,7 +389,24 @@ test('the schema offers both forms and says when to reach for the argv one', () 
   const start = backgroundToolSchemas().find((s) => s.function.name === 'start_process').function;
   const props = start.parameters.properties;
   assert.ok(props.command, 'the string form stays');
-  assert.deepEqual(props.program.enum, ['node', 'npm', 'npx', 'tsc'], 'and it cannot name anything else');
+  /**
+   * ⚠️⚠️ THIS LINE USED TO PIN `enum: ['node','npm','npx','tsc']` AND THE PIN
+   * WAS WRONG, measured 2026-08-29. The `command` form one property above
+   * resolved `.acuvo/commands.json` / `ACUVO_ALLOW_COMMANDS` / the project's own
+   * language manifests and so started `make`, `python`, `go` and `cargo`; the
+   * argv form was gated on the frozen four and its schema told the model
+   * "Nothing else is reachable". Same tool, same operator configuration, two
+   * answers — and a model that believes a capability is absent never uses it.
+   *
+   * ⭐ THE GATE IS `planSingleSpawn`, NOT THE SCHEMA. The enum only decided what
+   * the model would TRY; `test/allowlist-gate.test.mjs` proves the dispatcher
+   * still refuses an un-enabled program, still refuses `python -m pip install`,
+   * and still cannot reach a shell. So what is pinned here is that the hint no
+   * longer contradicts the gate.
+   */
+  assert.equal(props.program.enum, undefined, 'a frozen enum makes every workspace-enabled program unreachable');
+  assert.equal(/Nothing else is reachable/.test(props.program.description), false);
+  assert.match(props.program.description, /node, npm, npx and tsc always/);
   assert.equal(props.args.type, 'array');
   // ⚠️ `command` must NOT be required any more, or a model using the argv form
   // is told by the schema that its call is malformed.

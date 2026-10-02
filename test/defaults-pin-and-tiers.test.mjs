@@ -5,10 +5,9 @@
  *
  * THE PIN. 28 upstream endpoints serve our model and a prompt cache lives on ONE
  * instance, so unpinned we were re-routed across all of them. MEASURED, same
- * task, same day: unpinned 48.6% / 46.7% cache at $0.002217; pinned 73.7% /
- * 95.8% at $0.000910 — 2.4x cheaper. And 1 of the 28 endpoints publishes no
- * cache-read price at all, so unpinned a run can land where nothing caches and
- * nothing says so.
+ * task, same day: unpinned 48.6% / 46.7% cache; pinned 73.7% / 95.8% — 2.4x
+ * cheaper per task. And 1 of the 28 endpoints publishes no cache-read price at
+ * all, so unpinned a run can land where nothing caches and nothing says so.
  *
  * THE TIERS. The ladder climbed solo → fresh → best-of with the SAME cheap model
  * on every rung, so the loop got more determined and never got smarter. 19 of 19
@@ -39,11 +38,11 @@ test('⚠️⚠️ the pin is overridable, and an empty override really unpins �
    *
    * It drove `callModel` with a model literally named `'m'` and asserted that
    * it inherited `DEFAULT_PROVIDER_ORDER` — i.e. that EVERY model gets flash's
-   * pin. That is precisely the defect: `StreamLake` does not serve
+   * pin. That is precisely the defect: flash's preferred endpoint does not serve
    * `deepseek-v4-pro-0813` at all, so pro asked for a provider that could not
    * answer, matched nothing, and routed freely. Measured on the 13-task bench:
-   * **pro was served by GMICloud 13 of 13 times**, at 2.8x DeepSeek's own
-   * price on tokens and 28x on cache reads.
+   * **pro was served by the same dearest endpoint 13 of 13 times**, at 2.8x the
+   * cheapest endpoint on tokens and 28x on cache reads.
    *
    * ⭐ The pin is now PER MODEL, and an unknown model is left UNPINNED rather
    * than handed a pin that cannot be honoured. So the "unset" case is asserted
@@ -53,7 +52,8 @@ test('⚠️⚠️ the pin is overridable, and an empty override really unpins �
    */
   const sent = [];
   const fake = async (_u, o) => { sent.push(JSON.parse(o.body)); return { ok: true, headers: { get: () => 'application/json' }, json: async () => ({ choices: [{ message: { content: 'x' } }], usage: {} }) }; };
-  const call = (env, model = 'deepseek/deepseek-v4-flash-0731') => callModel({ apiKey: 'k', model, messages: [{ role: 'user', content: 'hi' }], tools: [], fetchImpl: fake, env });
+  // ⚡ the default model since 2026-09-28 — DEFAULT_PROVIDER_ORDER is derived from ITS pin.
+  const call = (env, model = 'deepseek/deepseek-v4.1-flash') => callModel({ apiKey: 'k', model, messages: [{ role: 'user', content: 'hi' }], tools: [], fetchImpl: fake, env });
 
   await call({});
   // The warm attempt is a whitelist, not an ordering — a manual `provider.order`
@@ -67,11 +67,28 @@ test('⚠️⚠️ the pin is overridable, and an empty override really unpins �
   assert.equal('provider' in sent[2], false, 'an explicit empty string must send NO provider block at all');
 });
 
-test('⭐⭐ the ladder escalates the MODEL, not only the effort', () => {
+test('⭐⭐⭐ the ladder does NOT switch model by default — that is an opt-in', () => {
+  /**
+   * ⚠️⚠️ THIS TEST ASSERTED THE OPPOSITE UNTIL 2026-09-01, and the behaviour it
+   * pinned cost 11.2x for a benefit this repository never measured.
+   *
+   * Roman: *"we never switch to pro, pro is worse on benchmarks dude."*
+   * `lib/model-tier.mjs` carries the full reasoning and the three facts that
+   * settle it — chiefly that the only capability datapoint (pro 5/13) is
+   * recorded in WHAT-NEEDS-TO-HAPPEN.md item 13 as a BUDGET ARTIFACT, not a
+   * measurement of the model.
+   *
+   * ⭐ The ladder still escalates EFFORT: solo → fresh context → best-of-N.
+   * That is where its measured value is.
+   */
   const tiers = parseTiers('deepseek/deepseek-v4-flash-0731', {});
-  assert.equal(tiers.length, 2, 'a single-entry ladder is the old behaviour: more determined, never smarter');
-  assert.equal(tiers[0], 'deepseek/deepseek-v4-flash-0731', 'rung zero stays whatever the user configured');
-  assert.equal(tiers[1], DEFAULT_ESCALATION_MODEL);
+  assert.deepEqual(tiers, ['deepseek/deepseek-v4-flash-0731'], 'an unconfigured run must never change model');
+});
+
+test('⭐ …and the opt-in still works, so the capability is not deleted', () => {
+  const tiers = parseTiers('flash', { ACUVO_MODEL_TIERS: `flash,${DEFAULT_ESCALATION_MODEL}` });
+  assert.deepEqual(tiers, ['flash', DEFAULT_ESCALATION_MODEL]);
+  assert.equal(modelForRung(1, tiers), DEFAULT_ESCALATION_MODEL);
 });
 
 test('⚠️ rung zero is NEVER replaced — the base model is the user\'s choice', () => {
@@ -99,9 +116,9 @@ test('⭐ an explicit ACUVO_MODEL_TIERS still wins, including a single id to swi
 
 test('⭐ the escalation model is the DATED snapshot, which is 2.7x cheaper', () => {
   /**
-   * MEASURED from the live endpoint feed: `deepseek-v4-pro-0813` is $0.435/M and
-   * the undated `deepseek-v4-pro` pointer is $1.168/M — same family, 2.7x the
-   * price. Pinning the snapshot is cheaper AND reproducible: a moving pointer
+   * MEASURED from the live endpoint feed: the dated `deepseek-v4-pro-0813`
+   * snapshot and the undated `deepseek-v4-pro` pointer are the same family at
+   * 2.7x the price. Pinning the snapshot is cheaper AND reproducible: a moving pointer
    * under a benchmark is how a "regression" appears that nobody caused.
    */
   assert.match(DEFAULT_ESCALATION_MODEL, /-\d{4}$/, 'the escalation model must be a pinned snapshot, not a moving pointer');
@@ -109,8 +126,15 @@ test('⭐ the escalation model is the DATED snapshot, which is 2.7x cheaper', ()
 });
 
 test('⚠️ every rung above the list reuses the top model, never wraps', () => {
-  const tiers = parseTiers('flash', {});
+  // ⚠️ Driven through the OPT-IN now, because the default is a one-entry ladder.
+  // The wrap hazard is a property of `modelForRung`, not of the default.
+  const tiers = parseTiers('flash', { ACUVO_MODEL_TIERS: `flash,${DEFAULT_ESCALATION_MODEL}` });
   assert.equal(modelForRung(1, tiers), DEFAULT_ESCALATION_MODEL);
   assert.equal(modelForRung(2, tiers), DEFAULT_ESCALATION_MODEL, 'rung 2 must not wrap back to flash');
   assert.equal(modelForRung(9, tiers), DEFAULT_ESCALATION_MODEL);
+});
+
+test('⚠️ and with no configuration every rung is the SAME model — no phantom switch', () => {
+  const tiers = parseTiers('flash', {});
+  for (const rung of [0, 1, 2, 9]) assert.equal(modelForRung(rung, tiers), 'flash');
 });

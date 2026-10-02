@@ -1,7 +1,7 @@
 ---
 name: working-in-the-background
 description: Servers, watchers and long builds without blocking — start_process and wait_for_output
-when: Whenever a command does not exit on its own — a server, a watcher, a long build, anything you need running WHILE you work
+when: Any command that does not exit — a server, a watcher, a long build, anything running WHILE you work
 ---
 
 # Working In The Background
@@ -62,3 +62,26 @@ If a port is busy, check whether YOU left something on it before concluding
 anything about the code.
 
 Related skills: `debugging`, `verify-your-own-work`.
+
+## Workflows: steps, waits and branches in one file
+
+```js
+// workflows/abandoned-cart.js — registered when the build is saved
+module.exports = {
+  on: { collection: 'carts', event: 'set' },     // or { every: '1h' } · { hook: 'stripe' } · { manual: true }
+  steps: [
+    async (ctx, state) => { state.cart = await ctx.data.get('carts', state.event.key); },
+    { wait: '2h' },
+    async (ctx, state) => { const c = await ctx.data.get('carts', state.event.key); if (!c || c.paid) return 'end'; },
+    { name: 'nudge', run: async (ctx, state) => { await ctx.email.send({ to: state.cart.email, subject: 'Still thinking?', text: '…' }); } },
+  ],
+};
+```
+
+Each step is one queued job with `state` carried between them, so a `{ wait: '2h' }`
+costs nothing and a step never holds a budget open. A step's return is its branch:
+`'end'` stops, a number or a step's `name` jumps, anything else continues. `state` must
+stay under 32 KB — keep keys, not documents. `on.every` becomes a schedule row;
+`on.collection` fires after a set/remove with `state.event = { collection, key, value }`;
+`on.hook` answers `POST /api/app-hooks/<token>/<name>`; `ctx.workflow.start('name', state)`
+starts one by hand. Runs and their steps show in the owner's Data view under jobs.

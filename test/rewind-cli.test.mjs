@@ -29,6 +29,19 @@ import { fileURLToPath } from 'node:url';
 import { openJournal } from '../lib/checkpoint.mjs';
 import { createLocalExecutor } from '../lib/workspace.mjs';
 
+/**
+ * ⚠️⚠️ SIGNED OUT, STATED EXPLICITLY. `...process.env, ACUVO_HOME: SIGNED_OUT_HOME` carries the developer's
+ * real HOME, so on a machine where somebody has run `acuvo --login` the spawned
+ * CLI gets a REAL account — and a signed-in run routes to our production gateway,
+ * deliberately outranking the loopback test seam. The child then talks to
+ * production instead of the stub and the assertions fail for a reason that has
+ * nothing to do with the code.
+ *
+ * Measured 2026-08-23: seventeen tests went red the moment the product was used
+ * for the first time.
+ */
+const SIGNED_OUT_HOME = join(tmpdir(), `acuvo-signed-out-${process.pid}`);
+
 const CLI = join(dirname(fileURLToPath(import.meta.url)), '..', 'bin', 'acuvo.mjs');
 
 const made = [];
@@ -50,7 +63,7 @@ const cleanup = () => {
  */
 function runCli(args, cwd) {
   return new Promise((resolve) => {
-    const env = { ...process.env };
+    const env = { ...process.env, ACUVO_HOME: SIGNED_OUT_HOME };
     for (const k of Object.keys(env)) if (/API_KEY|OPENROUTER|GROQ|ANTHROPIC/i.test(k)) delete env[k];
     env.ACUVO_SKIP_ENV_FILES = '1';
     const child = spawn(process.execPath, [CLI, ...args], { cwd, env });
@@ -165,7 +178,7 @@ function runCliWithModel(args, env) {
   return new Promise((resolve, reject) => {
     const cp = spawn(process.execPath, [CLI, ...args], {
       windowsHide: true,
-      env: { ...process.env, NO_COLOR: '1', OPENROUTER_API_KEY: 'sk-or-v1-stub', ...env },
+      env: { ...process.env, ACUVO_HOME: SIGNED_OUT_HOME, NO_COLOR: '1', OPENROUTER_API_KEY: 'sk-or-v1-stub', ...env },
     });
     let stdout = '';
     let stderr = '';

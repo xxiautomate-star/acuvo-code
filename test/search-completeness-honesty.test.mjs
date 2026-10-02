@@ -54,7 +54,7 @@ function oversizedTree() {
   return root;
 }
 
-test('⚠️⚠️ find_files must not report truncated:false when the WALK was cut short', () => {
+test('⚠️⚠️ find_files must not report truncated:false when the WALK was cut short', async () => {
   const root = oversizedTree();
   try {
     const r = findFiles(root, '**/*.config.js');
@@ -81,10 +81,10 @@ test('⚠️⚠️ find_files must not report truncated:false when the WALK was 
   }
 });
 
-test('search_text already reports a capped walk, and must keep doing so', () => {
+test('search_text already reports a capped walk, and must keep doing so', async () => {
   const root = oversizedTree();
   try {
-    const r = searchText(root, 'needleMarker');
+    const r = await searchText(root, 'needleMarker');
     assert.equal(r.ok, true);
     assert.equal(r.scanCapped, true, 'the fixture must hit the cap for this to mean anything');
     assert.equal(r.truncated, true, 'searchText regressed — a capped walk is a truncation');
@@ -99,14 +99,14 @@ test('search_text already reports a capped walk, and must keep doing so', () => 
  * it is not. A model that is told a directory was skipped can ask for it
  * explicitly. A model told nothing concludes the file does not exist.
  */
-test('⚠️ a hidden directory that is not searched must be REPORTED as skipped', () => {
+test('⚠️ a hidden directory that is not searched must be REPORTED as skipped', async () => {
   const root = mkdtempSync(join(tmpdir(), 'acuvo-search-hidden-'));
   try {
     mkdirSync(join(root, '.github', 'workflows'), { recursive: true });
     writeFileSync(join(root, '.github', 'workflows', 'ci.yml'), 'name: CI\njobs:\n  build:\n    runs-on: ubuntu-latest\n');
     writeFileSync(join(root, 'index.js'), 'export const hi = 1;\n');
 
-    const r = searchText(root, 'runs-on');
+    const r = await searchText(root, 'runs-on');
     assert.equal(r.ok, true);
 
     const reported = r.matches.length > 0
@@ -129,13 +129,13 @@ test('⚠️ a hidden directory that is not searched must be REPORTED as skipped
  * exfiltration channel with good intentions". Making hidden entries visible must
  * never make CREDENTIALS visible.
  */
-test('a fix for hidden directories must NOT surface .env contents', () => {
+test('a fix for hidden directories must NOT surface .env contents', async () => {
   const root = mkdtempSync(join(tmpdir(), 'acuvo-search-env-'));
   try {
     writeFileSync(join(root, '.env'), 'OPENROUTER_API_KEY=sk-or-v1-REALLOOKINGSECRET\n');
     writeFileSync(join(root, 'index.js'), 'export const hi = 1;\n');
 
-    const r = searchText(root, 'sk-or-v1');
+    const r = await searchText(root, 'sk-or-v1');
     assert.equal(r.ok, true);
     const leaked = JSON.stringify(r).includes('REALLOOKINGSECRET');
     assert.equal(leaked, false, 'the secret in .env was returned into the model context');

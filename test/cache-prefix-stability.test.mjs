@@ -29,6 +29,7 @@ import { after } from 'node:test';
 
 import { runSession } from '../lib/turn.mjs';
 import { createLocalExecutor } from '../lib/workspace.mjs';
+import { resetVisionState, MAX_LOOKS_PER_PROCESS } from '../lib/vision.mjs';
 
 const made = [];
 after(() => { for (const d of made) { try { rmSync(d, { recursive: true, force: true }); } catch { /* */ } } });
@@ -340,7 +341,8 @@ test('the provider preference is ON by default and keeps fallbacks either way', 
    * `allow_fallbacks` stays true, because a cheaper request that does not happen
    * is not cheaper.
    */
-  const { callModel } = await import('../lib/model.mjs');
+  const { callModel, PROVIDER_PIN_BY_MODEL } = await import('../lib/model.mjs');
+  const FLASH_MODEL = 'deepseek/deepseek-v4-flash-0731';
   const bodies = [];
   const fake = async (_url, opts) => {
     bodies.push(JSON.parse(opts.body));
@@ -373,7 +375,7 @@ test('the provider preference is ON by default and keeps fallbacks either way', 
    *    to another CHEAP one first. Still a preference, never a lock — and THAT
    *    is what this test is really for, asserted unchanged below.
    */
-  await callModel({ apiKey: 'k', model: 'deepseek/deepseek-v4-flash-0731', messages: [{ role: 'user', content: 'hi' }], fetchImpl: fake, env: {} });
+  await callModel({ apiKey: 'k', model: FLASH_MODEL, messages: [{ role: 'user', content: 'hi' }], fetchImpl: fake, env: {} });
   /**
    * ⚠⚠ THIS TEST DIAGNOSED THE BUG AND THEN CONCLUDED THE WRONG FIX.
    *
@@ -400,8 +402,17 @@ test('the provider preference is ON by default and keeps fallbacks either way', 
    * So the lock is now a WHITELIST: same one upstream, nothing outside it, and
    * no manual ordering for OpenRouter to give priority over.
    */
-  assert.deepEqual(bodies[0].provider.only, ['StreamLake'],
-    'the warm attempt must be a real lock on the measured cheapest endpoint');
+  /**
+   * ⚠️⚠️ DERIVED FROM THE PIN, NEVER TYPED. This line has been hand-corrected
+   * twice — StreamLake → DeepInfra (2026-08-27) → and it went red again on
+   * 2026-09-10 when the lead moved to `Sail Research`. **The name is not what
+   * this test is about**: it is about the warm attempt being a real one-name
+   * LOCK rather than a preference list. `provider-pin-per-model.test.mjs`
+   * pins WHICH endpoint leads, deliberately, in one place; a second copy here
+   * is a second opinion that only ever goes stale.
+   */
+  assert.deepEqual(bodies[0].provider.only, [PROVIDER_PIN_BY_MODEL[FLASH_MODEL][0]],
+    'the warm attempt must be a real lock on the pinned lead endpoint');
   assert.equal(bodies[0].provider.order, undefined,
     'an ORDER here switches off the server pinning this lock exists to get');
 
@@ -515,4 +526,249 @@ test('⚠️⚠️ the INSTRUMENT is right before its readings mean anything —
   // always says "perfect" — the exact failure mode this file exists to prevent.
   const changed = appendOnlyWireBytes({ tools, messages: [{ role: 'system', content: 'DIFFERENT' }, ...before.slice(1)] });
   assert.ok(sharedPrefixBytes(aa, changed) < aa.length, 'a changed system message must not report a perfect prefix');
+});
+
+// ── ⭐⭐⭐ THE EYES: A SECOND MODEL THAT MUST NOT TOUCH THE FIRST'S CACHE ────
+
+/**
+ * ⚠️⚠️ THE GAP THIS SECTION CLOSES. Everything above this line protects the
+ * BUILD path, and the build model is `deepseek-v4-flash-0731`, whose input
+ * modalities are `["text"]` — **it physically cannot see**. So looking at a
+ * screenshot requires a SECOND model (`qwen3.7-flash`, 7x cheaper than
+ * DeepSeek's own vision variant), and a second model is exactly the thing this
+ * file exists to be afraid of: a model switch mid-session is how a cache dies.
+ *
+ * ⭐ IT IS SAFE TODAY, AND ONLY BY THREE PROPERTIES OF THE CURRENT CODE:
+ *
+ *   1. the IMAGE never enters the build payload at all — it goes to Qwen and
+ *      nowhere else, because DeepSeek could not receive it if we tried;
+ *   2. only the VERDICT comes back, capped at `max_tokens: 900` — a bounded
+ *      string, not a re-description of the page;
+ *   3. it arrives as a TOOL RESULT, APPENDED at the end, so the cacheable
+ *      prefix in front of it stays byte-identical.
+ *
+ * ⚠️ ALL THREE ARE BEHAVIOURS, NOT INVARIANTS, and this file grepped for
+ * `vision`, `read_image` and `image` and matched NOTHING — the one path that
+ * introduces a second model was the one path the prefix guard did not cover.
+ * A future change that inserts the verdict mid-context, or raises that
+ * `max_tokens`, or lets an image description into the system prompt, would
+ * collapse the cache with **no error and no symptom except a worse bill**.
+ * That is the shape of every expensive defect in this repo.
+ *
+ * ⚠️ AND THE COST IS NOT THE QUESTION. Measured: one look is $0.000234, twelve
+ * (the per-run cap) is $0.0028 — 0.016% of an A$29 month. The eyes were never a
+ * margin decision. What they can damage is the BUILD path's cache, which is,
+ * and that is the only thing asserted here.
+ */
+
+/** A real 1×1 PNG: `sniffImage` reads magic bytes, so a fake string will not do. */
+const PNG_1X1_B64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+
+/**
+ * The verdict the fake eyes return. Deliberately distinctive: the test asserts
+ * it REACHES the build conversation, because a vision path that silently no-ops
+ * would satisfy every "no image in the payload" assertion below perfectly.
+ */
+const VERDICT = 'ACUVO-VISION-VERDICT the heading reads "Hello" and the button overlaps it.';
+
+function visionWorkspace() {
+  const root = workspace();
+  writeFileSync(join(root, 'shot.png'), Buffer.from(PNG_1X1_B64, 'base64'));
+  return root;
+}
+
+/**
+ * Drive a session in which the model LOOKS at an image, capturing both halves:
+ * what went to the build model, and what went to the eyes.
+ *
+ * ⚠️ `tools.mjs` calls `readImage({ ...args, root })` with no `fetchImpl`, so
+ * the eyes use the GLOBAL fetch and the ambient `OPENROUTER_API_KEY`. Stubbing
+ * both is what makes this cost $0.00 — and restoring both in a `finally` is
+ * what stops this file poisoning every suite that runs after it.
+ */
+async function captureWithEyes(root, script) {
+  const realFetch = globalThis.fetch;
+  const realKey = process.env.OPENROUTER_API_KEY;
+  const visionRequests = [];
+  resetVisionState();
+  process.env.OPENROUTER_API_KEY = 'test-key-not-real';
+  globalThis.fetch = async (url, opts) => {
+    visionRequests.push({ url: String(url), body: JSON.parse(opts.body) });
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({
+        choices: [{ message: { content: VERDICT } }],
+        usage: { cost: 0.000234, prompt_tokens: 1400, completion_tokens: 40 },
+      }),
+      text: async () => '',
+    };
+  };
+  try {
+    /**
+     * ⚠️⚠️ THE TASK TEXT IS LOAD-BEARING, AND FINDING THAT OUT WAS THE POINT.
+     * `read_image` lives in the `media` shortlist group (`tool-shortlist.mjs`),
+     * so it is offered only when the brief's own words select that group. The
+     * first version of this fixture inherited `capture`'s default task — *"look
+     * at a.js and b.js, then say what they export"* — which selects no media
+     * group, and the offered set came back as 25 tools with **no `read_image`
+     * in it**. The scripted model called the verb anyway and the executor
+     * dispatched it on NAME, so the eyes fired from a session that never
+     * offered them and every assertion here passed against an unreachable verb.
+     *
+     * ⭐ `image` is the trigger word. Keep one in this task or the offer
+     * assertion below is testing the shortlist's default, not the eyes.
+     */
+    const captured = await capture(root, script, {
+      task: 'look at the rendered image shot.png and say whether the heading is correct',
+    });
+    return { ...captured, visionRequests };
+  } finally {
+    globalThis.fetch = realFetch;
+    if (realKey === undefined) delete process.env.OPENROUTER_API_KEY;
+    else process.env.OPENROUTER_API_KEY = realKey;
+    resetVisionState();
+  }
+}
+
+const EYES_SCRIPT = [
+  reply('let me read the source', [call('read_file', { path: 'a.js' })]),
+  reply('now let me look at the render', [call('read_image', { path: 'shot.png' })]),
+  reply('the heading is fine, the button is not'),
+];
+
+test('⭐⭐⭐ the EYES never put an image into the build payload — the second model is the cache risk', async () => {
+  const root = visionWorkspace();
+  const { sent, toolShapes, visionRequests } = await captureWithEyes(root, EYES_SCRIPT);
+
+  /**
+   * ⚠️⚠️ VACUITY FIRST, EXACTLY AS THE PLAN-BANNER TEST DOES IT. If `read_image`
+   * were not offered in this session, or the executor refused the path, the
+   * tool would never fire — and every assertion below would pass while proving
+   * nothing at all, which is the failure mode this whole file was written
+   * against. Prove the eyes RAN before asserting what they did not do.
+   */
+  assert.equal(visionRequests.length, 1, `the eyes did not fire — ${visionRequests.length} vision calls. This test is vacuous.`);
+  assert.match(visionRequests[0].url, /openrouter\.ai/, 'the look did not go to the vision provider');
+
+  /**
+   * ⚠️⚠️ AND THE VERB MUST BE OFFERED, WHICH IS A SEPARATE FACT FROM IT RUNNING.
+   * MEASURED, by deleting `names.push('read_image')` from `tools.mjs` and
+   * re-running: **all sixteen tests still passed.** The scripted model in this
+   * file emits the call whatever it was handed, and the executor dispatches on
+   * NAME, so the eyes fired from a session that never offered them. Every
+   * assertion here was true of a verb no real model could have reached.
+   *
+   * ⭐ So the offer is asserted directly. This is the one line that turns
+   * "the vision path is cache-safe" into "the vision path is cache-safe AND
+   * exists", and without it this whole section is a test of a dead verb.
+   */
+  const offered = JSON.parse(toolShapes[0]).map((t) => t.function?.name ?? t.name);
+  assert.ok(
+    offered.includes('read_image'),
+    `read_image was never offered to the model — the eyes are unreachable in a real run. Offered: ${offered.join(', ')}`,
+  );
+  assert.ok(
+    sent.some((p) => p.includes('ACUVO-VISION-VERDICT')),
+    'the verdict never reached the build conversation — the look happened and its answer was dropped',
+  );
+
+  /**
+   * ⭐ PROPERTY 1. The image goes to Qwen and NOWHERE ELSE. DeepSeek is
+   * text-only; an image reaching it does not fail loudly, it gets dropped or
+   * answered-about from the filename in confident prose. And in cache terms a
+   * multi-hundred-KB base64 blob in the conversation is the most expensive
+   * possible thing to put in a prefix.
+   */
+  for (const [i, payload] of sent.entries()) {
+    assert.equal(payload.includes(PNG_1X1_B64.slice(0, 24)), false, `round ${i + 1} carried raw image bytes to the build model`);
+    assert.equal(payload.includes('data:image/'), false, `round ${i + 1} carried a data: image URI to the build model`);
+    assert.equal(payload.includes('image_url'), false, `round ${i + 1} carried an image_url part to the build model`);
+  }
+});
+
+test('⭐⭐ the verdict is CAPPED at 900 tokens and reasoning is off — an unbounded look is an unbounded prefix', async () => {
+  const root = visionWorkspace();
+  const { visionRequests } = await captureWithEyes(root, EYES_SCRIPT);
+  assert.equal(visionRequests.length, 1, 'the eyes did not fire — this test is vacuous');
+  const body = visionRequests[0].body;
+
+  /**
+   * ⭐ PROPERTY 2. The verdict re-enters the build context ONCE as fresh input
+   * and is cached forever after — but only because it is bounded. Raising this
+   * ceiling is the single cheapest edit that would quietly make the eyes
+   * expensive, and nothing else in the repo would notice.
+   */
+  assert.ok(body.max_tokens <= 900, `the vision call may return up to ${body.max_tokens} tokens into the build context`);
+
+  /**
+   * ⚠️ AND REASONING STAYS OFF. Measured on this account: a reasoning model
+   * charges its thinking against `max_tokens` and can spend ALL of it — 15,999
+   * reasoning tokens and an EMPTY reply. An empty reply from a vision model is
+   * indistinguishable from "I saw nothing", which is the one output this module
+   * must never produce.
+   */
+  assert.equal(body.reasoning?.enabled, false, 'reasoning is on, so the look can burn its whole budget and answer nothing');
+
+  /**
+   * ⭐ AND IT IS A DIFFERENT MODEL FROM THE ONE BUILDING. If these ever became
+   * the same id, either the build model grew eyes (it has not) or the eyes were
+   * pointed at a text-only model that will answer from the filename.
+   */
+  assert.notEqual(body.model, 'fake/model', 'the eyes were pointed at the build model, which cannot see');
+  assert.ok(String(body.model).length > 0, 'the vision call named no model');
+});
+
+test('⭐⭐⭐ a look is APPENDED — the prefix in front of the verdict stays byte-identical', async () => {
+  /**
+   * ⭐ PROPERTY 3, AND THE ONE THIS FILE ACTUALLY EXISTS FOR. The verdict
+   * arrives as a tool result at the END. `turn.mjs` states the rule it depends
+   * on: *"APPENDED, never inserted. The system message and the workspace
+   * context are the cacheable prefix; a line added to the END leaves that
+   * prefix byte-identical."*
+   *
+   * ⚠️ A regression that spliced the verdict into the system message — an
+   * entirely reasonable-looking "give the model the visual context up front"
+   * change — would void the whole prefix on every round after the first look,
+   * and produce no error and no failing test anywhere else in this package.
+   */
+  const root = visionWorkspace();
+  const { sent } = await captureWithEyes(root, EYES_SCRIPT);
+  assert.ok(sent.length >= 3, `expected at least 3 rounds, got ${sent.length}`);
+
+  const verdictRound = sent.findIndex((p) => p.includes('ACUVO-VISION-VERDICT'));
+  assert.ok(verdictRound > 0, 'the verdict never reached a build payload — this test is vacuous');
+
+  for (let i = 1; i < sent.length; i += 1) {
+    const shared = sharedPrefix(sent[i - 1], sent[i]);
+    assert.equal(
+      shared,
+      sent[i - 1].length,
+      `the look rewrote history: round ${i + 1} diverged from round ${i} at byte ${shared} of ${sent[i - 1].length}.\n`
+        + `Round ${i} ended: ${JSON.stringify(sent[i - 1].slice(Math.max(0, shared - 80), shared + 40))}\n`
+        + `Round ${i + 1} has:  ${JSON.stringify(sent[i].slice(Math.max(0, shared - 80), shared + 40))}`,
+    );
+  }
+
+  /**
+   * ⚠️ AND THE SYSTEM MESSAGE SPECIFICALLY — the most expensive bytes in the
+   * request, and the most tempting place to put "what the page looks like".
+   */
+  const systemOf = (p) => p.split('\u0001')[0];
+  assert.equal(new Set(sent.map(systemOf)).size, 1, 'the system message changed across a look');
+  assert.equal(systemOf(sent[0]).includes('ACUVO-VISION-VERDICT'), false, 'the verdict was hoisted into the system message');
+});
+
+test('⚠️ the per-run look cap is real — an unbounded number of looks is an unbounded tail', async () => {
+  /**
+   * ⭐ THE OTHER BOUND. `max_tokens` caps ONE verdict; `MAX_LOOKS_PER_PROCESS`
+   * caps how many of them can accumulate at the end of the conversation. Both
+   * are needed: twelve uncapped looks is a different bill from one.
+   *
+   * ⚠️ Asserted through the CAP ITSELF rather than by driving 13 rounds, because
+   * a loop that stops early for an unrelated reason would make a round-driving
+   * version of this test pass while proving nothing.
+   */
+  assert.ok(Number.isFinite(MAX_LOOKS_PER_PROCESS), 'the look cap is not a number');
+  assert.ok(MAX_LOOKS_PER_PROCESS > 0 && MAX_LOOKS_PER_PROCESS <= 20, `the per-run look cap is ${MAX_LOOKS_PER_PROCESS}`);
 });

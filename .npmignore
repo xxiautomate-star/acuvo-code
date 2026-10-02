@@ -1,0 +1,67 @@
+# ── ⚠️⚠️ A SECOND LOCK, BECAUSE THE FIRST ONE IS ONE CARELESS LINE THICK ─────
+#
+# `package.json`'s `files` allowlist is what decides the tarball, and it is
+# correct today — `npm pack --dry-run` on 2026-08-20 shipped 364 files, all of
+# them .mjs / .md / .json plus LICENSE, with nothing sensitive among them.
+#
+# The reason this file exists anyway: **the repo root currently holds
+# `.env.local`**, alongside a dozen scratch captures left by shakedown runs
+# (`f.err`, `h.out`, `ws5.out`, `u22.err`, …). None of them ship, for exactly
+# one reason — nobody has added a root glob to `files`. The day somebody
+# writes `"files": ["*.md", ...]` to pick up a new document, a live key goes to
+# the public registry, and `npm unpublish` does not un-leak a credential.
+#
+# ⭐ npm applies these patterns AFTER the allowlist and INSIDE the directories
+# it copies, which is the case an allowlist cannot cover at all: a `lib/.env`
+# or a `test/fixtures/token.json` needs no change to `files` to ship.
+#
+# ⚠️⚠️ THIS BLOCK SAID "THIS FILE MUST NEVER LIST `test/` — shipping the suite is
+# deliberate", AND IT WAS DESCRIBING A WORLD THAT NO LONGER EXISTED.
+#
+# `test/` was dropped from `package.json`'s `files` allowlist, so the suite has
+# not shipped for weeks. This note went on asserting the opposite, and so did
+# `ENTERPRISE.md`, which told buyers to run `npm test` inside the installed
+# package — a command that fails on a directory that isn't there.
+#
+# ⭐ THE CURRENT POSITION, DECIDED 2026-08-25: the tests are NOT published, and
+# the reason is not size. The suite is where this project's engineering argument
+# is written down — incidents, measurements, what broke and what it cost. That is
+# our working record, and we do not publish our working record.
+#
+# ⚠️ SO THIS FILE STILL MUST NOT LIST `test/` — but for the opposite reason to
+# the one recorded here before. Listing it changes nothing today (the allowlist
+# already excludes it); the trap is the reverse move, adding `test/` back to
+# `files` to "restore the audit story". The audit story does not need it: zero
+# dependencies means the shipped source IS the whole audit.
+#
+# ⚠️ `scripts/test.mjs` still treats a missing `test/` as a hard failure, which is
+# correct for a repo checkout and is why this must never be the only place the
+# question is answered. Enforced by `test/publish-readiness.test.mjs`.
+
+# Credentials and anything shaped like one
+.env
+.env.*
+*.pem
+*.key
+*.p12
+*.pfx
+.npmrc
+
+# Scratch captures from debugging runs — the repo root is full of these
+*.err
+*.out
+*.log
+
+# Build artefacts and local state, none of which a consumer can use
+dist/
+*.tgz
+*.tar.gz
+*.zip
+.acuvo/
+.playwright-mcp/
+.github/
+
+# Benchmarks: a 52 MB node tarball cache and results that go stale and then
+# read as claims. `bench/` is not in the allowlist either.
+bench/
+results/

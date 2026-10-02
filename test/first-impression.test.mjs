@@ -56,17 +56,65 @@ test('⭐ it still tells them exactly how to fix it, on both shells', () => {
   assert.match(MISSING_KEY_MESSAGE, /\$env:OPENROUTER_API_KEY/, 'PowerShell — this project is developed on Windows');
 });
 
-test('⚠️ it promises no product that does not exist yet', () => {
+test('🚨 OUR door has an address too — the test above used to require one only for theirs', () => {
   /**
-   * Acuvo Code is intended to be unlocked by an Acuvo PLAN, and that gateway is
-   * not built. A first impression that advertises it would be a broken promise
-   * on day one — the most expensive kind. When the gateway ships, this test
-   * changes with it, deliberately and visibly.
+   * ── ⚠️⚠️ THE GUARD WAS ENFORCING THE ASYMMETRY IT SHOULD HAVE CAUGHT ──────
+   *
+   * The assertion directly above demands `https://openrouter.ai/keys` and gives
+   * the reason *"WHERE to get a key"*. There was no matching assertion for the
+   * Acuvo path, and the message it guarded duly shipped with a full URL for
+   * OpenRouter and an unlocated *"Settings → API keys"* for us.
+   *
+   * ⭐ That is not a missing test, it is a test that made the defect permanent:
+   * anyone reading it would conclude the URL requirement had been considered
+   * and satisfied. `doctor.mjs` records the same shape costing a real customer
+   * — *"sent a customer who had already paid us off to buy a competitor's
+   * key"* — and this file is where that happens first.
+   */
+  const ourUrl = /https:\/\/acuvo\.xxiautomate\.com/;
+  assert.match(MISSING_KEY_MESSAGE, ourUrl, 'WHERE to get an ACUVO key — the paid path is the business');
+
+  const acuvoAt = MISSING_KEY_MESSAGE.search(ourUrl);
+  const theirsAt = MISSING_KEY_MESSAGE.indexOf('https://openrouter.ai/keys');
+  assert.ok(
+    acuvoAt < theirsAt,
+    'our address must appear before theirs — option A is the one we are selling',
+  );
+
+  /**
+   * ⚠️ AND IT MUST NOT DESCRIBE THE FLOW WE REPLACED. `--login` on a terminal
+   * opens the browser; it asks for no paste. `device-login.mjs`'s header names
+   * "find Settings → create key → copy" as the path it exists to remove, and
+   * this message was still printing it.
    */
   assert.doesNotMatch(
     MISSING_KEY_MESSAGE,
-    /\b(plan|subscription|sign up|upgrade|pricing|coming soon|free trial)\b/i,
-    'do not advertise the plan until the gateway exists',
+    /paste the key from Settings/i,
+    'that describes the five-step path device login replaced — `acuvo --login` asks for no paste',
+  );
+});
+
+test('⚠️ it promises no product that does not exist yet', () => {
+  /**
+   * ── ⭐ NARROWED 2026-08-23, EXACTLY AS THIS TEST SAID IT WOULD BE ──────────
+   *
+   * The original read: *"Acuvo Code is intended to be unlocked by an Acuvo PLAN,
+   * and that gateway is not built… When the gateway ships, this test changes
+   * with it, deliberately and visibly."*
+   *
+   * It shipped. `acuvo --login` lands a real key, the metered path records real
+   * usage rows, and the message now has to say "billed to YOU, not your Acuvo
+   * plan" — a warning that is only possible if the word `plan` is allowed.
+   *
+   * ⚠️ THE GUARD IS NARROWED, NOT REMOVED, and the distinction matters: `plan`
+   * now names a thing that exists, while `coming soon` and `free trial` still
+   * name things that do not. A first impression that advertises either is a
+   * broken promise on day one, which is the most expensive kind.
+   */
+  assert.doesNotMatch(
+    MISSING_KEY_MESSAGE,
+    /\b(coming soon|free trial|waitlist|early access|beta access)\b/i,
+    'do not advertise something that does not ship today',
   );
 });
 

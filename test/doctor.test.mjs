@@ -33,6 +33,19 @@ after(() => { for (const d of made) { try { rmSync(d, { recursive: true, force: 
  * projects is deterministic. `clearCredentialCache` because the lookup is
  * memoised per root and a stale answer from another test would leak in.
  */
+/**
+ * ⚠️⚠️ A HOME THAT CANNOT HOLD A CREDENTIAL, AND IT IS NOT DECORATION. Since
+ * 2026-08-26 the media half is ACCOUNT-aware — a signed-in customer is offered
+ * `see_page`, `speak`, `transcribe`, `make_document`, `read_document` and
+ * `read_table` with no Modal variables at all. So "offered here" genuinely
+ * depends on `~/.acuvo/credentials.json`, and a test that inherits the real home
+ * passes on a signed-out laptop and fails on a signed-in one. Naming a path that
+ * cannot exist makes the assertion mean what it says. (`renderVia`'s header
+ * records why this matters beyond flakiness: a sibling test printed a live
+ * `xxi_live_…` token into node's own failure output.)
+ */
+const NO_ACCOUNT_HOME = '/acuvo-test-no-such-home';
+
 function isolatedRoot() {
   /**
    * ⚠️⚠️ NESTED, AND A FLAT TEMP DIR WAS NOT ENOUGH. The lookup scans the
@@ -88,6 +101,14 @@ const FAKE_KEY = 'sk-or-v1-0123456789abcdef0123456789abcdef0123456789abcdef01234
 const FAKE_SECRET = 'modal-shared-secret-9f3c';
 
 const FULL_ENV = {
+  /**
+   * ⚠️⚠️ SIGNED OUT, STATED EXPLICITLY. Without this, "delete
+   * OPENROUTER_API_KEY" does not mean "no credential" — the doctor falls
+   * through to `~/.acuvo/credentials.json` and correctly reports a configured
+   * ACUVO account, so the test asserting DARK fails on any machine where
+   * somebody has signed in. Measured the day Roman first logged in.
+   */
+  ACUVO_HOME: join(tmpdir(), `acuvo-signed-out-${process.pid}`),
   OPENROUTER_API_KEY: FAKE_KEY,
   MODAL_VIDEO_SECRET: FAKE_SECRET,
   RENDER_AUDIT_URL: 'https://example--render.modal.run',
@@ -117,6 +138,7 @@ function makeFetch(overrides = {}) {
     if (u.includes('/api/v1/models')) {
       return json(200, {
         data: [
+          { id: 'deepseek/deepseek-v4.1-flash' }, // the default since 2026-09-28 — the live catalogue lists it
           { id: 'deepseek/deepseek-v4-flash-0731' },
           { id: 'deepseek/deepseek-chat' },
           { id: 'z-ai/glm-4.6' },
@@ -155,7 +177,16 @@ function allStrings(value, out = []) {
 const flat = (report) => report.sections.flatMap((s) => s.checks);
 const find = (report, id) => flat(report).find((c) => c.id === id);
 
-const BASE = { root: REPO, now: () => 1_700_000_000_000, spawnImpl: null, timeoutMs: 500 };
+/**
+ * ⚠️ AN EMPTY HOME IS PART OF THE FIXTURE, NOT TIDINESS. The doctor reads the
+ * ACUVO ACCOUNT to decide whether a media verb is reachable over the gateway,
+ * and `readAccount` falls back to the real `~/.acuvo/credentials.json` when the
+ * synthetic `env: {}` these tests pass carries no `ACUVO_HOME`. Without this,
+ * three assertions below pass or fail according to whether the person running
+ * them is signed in — which is not a property of the code under test.
+ */
+const EMPTY_HOME = mkdtempSync(join(tmpdir(), 'acuvo-doctor-home-'));
+const BASE = { root: REPO, now: () => 1_700_000_000_000, spawnImpl: null, timeoutMs: 500, home: EMPTY_HOME };
 
 // ────────────────────────────────────────────────────────────────────────────
 // PURE PARTS
@@ -340,7 +371,7 @@ test('⭐⭐ a withheld MEDIA tool names the EXACT variable — "TTS: unavailabl
    * checkout is a test that gets deleted the first week it fires in CI.
    */
   const bare = isolatedRoot();
-  const o = toolOffer({ root: bare, env: {}, allowRun: true, maxRounds: 8 });
+  const o = toolOffer({ root: bare, env: {}, allowRun: true, maxRounds: 8, home: NO_ACCOUNT_HOME });
   const byName = Object.fromEntries(o.withheld.map((w) => [w.name, w]));
   for (const name of ['speak', 'transcribe', 'make_document']) {
     assert.match(byName[name].fix, /ACUVO_MEDIA_SECRET/, `${name} must name the credential that actually unblocks it`);
@@ -392,7 +423,11 @@ test('read_skill is now OFFERED everywhere, and the LSP tools still name the ins
     );
     if (byName.check_types) {
       assert.ok(byName.check_types.fix, 'a withheld LSP tool with no fix is the non-answer this doctor exists to avoid');
-      assert.ok(/language server|typescript-language-server|manifest|source file/i.test(byName.check_types.why), byName.check_types.why);
+      // ⚠️ `TypeScript 5` JOINED THIS LIST ON 2026-09-19. The typescript reason
+      // stopped saying "language server" because the thing that is missing is not
+      // one — it is `tsserver`, which ships inside the `typescript` package, and
+      // naming the wrong component is what made the old fix line un-followable.
+      assert.ok(/language server|typescript-language-server|TypeScript 5|manifest|source file/i.test(byName.check_types.why), byName.check_types.why);
     }
   } finally {
     rmSync(dir, { recursive: true, force: true });
@@ -470,14 +505,59 @@ test('⚠️ a 5xx from the key endpoint is broken but must NOT accuse the key �
   assert.match(c.fix, /retry/i);
 });
 
-test('an absent key is DARK, not broken, and points at where to get one', async () => {
+/**
+ * ── ⚠️⚠️ INVERTED 2026-08-25. THIS TEST HELD THE BYOK DEFECT IN PLACE ───────
+ *
+ * It used to assert the opposite of what it now asserts:
+ *
+ *     assert.match(c.fix, /OPENROUTER_API_KEY/);
+ *     assert.match(c.fix, /openrouter\.ai/);
+ *
+ * i.e. it REQUIRED that someone who has not signed in be told to go and get a
+ * key from our own supplier. That is the person deciding whether to pay us, and
+ * we were handing them the shopping list.
+ *
+ * Roman, 2026-08-25: *"nothing is BYOK. We only need ONE OpenRouter key, for
+ * US. This shit shouldn't be happening. Users pay a plan. It gives them a
+ * certain access to tokens which WE pay for. It's pretty simple."*
+ *
+ * ⭐ The old assertion was not wrong about the CODE — the code really did say
+ * that. It was answering the wrong question: it asked whether the fix line
+ * named a credential, never whether that credential was one the customer should
+ * ever hear about. `acuvo --login` is the real answer and always was.
+ */
+test('not signed in is DARK, and the fix is --login — never a third-party key', async () => {
   const env = { ...FULL_ENV };
   delete env.OPENROUTER_API_KEY;
   const report = await runDoctor({ ...BASE, env, fetchImpl: makeFetch() });
   const c = find(report, 'model.key');
   assert.equal(c.state, 'dark');
-  assert.match(c.fix, /OPENROUTER_API_KEY/);
-  assert.match(c.fix, /openrouter\.ai/);
+  assert.match(c.fix, /--login/);
+  // The bypass must not come back by tidy-up, copy-paste or a helpful revert.
+  assert.doesNotMatch(c.fix, /OPENROUTER_API_KEY/);
+  assert.doesNotMatch(c.fix, /openrouter\.ai/i);
+});
+
+/**
+ * ⭐ AND THE CASE THAT WAS NEVER TESTED AT ALL: a machine that IS signed in.
+ * The doctor had no concept of the account, so on a paying customer's terminal
+ * it probed a key the product does not use and reported the model chain
+ * BROKEN — measured live on 2026-08-25, with the banner two lines above reading
+ * "your Acuvo plan". No test caught it because no test had an account.
+ */
+test('a signed-in machine reports the ACCOUNT, and never probes a key', async () => {
+  const report = await runDoctor({
+    ...BASE,
+    env: { ...FULL_ENV },
+    fetchImpl: makeFetch(),
+    credential: { mode: 'account', token: 'tok_live_x', url: 'https://gateway.example/v1/chat/completions', email: 'owner@example.com' },
+  });
+  const acct = find(report, 'model.account');
+  assert.ok(acct, 'a signed-in machine must report its account as the model credential');
+  assert.equal(acct.state, 'live');
+  assert.match(acct.detail, /plan covers the model/);
+  assert.equal(acct.fix, null, 'a working account has nothing to fix');
+  assert.equal(find(report, 'model.key'), undefined, 'the key line must not appear when an account is present');
 });
 
 test('⭐ a model id that is not in the catalogue is broken BY NAME — a 404 chain is a silent outage', async () => {
@@ -980,17 +1060,48 @@ test('⚠️⚠️ COUPLING: readMcpConfig does NOT expand ${VAR} — if that ev
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
-test('⚠️⚠️ COUPLING: a config env entry OVERRIDES the real variable — proven without spawning', async () => {
+/**
+ * ⚠️⚠️ THIS TEST USED TO PIN THE BUG AS THE CONTRACT.
+ *
+ * It asserted `captured.env.GITHUB_TOKEN === '${GITHUB_TOKEN}'` — "the literal
+ * placeholder must land in the child env, overriding any real token". That was
+ * an accurate description of what the code did and a terrible thing for it to
+ * do: `acuvo mcp add github` writes exactly that placeholder, and the spread put
+ * `server.env` AFTER `process.env`, so our own flagship one-command flow
+ * CLOBBERED a correctly-exported real token and failed as a 401 twenty seconds
+ * later, naming nothing. Two of the eight curated nicknames (`github`, `figma`)
+ * carry `env` and both were broken this way.
+ *
+ * `lib/mcp.mjs` now expands `${VAR}` at spawn time and refuses to connect when
+ * the variable is unset. The assertion is inverted rather than deleted, so the
+ * old behaviour can never quietly return.
+ */
+test('⚠️⚠️ COUPLING: an UNSET ${VAR} refuses to connect instead of clobbering the real one', async () => {
   let captured = null;
-  // A spawnImpl that records and returns no stdio: connectServer gives up
-  // immediately, so nothing is ever executed, and we still see the env it built.
-  const res = await connectServer(
+  const spawnImpl = (_f, _a, opts) => { captured = opts; return {}; };
+
+  const unset = await connectServer(
     { name: 'gh', command: 'node', args: [], env: { GITHUB_TOKEN: '${GITHUB_TOKEN}' } },
-    { root: process.cwd(), spawnImpl: (_f, _a, opts) => { captured = opts; return {}; } },
+    { root: process.cwd(), spawnImpl, env: { PATH: process.env.PATH ?? '' } },
   );
-  assert.equal(res.ok, false);
-  assert.equal(captured.env.GITHUB_TOKEN, '${GITHUB_TOKEN}',
-    'the literal placeholder must land in the child env, overriding any real token — this is what doctor reports');
+  assert.equal(unset.ok, false, 'an unresolvable credential reference must not connect');
+  assert.equal(captured, null,
+    'and it must refuse BEFORE spawning — a child that starts with a placeholder for a token is a 401 with a twenty-second delay');
+});
+
+test('⭐ a ${VAR} that IS set is expanded into the child env, not passed literally', async () => {
+  let captured = null;
+  await connectServer(
+    { name: 'gh', command: 'node', args: [], env: { GITHUB_TOKEN: '${GITHUB_TOKEN}' } },
+    {
+      root: process.cwd(),
+      spawnImpl: (_f, _a, opts) => { captured = opts; return {}; },
+      env: { PATH: process.env.PATH ?? '', GITHUB_TOKEN: 'ghp_a-real-value' },
+    },
+  );
+  assert.ok(captured, 'a resolvable reference must reach spawn');
+  assert.equal(captured.env.GITHUB_TOKEN, 'ghp_a-real-value',
+    'the child gets the VALUE — this is the whole point of the fix');
 });
 
 test('mcpCredentialGaps: a ${VAR} placeholder and an empty value are gaps; a real value is not', () => {
@@ -1158,8 +1269,24 @@ test('⭐ the default model reports automatic caching — and admits it is docum
    * true, and is what this pins, is that THIS check never looked at it.
    */
   assert.equal(c.verified, false, 'this check is a table lookup about the MODEL, not a measurement of your run — a green tick here would claim something it never looked at');
-  assert.match(c.detail, /deepseek/i);
+  /**
+   * ⚠️ THIS ASSERTED `/deepseek/i` — it REQUIRED the upstream vendor's name to
+   * appear in output every user sees. The same line also carried our routing
+   * knob and our measured routing spread ("46.7% unpinned against 95.8% pinned
+   * via ACUVO_PROVIDER_ORDER") and pointed at a `providers` field that names
+   * who served each round. All true, none of it the customer's business.
+   *
+   * ⭐ It is now pinned the other way: our own engine name, and no supplier.
+   * The cache EXPLANATION is unchanged and still tested below — what a user
+   * needs to know (caching is automatic, a continuing session is billed a
+   * fraction, this is documented not measured) survives intact.
+   */
+  assert.match(c.detail, /Acuvo/);
+  assert.doesNotMatch(c.detail, /deepseek/i);
+  assert.doesNotMatch(c.detail, /ACUVO_PROVIDER_ORDER/);
   assert.match(c.detail, /automatic/i);
+  // The honest caveat a short run needs, so a low rate does not read as a fault.
+  assert.match(c.detail, /first round of any run is always cold/i);
 });
 
 test('⭐⭐ a model that only caches with cache_control is DARK and names OPENROUTER_CODEGEN_MODEL', async () => {
@@ -1234,7 +1361,7 @@ test('a built-in media URL is never presented as something the user must find', 
 
   // ⚠️ Isolated for the same reason as above: the advice names a nearby
   // credential when there is one, and this asserts the no-credential wording.
-  const withheld = new Map(toolOffer({ root: isolatedRoot(), env: bare, allowRun: true }).withheld.map((w) => [w.name, w]));
+  const withheld = new Map(toolOffer({ root: isolatedRoot(), env: bare, allowRun: true, home: NO_ACCOUNT_HOME }).withheld.map((w) => [w.name, w]));
 
   for (const name of ['speak', 'transcribe', 'make_document', 'read_document', 'read_table']) {
     const w = withheld.get(name);
@@ -1257,7 +1384,7 @@ test('see_page keeps the URL advice, because it genuinely has no default', async
   // The asymmetry is the point: a secret alone does NOT light the renderer.
   assert.equal(mediaConfig({ ACUVO_MEDIA_SECRET: 's' }).render, null);
 
-  const withheld = new Map(toolOffer({ root: process.cwd(), env: { PATH: process.env.PATH }, allowRun: true }).withheld.map((w) => [w.name, w]));
+  const withheld = new Map(toolOffer({ root: process.cwd(), env: { PATH: process.env.PATH }, allowRun: true, home: NO_ACCOUNT_HOME }).withheld.map((w) => [w.name, w]));
   assert.match(withheld.get('see_page').fix, /RENDER_AUDIT_URL/);
 });
 

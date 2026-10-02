@@ -46,13 +46,13 @@ function utf16(s) {
 
 // ── (a) SILENT SKIPS ────────────────────────────────────────────────────────
 
-test('⚠️ a file too big to scan is REPORTED, not silently dropped', () => {
+test('⚠️ a file too big to scan is REPORTED, not silently dropped', async () => {
   const root = makeTree({
     'big.js': `const x = 'NEEDLE';\n${'// filler\n'.repeat(70_000)}`, // ~630KB
     'small.js': 'nothing interesting here\n',
   });
   try {
-    const r = searchText(root, 'NEEDLE');
+    const r = await searchText(root, 'NEEDLE');
     assert.equal(r.ok, true);
     assert.deepEqual(r.matches, [], 'the oversized file genuinely cannot be scanned');
     // THE POINT: the caller must be able to tell "not there" from "not opened".
@@ -66,13 +66,13 @@ test('⚠️ a file too big to scan is REPORTED, not silently dropped', () => {
   }
 });
 
-test('⚠️ a UTF-16 file skipped as binary is REPORTED, not silently dropped', () => {
+test('⚠️ a UTF-16 file skipped as binary is REPORTED, not silently dropped', async () => {
   const root = makeTree({
     'u16.txt': utf16('NEEDLE here\n'),
     'plain.txt': 'ordinary text\n',
   });
   try {
-    const r = searchText(root, 'NEEDLE');
+    const r = await searchText(root, 'NEEDLE');
     assert.equal(r.ok, true);
     assert.deepEqual(r.matches, []);
     assert.equal(r.skippedCount, 1);
@@ -84,10 +84,10 @@ test('⚠️ a UTF-16 file skipped as binary is REPORTED, not silently dropped',
   }
 });
 
-test('a clean search still reports zero skips — the field is not noise', () => {
+test('a clean search still reports zero skips — the field is not noise', async () => {
   const root = makeTree({ 'a.js': 'const NEEDLE = 1;\n', 'b.js': 'nope\n' });
   try {
-    const r = searchText(root, 'NEEDLE');
+    const r = await searchText(root, 'NEEDLE');
     assert.equal(r.matches.length, 1);
     assert.equal(r.skippedCount, 0);
     assert.deepEqual(r.skipped, []);
@@ -100,7 +100,7 @@ test('a clean search still reports zero skips — the field is not noise', () =>
 
 // ── (b) `**/` MUST MATCH ZERO DIRECTORIES ───────────────────────────────────
 
-test('⚠️ `**/` matches ZERO segments — the broader glob cannot return fewer files', () => {
+test('⚠️ `**/` matches ZERO segments — the broader glob cannot return fewer files', async () => {
   // Bash globstar, minimatch and ripgrep all agree: `**/*.json` includes the
   // top level. Ours required a slash, so it excluded exactly the file people
   // reach for this pattern to find.
@@ -110,7 +110,7 @@ test('⚠️ `**/` matches ZERO segments — the broader glob cannot return fewe
   assert.ok(globToRegExp('src/**/*.ts').test('src/a.ts'), 'src/**/*.ts must match src/a.ts');
 });
 
-test('⚠️ findFiles: `**/*.json` returns AT LEAST what `*.json` returns', () => {
+test('⚠️ findFiles: `**/*.json` returns AT LEAST what `*.json` returns', async () => {
   const root = makeTree({
     'package.json': '{}',
     'src/a.json': '{}',
@@ -132,7 +132,7 @@ test('⚠️ findFiles: `**/*.json` returns AT LEAST what `*.json` returns', () 
   }
 });
 
-test('the globstar fix does not widen a single-star glob', () => {
+test('the globstar fix does not widen a single-star glob', async () => {
   // Regression guard: `*` must still refuse to cross a slash.
   assert.ok(!globToRegExp('*.ts').test('src/a.ts'));
   assert.ok(globToRegExp('src/**/*.ts').test('src/a/b/c.ts'));
@@ -143,7 +143,7 @@ test('the globstar fix does not widen a single-star glob', () => {
 
 // ── (c) CREDENTIALS MUST NEVER REACH THE PROMPT ─────────────────────────────
 
-test('⚠️⚠️ search_text NEVER returns the contents of a credential file', () => {
+test('⚠️⚠️ search_text NEVER returns the contents of a credential file', async () => {
   const root = makeTree({
     'id_rsa': '-----BEGIN OPENSSH PRIVATE KEY-----\nCANARYKEY\n',
     'secrets.json': '{"aws_secret":"CANARYAWS"}\n',
@@ -152,7 +152,7 @@ test('⚠️⚠️ search_text NEVER returns the contents of a credential file',
     'src/app.js': '// CANARYOK — an ordinary source line\n',
   });
   try {
-    const r = searchText(root, 'CANARY');
+    const r = await searchText(root, 'CANARY');
     assert.equal(r.ok, true);
 
     const blob = JSON.stringify(r);
@@ -170,10 +170,10 @@ test('⚠️⚠️ search_text NEVER returns the contents of a credential file',
   }
 });
 
-test('a glob-narrowed search cannot be used to aim at a credential file', () => {
+test('a glob-narrowed search cannot be used to aim at a credential file', async () => {
   const root = makeTree({ 'secrets.json': '{"aws_secret":"CANARYAWS"}\n', 'ok.json': '{"a":1}\n' });
   try {
-    const r = searchText(root, '.', { glob: '*.json' });
+    const r = await searchText(root, '.', { glob: '*.json' });
     assert.ok(!JSON.stringify(r).includes('CANARYAWS'), 'the glob path must be guarded too');
     assert.equal(r.withheld, 1);
   } finally {

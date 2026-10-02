@@ -195,7 +195,7 @@ test('⚠️ every field the README promises by name is on the document', () => 
   // the cost of the same bytes on the first name, and it used to be counted as
   // `pinTook` — a healthy reading for the one routing event that costs money.
   const doc = toJson(outcomeWith({
-    providers: { pin: ['DeepInfra'], served: { DeepInfra: 2, Novita: 1 }, roundsUnknown: 1, pinTook: 2, pinFellBack: 0, pinMissed: 1 },
+    providers: { pin: ['DeepInfra'], served: { DeepInfra: 2, Novita: 1 }, roundsUnknown: 1, pinTook: 2, pinFellBack: 0, pinMissed: 1, roundsUnpinned: 0 },
   }));
   assert.deepEqual(doc.providers, {
     pin: ['DeepInfra'],
@@ -204,5 +204,14 @@ test('⚠️ every field the README promises by name is on the document', () => 
     pinTook: 2,
     pinFellBack: 0,
     pinMissed: 1,
+    /**
+     * ⭐ JOINED THE LIST 2026-09-01, and it was found by a LIVE run rather than
+     * by this suite: 4 rounds, `pinTook 3 / pinFellBack 0 / pinMissed 0 /
+     * roundsUnknown 0`, and the fourth round — a chain fallback to a model with
+     * no pin table — was counted nowhere. An unpinned round is routed wherever
+     * the gateway chooses, i.e. a cold prefix cache: the same event
+     * `pinFellBack` was added to stop being silent, arriving by another door.
+     */
+    roundsUnpinned: 0,
   });
 });

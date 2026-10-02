@@ -2,26 +2,26 @@
  * ── ⚠️⚠️ THE PROJECTION KNEW NOTHING ABOUT WHICH MODEL IT WAS PROJECTING ────
  *
  * `projectTierCost` scaled by TIER EFFORT alone — 1x solo, 1.4x fresh, 3x
- * best-of — and the ladder switches MODEL between rungs. So rung 1 measured
- * flash at $0.0015, rung 2 switched to pro, and the projection said $0.0021
- * when pro really costs ~$0.0134 for a single cold round. Wrong by ~8x, in
- * exactly the case the model switch exists for.
+ * best-of — and the ladder switches MODEL between rungs. So rung 1 measured the
+ * cheap model, rung 2 switched to the strong one, and the projection was wrong
+ * by ~8x, in exactly the case the model switch exists for.
  *
  * The consequence is not a bad estimate, it is a WASTED ROUND: the ladder
  * entered a rung it could not afford, spent real money, and stopped with
  * nothing to show. Measured on our own 13-task bench, 2026-08-15:
  *
- *   flash  12/13  $0.0146   `stopping on budget` 0 times
- *   pro     5/13  $0.1639   `stopping on budget` 5 times
+ *   flash  12/13 passed   `stopping on budget` 0 times
+ *   pro     5/13 passed   `stopping on budget` 5 times
  *
  * Every pro FAILURE was 1 round at 0% cache; every pro PASS had a warm cache.
  * 5/13 is a budget artifact, not a capability result.
  *
- * ⚠️ AND THE RATIOS ARE MEASURED, NOT LIST PRICES. OpenRouter list makes pro
- * look 3.1x flash; the real ratio on our workload is 11.2x, because we PIN
- * StreamLake for flash (measured $0.080/M against a $0.140 headline) while pro
- * was served at list. A list-price table would understate the gap by ~3x — the
- * same class of error as no table at all, wearing a citation.
+ * ⚠️ AND THE RATIOS ARE MEASURED, NOT LIST PRICES. On published list prices the
+ * strong model looks ~3x the cheap one; the real ratio on our workload is
+ * 11.2x, because the cheap model runs through a route tuned for cache hits
+ * while the strong one was served untuned. A list-price table would understate
+ * the gap by ~3x — the same class of error as no table at all, wearing a
+ * citation.
  */
 
 import { test } from 'node:test';
@@ -96,17 +96,17 @@ test('⭐ a CHEAPER model is allowed to lower the projection — the ratio is no
 
 test('⚠️ the index is MEASURED — flash is the unit, and pro carries the bench ratio', () => {
   /**
-   * Pinned so a future edit has to argue with a measurement. 11.2 is
-   * $0.1639/$0.0146 from the 13-task bench; 0.54 is $0.000490/$0.000909 from
+   * Pinned so a future edit has to argue with a measurement. 11.2 is the
+   * whole-run spend ratio from the 13-task bench; 0.54 is the same ratio from
    * the reviewer A/B on an identical claim.
    */
   assert.equal(MODEL_COST_INDEX[FLASH], 1, 'flash is the unit the others are expressed in');
-  assert.equal(MODEL_COST_INDEX[PRO], 11.2, 'the bench measured $0.1639 vs $0.0146');
+  assert.equal(MODEL_COST_INDEX[PRO], 11.2, 'the bench measured an 11.2x whole-run spend ratio');
   assert.equal(MODEL_COST_INDEX['qwen/qwen3.7-flash'], 0.54);
   /**
-   * ⚠️ AND IT MUST NOT BE THE LIST-PRICE RATIO. (0.435+0.870)/(0.140+0.280) is
-   * 3.1x. If somebody "corrects" this table from a price page, this assertion
-   * is what tells them the pinned provider makes the real number very different.
+   * ⚠️ AND IT MUST NOT BE THE LIST-PRICE RATIO, which is about 3.1x. If
+   * somebody "corrects" this table from a price page, this assertion is what
+   * tells them the route we actually use makes the real number very different.
    */
   assert.ok(MODEL_COST_INDEX[PRO] > 5, 'this looks like the list-price ratio (3.1x), not the measured one');
 });
