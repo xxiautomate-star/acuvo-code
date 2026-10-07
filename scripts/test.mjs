@@ -205,6 +205,17 @@ const run = spawnSync(process.execPath, args, {
 if (!borrowedHome) { try { rmSync(scratchHome, { recursive: true, force: true }); } catch { /* litter beats loss */ } }
 
 const out = `${run.stdout ?? ''}${run.stderr ?? ''}`;
+
+/**
+ * ⚠️⚠️ `process.exitCode`, NEVER `process.exit()`, FROM HERE DOWN.
+ *
+ * On a PIPE (every CI runner) `process.stdout.write` is asynchronous on POSIX,
+ * and `process.exit()` does not wait for it: the ~1 MB of TAP above was cut off
+ * mid-line around test 300 on the Linux cells (2026-10-07), the `# fail N`
+ * summary and every `not ok` after it never reached the log, and the job died
+ * with exit 1 and nothing to read. Setting the code and letting the event loop
+ * drain is what makes the failure list arrive.
+ */
 process.stdout.write(out);
 
 /**
@@ -218,16 +229,18 @@ const failed = Number(/^# fail (\d+)$/m.exec(out)?.[1] ?? NaN);
 if (!Number.isFinite(total)) {
   console.error('\n✖ could not read a test total out of the runner output — treating that as a failure, '
     + 'because an unreadable result is not a passing one.');
-  process.exit(1);
-}
-
-if (total < MINIMUM_TESTS) {
+  process.exitCode = 1;
+} else if (total < MINIMUM_TESTS) {
   console.error(`\n✖ only ${total} tests ran, and this package expects at least ${MINIMUM_TESTS}.`);
   console.error('  Nothing here failed — that is the point. A suite that collects no tests reports success,');
   console.error('  so the TOTAL is the check. Usually this means the test directory did not ship, or a test');
   console.error('  file failed to compile and silently contributed zero tests.');
-  process.exit(1);
+  process.exitCode = 1;
+} else if (Number.isFinite(failed) && failed > 0) {
+  // ⭐ The names, once more, at the very END — where a CI log viewer opens.
+  const notOk = out.split('\n').filter((l) => /^not ok \d+ - /.test(l) && !/ - test[\/]/.test(l));
+  console.error(`\n✖ ${failed} failing:\n${notOk.map((l) => `  ${l}`).join('\n')}`);
+  process.exitCode = 1;
+} else {
+  process.exitCode = run.status === null ? 1 : run.status;
 }
-
-if (Number.isFinite(failed) && failed > 0) process.exit(1);
-process.exit(run.status === null ? 1 : run.status);

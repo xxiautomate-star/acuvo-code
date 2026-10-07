@@ -5,11 +5,12 @@
 **An AI coding agent for your terminal. It writes the code, runs it, reads the failure, and fixes it.**
 
 [![npm](https://img.shields.io/npm/v/acuvo-code?color=0b7285&label=npm)](https://www.npmjs.com/package/acuvo-code)
+[![test](https://github.com/xxiautomate-star/acuvo-code/actions/workflows/test.yml/badge.svg?branch=main)](https://github.com/xxiautomate-star/acuvo-code/actions/workflows/test.yml)
 [![node](https://img.shields.io/badge/node-%E2%89%A520-0b7285)](https://nodejs.org)
 [![dependencies](https://img.shields.io/badge/dependencies-0-0b7285)](package.json)
 [![license](https://img.shields.io/badge/license-FSL--1.1--ALv2-0b7285)](#license)
 
-[Website](https://acuvo.ai) · [npm](https://www.npmjs.com/package/acuvo-code) · [Changelog](CHANGELOG.md) · [Issues](https://github.com/xxiautomate-star/acuvo-code/issues)
+[Website](https://www.acuvo.ai) · [npm](https://www.npmjs.com/package/acuvo-code) · [Changelog](CHANGELOG.md) · [Issues](https://github.com/xxiautomate-star/acuvo-code/issues) · [Discord](https://discord.gg/gXwPYUgTM) · [X](https://x.com/acuvoai)
 
 </div>
 

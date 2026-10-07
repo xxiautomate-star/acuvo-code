@@ -121,9 +121,9 @@ It also speaks, transcribes, and turns HTML into PDF/PNG/PPTX — see [Media too
 >
 > ⭐ **So the real gate is a CREDENTIAL, not a missing service.** These are paid GPU endpoints and they **fail shut**: with no `ACUVO_MEDIA_SECRET` (or `MODAL_VIDEO_SECRET`) the config reports dark, because a missing credential must never mean "open to everyone" on something that bills per second (`lib/media.mjs`). ⚠️ And `acuvo --login` does **not** issue that secret — the account covers model calls, not the media half. Getting the wrong *reason* for a dark tool costs a reader an afternoon of pointing environment variables at services that were never the problem.
 >
-> **What you are actually offered on a bare machine.** Re-measured 2026-09-17: the registry
-> holds **87** tools and **64 are offered** with an empty environment
-> (`toolNamesForRounds(24, { env: {} })` — run it yourself). ⚠️ This sentence said **85 / 54**
+> **What you are actually offered on a bare machine.** Re-measured 2026-10-07: the registry
+> holds **88** tools and **74 are offered** with an empty environment
+> (`toolNamesForRounds(24, { env: {} })` from this checkout — run it yourself). It said **87 / 64** on 2026-09-17. ⚠️ Before that it said **85 / 54**
 > for ten days, which is the third time this one paragraph has gone stale, and it is the
 > paragraph whose entire subject is not trusting a typed number. The tools held back are held back
 > ⚠️ **The offered number moved 64 → 54 and only part of that is the three new verbs.**
@@ -171,8 +171,8 @@ CLI and the test suite out of the result. Clone it with
 `bench/`, and there is no `node_modules` to fetch, so `node --test test/*.test.mjs` executes
 immediately on a fresh checkout.
 
-> **The suite runs on a fresh clone, with no install step.** Re-measured 2026-09-26:
-> **422 files** (re-counted after the 2026-09-26 merges; the totals that follow are from the 419-file run) **— 5,928 tests, 5,892 passing, 31 skipped (a checkout without `../console/node_modules`, which the TypeScript-backend tests borrow a compiler from) — and 5 failing**, all five pricing
+> **The suite runs on a fresh clone, with no install step.** Re-counted 2026-10-07:
+> **437 files**. The totals that follow are from the 2026-09-26 419-file run **— 5,928 tests, 5,892 passing, 31 skipped (a checkout without `../console/node_modules`, which the TypeScript-backend tests borrow a compiler from) — and 5 failing**, all five pricing
 > pins (`plan-economics` 4, `cost-units` 1) waiting on a pricing decision, not a code fix.
 > The clone and this document are the same commit, and the numbers on this page are
 > re-measured rather than remembered.
@@ -384,6 +384,7 @@ Every flag below is real; run `acuvo --help` for the authoritative list.
 | `--parallel` | Run several quoted tasks at once. Names any file written by more than one task and exits 1 on a collision. |
 | `--concurrency <n>` | How many at a time, 1–4. Default 2. |
 | `--json` | One JSON object on stdout, nothing else. Human output goes to stderr. |
+| `--output-format <f>` | `text` (default) · `json` (same as `--json`) · `stream-json`: one JSON object per LINE on stdout as the run happens — `init`, every event, then the `--json` document as a `result` line (`lib/stream-json.mjs`). Parity with `claude -p --output-format` and `codex exec --json`. |
 | `--dry-run` | Print what *would* be written. Touches nothing, runs nothing. |
 | `--plan` | Propose first, then build. Runs a read-only planning pass, prints the plan and asks for approval before anything is written or run. |
 | `--strict` | Exit 1 when the run wrote nothing **and** ran nothing. Off by default — a question can be answered correctly without touching anything — but **on automatically when `CI` is set**, because a build step that reports success for doing nothing is the failure the exit code exists to prevent. |
@@ -986,7 +987,7 @@ workspace containing a hostile `.mcp.json` under each flag.
 
 ## The rest of the verbs
 
-The registry holds **87 tools** (`TOOL_SCHEMAS`, `lib/tools.mjs` — count it yourself, and
+The registry holds **88 tools** (`TOOL_SCHEMAS`, `lib/tools.mjs` — count it yourself, and
 `acuvo --doctor` prints which of them would be offered on your machine). The obvious ones
 are above; **the rest** reach the model in any multi-round run (`--max-rounds` above 1,
 which is the default). You never name them — the model picks. They are listed because a
@@ -1019,7 +1020,7 @@ useless here, and four dead buttons. The gate is now the intersection of *instal
 
 ### Integrations — MCP, and the curated set
 
-The 87 tools above are the ones we built, and that is a real ceiling: work that lives in
+The 88 tools above are the ones we built, and that is a real ceiling: work that lives in
 your database, your issue tracker or your browser needs an adapter nobody is going to
 write. **Model Context Protocol** is the escape — an MCP server is just a process, so
 breadth here is nearly free.

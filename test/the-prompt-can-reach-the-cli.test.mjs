@@ -256,7 +256,10 @@ test('⭐⭐ the SHIPPED binary answers /config, /approve and /rewind', () => {
       input: '/config\n/approve\n/approve always\n/approve nonsense\n/config\n/rewind\nexit\n',
       encoding: 'utf8',
       timeout: 120_000,
-      env: { ...process.env, ACUVO_OFFLINE: '1' },
+      // ⚠️ A STUB KEY, because a clean machine (CI) has none and the binary then stops
+      // at the "it needs a key" screen before the prompt exists. It is never sent:
+      // ACUVO_OFFLINE, and every command here answers locally.
+      env: { ...process.env, ACUVO_OFFLINE: '1', OPENROUTER_API_KEY: process.env.OPENROUTER_API_KEY || 'sk-or-v1-stub-never-sent' },
     });
     const out = `${run.stdout ?? ''}${run.stderr ?? ''}`;
 
@@ -453,7 +456,10 @@ test('⭐⭐ the SHIPPED binary answers /doctor, /spend and /resume', () => {
       input: '/spend\n/resume\n/doctor\nexit\n',
       encoding: 'utf8',
       timeout: 180_000,
-      env: { ...process.env, ACUVO_OFFLINE: '1' },
+      // ⚠️ A STUB KEY, because a clean machine (CI) has none and the binary then stops
+      // at the "it needs a key" screen before the prompt exists. It is never sent:
+      // ACUVO_OFFLINE, and every command here answers locally.
+      env: { ...process.env, ACUVO_OFFLINE: '1', OPENROUTER_API_KEY: process.env.OPENROUTER_API_KEY || 'sk-or-v1-stub-never-sent' },
     });
     const out = `${run.stdout ?? ''}${run.stderr ?? ''}`;
     for (const dead of ['/doctor is not a command', '/spend is not a command', '/resume is not a command']) {

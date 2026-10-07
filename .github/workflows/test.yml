@@ -39,7 +39,7 @@ jobs:
   test:
     name: node ${{ matrix.node }} · ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 15
+    timeout-minutes: 25
     strategy:
       # ⭐ One red cell should not hide the others. The whole point of a matrix
       # is learning WHICH platform broke, and fail-fast throws that away.
@@ -55,6 +55,17 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node }}
+
+      # ⭐ The polyglot tests SPAWN a real `python -m pytest` — that is their whole
+      # point — and a bare runner has Python but not pytest (the ubuntu system
+      # Python also refuses `pip install` under PEP 668). A toolchain the suite
+      # drives is set up here rather than the tests being taught to skip.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: pytest for the polyglot tests
+        shell: bash
+        run: python -m pip install --quiet pytest
 
       - name: no dependencies, and prove it
         # ⭐ The headline enterprise claim is "nothing to audit but this package".
@@ -73,21 +84,16 @@ jobs:
           "
 
       - name: test
-        # ⚠️ An explicit glob, never `node --test test/`. Measured on Node 22 /
-        # Windows: a DIRECTORY argument is resolved as a module path and exits 1
-        # with MODULE_NOT_FOUND before a single test runs.
-        #
-        # ⚠️⚠️ AND A GLOB NEEDS A SHELL THAT GLOBS — `shell: bash` IS LOAD-BEARING.
-        # Without it this step ran under pwsh, the default shell on
-        # windows-latest, which does NOT expand globs for a native command. The
-        # literal string `test/*.test.mjs` reached node and every Windows run
-        # died on `Could not find 'D:\a\acuvo-code\acuvo-code\test\*.test.mjs'`
-        # in under a second. ⭐ THE WINDOWS MATRIX HAD NEVER EXECUTED A SINGLE
-        # TEST — the half of the matrix that exists because the owner develops
-        # on Windows was the half that never ran. Git Bash is on the runner, so
-        # one line buys the globbing the comment above already assumed.
+        # ⚠️⚠️ `npm test`'s runner, NOT a bare `node --test test/*.test.mjs`.
+        # The bare form ran the suite against the runner's REAL `~/.acuvo` (no
+        # ACUVO_HOME), with git-safety snapshots on and no total-count floor —
+        # five of the 27 failures on 2026-10-02 were that alone. `scripts/test.mjs`
+        # enumerates the files itself (no shell glob, so no `shell: bash` trap),
+        # gives the run a throwaway home, and fails if the TOTAL collapses.
         shell: bash
-        run: node --test test/*.test.mjs
+        env:
+          ACUVO_TEST_CONCURRENCY: '3'
+        run: node scripts/test.mjs
 
       - name: it starts, with no key and no network
         # ⭐ The cheapest possible smoke test of the thing a stranger types first.
@@ -112,52 +118,36 @@ jobs:
         with:
           node-version: '22'
 
-      # ⚠️⚠️ THIS JOB EXISTS BECAUSE THE PACKED COPY WAS A SILENT FALSE GREEN.
-      # `test/` was missing from package.json `files`, so `npm test` inside an
-      # installed copy matched nothing and exited 0 having run ZERO tests — while
-      # the README advertised the suite as a safety guarantee. The clone was green
-      # and the install was empty, and nothing in CI could tell the difference.
-      - name: pack, install elsewhere, and run the suite from there
+      # ⚠️⚠️ WHAT A STRANGER INSTALLS IS CHECKED HERE — AND `test/` IS NOT IN IT.
+      # This job used to run the suite inside the installed copy, but `test/`
+      # was taken out of package.json `files` deliberately (ENTERPRISE.md), so it
+      # found 0 tests and failed every run since. The property that still matters
+      # for an install is: the binary starts with no key and no network, and
+      # `npm test` inside it REFUSES rather than reporting a false green.
+      - name: pack, install elsewhere, and prove the installed copy
         run: |
           set -euo pipefail
-          # ⚠️ `--pack-destination` does NOT create the directory. Without this
-          # line npm pack wrote the tarball to the CWD, reported success, and the
-          # install two lines later died on ENOENT opening the path it was told
-          # to use — so this job has failed on its own scaffolding since the day
-          # it was written and never once tested an installed copy.
+          # ⚠️ `--pack-destination` does NOT create the directory.
           mkdir -p /tmp/tb
           npm pack --pack-destination /tmp/tb
           mkdir -p /tmp/consumer && cd /tmp/consumer
           npm init -y > /dev/null
           npm install /tmp/tb/acuvo-code-*.tgz
-          cd node_modules/acuvo-code
 
-          # ⚠️ Run to a FILE, then read it. Piping node straight into grep under
-          # `pipefail` means a genuine test failure kills the step as a broken
-          # pipeline, and the "false green" message below — the entire reason
-          # this job exists — never prints. Two different faults deserve two
-          # different sentences.
+          export OPENROUTER_API_KEY=''
+          ./node_modules/.bin/acuvo --version
+          ./node_modules/.bin/acuvo --doctor > /dev/null
+          echo "the installed binary starts clean without credentials"
+
+          cd node_modules/acuvo-code
           set +e
-          node --test test/*.test.mjs > /tmp/installed-suite.txt 2>&1
+          node scripts/test.mjs > /tmp/installed-suite.txt 2>&1
           STATUS=$?
           set -e
-          COUNT=$(grep -E '^# tests [0-9]+' /tmp/installed-suite.txt | grep -oE '[0-9]+' | head -1)
-          echo "tests inside the installed copy: ${COUNT:-0} (exit ${STATUS})"
-          if [ "${COUNT:-0}" -lt 100 ]; then
-            echo "FAIL: an installed copy ran ${COUNT:-0} tests — that is the false green this job exists to catch"
-            tail -40 /tmp/installed-suite.txt
+          cat /tmp/installed-suite.txt
+          if [ "${STATUS}" -eq 0 ]; then
+            echo "FAIL: npm test inside an install with no test/ exited 0 — that is the false green scripts/test.mjs exists to prevent"
             exit 1
           fi
-          if [ "${STATUS}" -ne 0 ]; then
-            echo "FAIL: the installed copy ran ${COUNT} tests and some of them failed"
-            # ⚠️ THE NAME OF A FAILING TEST IS NOT A DIAGNOSIS. This printed only
-            # `grep '^not ok'` until an installed-copy failure that reproduces
-            # NOWHERE ELSE — green in all four clone jobs, green five times in a
-            # row in an installed copy locally — arrived with nothing but its
-            # title. A failure you cannot reproduce is exactly the one whose
-            # assertion text you needed, and this job is the only place that
-            # failure exists. TAP puts the reason in the indented YAML block
-            # after the line, so take the block.
-            awk '/^not ok/{p=16} p&&p--' /tmp/installed-suite.txt | head -80
-            exit 1
-          fi
+          grep -q 'ships no tests' /tmp/installed-suite.txt
+          echo "an installed copy refuses to claim a suite it does not ship (exit ${STATUS})"

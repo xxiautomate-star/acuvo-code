@@ -183,9 +183,9 @@ are the numbers to quote. Counting is the first thing a reviewer does.
 
 ⚠️ **This said "18 shipped files", then "41", then "90", then "101", then "108", and every
 one went stale in turn, and "161" went stale within a day of being written.** The
-package ships **178 files — 176 in `lib/`, 2 in
-`bin/` — about 128,876 lines**, with **422 test files** beside them (re-counted 2026-09-26, after the CLI-suite merge;
-the figures before it said 176 files / 126,480 lines / 400 test files, then 175 files / 125,622 lines / 396 test files, and 174, 172 and 173
+package ships **186 files — 184 in `lib/`, 2 in
+`bin/` — about 131,577 lines**, with **437 test files** beside them (re-counted 2026-10-07 for 0.6.25;
+the figures before it said 178 files / 128,876 lines (superseded) / 422 test files, then 176 files / 126,480 lines / 400 test files, then 175 files / 125,622 lines / 396 test files, and 174, 172 and 173
 before that — all superseded). The file added on 2026-09-26 is `lib/agent-screenshot.mjs`, one
 predicate for "the agent's own screenshot" shared by the plan check. The one added on 2026-09-19 is
 `lib/managed-language-server.mjs`, which ends eight symbol tools being dark on any project
@@ -994,7 +994,7 @@ For completeness, the properties none of them offers:
   (`lib/media.mjs`), and generates imagery with no configuration and no account
   (`lib/imagegen.mjs`) — critiqued before it is accepted, and reported as unreviewed when
   no critic is available.
-- ⭐ **Zero dependencies.** The entire auditable surface is 178 files and 128,876 lines,
+- ⭐ **Zero dependencies.** The entire auditable surface is 186 files and 131,577 lines,
   and there is no `node_modules` behind it. ⚠️ *Zero dependencies* means zero
   `node_modules`, not zero third-party source: where a solved problem exists under a
   permissive licence its SOURCE is copied into `lib/vendor/` with its notice, and

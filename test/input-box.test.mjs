@@ -294,7 +294,8 @@ test('⭐⭐⭐ pinning RESERVES rows and NEVER clears the screen or the scrollb
    */
   const { pinRegion } = await import('../lib/input-box.mjs');
   const out = { isTTY: true, rows: 40, text: '', write(s) { this.text += s; } };
-  const pin = pinRegion(out);
+  // ⚠️ `env: {}` — the default is `process.env`, and on a CI runner `CI=true` (correctly) turns the pin off.
+  const pin = pinRegion(out, { env: {} });
 
   assert.equal(pin.enabled, true, 'the pin is on by default again — the clear was the bug, not the region');
   assert.equal(pin.bottom, 38, 'two rows should be reserved out of forty');
@@ -362,7 +363,7 @@ test('⚠️⚠️ it NEVER pins where it would do harm', async () => {
    * region that only reserves rows takes nothing from the user — the escape
    * hatch is now `ACUVO_NO_PIN=1` rather than an opt-in nobody would find.
    */
-  assert.equal(pinRegion(tty(40)).enabled, true, 'the pin is the requested behaviour and should be the default');
+  assert.equal(pinRegion(tty(40), { env: {} }).enabled, true, 'the pin is the requested behaviour and should be the default');
   assert.equal(pinRegion(tty(40), { env: { ACUVO_NO_PIN: '1' } }).enabled, false, 'and there must be a way out');
   assert.equal(pinRegion(tty(5), { env: {} }).enabled, false, 'a terminal too short to spare the rows');
   assert.equal(pinRegion(tty(40), { env: {} }).enabled, true, 'and it DOES pin when asked and safe');

@@ -162,12 +162,23 @@ test('⭐⭐ the task REACHES the repo map through runSession — the SENT map i
    */
   const timesListed = (map, path) => map.split('\n').filter((line) => line.trim().startsWith(path)).length;
 
-  assert.equal(timesListed(askedAboutOne, 'pkg01/hub.mjs'), 2,
+  /**
+   * ⚠️⚠️ RELATIVE, NOT ABSOLUTE COUNTS. The forty hubs TIE under the static
+   * ranking, and the tie is broken by directory order — which is the filesystem's
+   * (ext4 hashes it). So the absolute numbers move by platform: measured on CI
+   * 2026-10-07, the named file was listed 3x on Linux vs 2x on Windows, and on
+   * Node 20/Linux an UNnamed hub was listed 2x. What no static ranking can do is
+   * list the SAME file more often in the run that named it than in the run that
+   * did not — that difference is the seed landing, on any filesystem.
+   */
+  const one = { own: timesListed(askedAboutOne, 'pkg01/hub.mjs'), other: timesListed(askedAboutOther, 'pkg01/hub.mjs') };
+  const mirror = { own: timesListed(askedAboutOther, 'pkg39/hub.mjs'), other: timesListed(askedAboutOne, 'pkg39/hub.mjs') };
+  assert.ok(one.own >= 2,
     'the file this task named was not lifted into the task tranche — the seed is not landing on it');
-  assert.equal(timesListed(askedAboutOther, 'pkg01/hub.mjs'), 1,
-    'pkg01/hub.mjs was lifted into the task tranche of a run that never mentioned it — that is the static ranking, not a seeded one');
-  assert.equal(timesListed(askedAboutOther, 'pkg39/hub.mjs'), 2, 'the mirror case does not hold — the fixture is not symmetric');
-  assert.equal(timesListed(askedAboutOne, 'pkg39/hub.mjs'), 1);
+  assert.ok(one.own > one.other,
+    `pkg01/hub.mjs is listed as often in a run that never mentioned it (${one.other}x) as in its own (${one.own}x) — that is the static ranking, not a seeded one`);
+  assert.ok(mirror.own >= 2 && mirror.own > mirror.other,
+    `the mirror case does not hold (${mirror.own}x own vs ${mirror.other}x other) — the fixture is not symmetric`);
 });
 
 test('⚠️⚠️ DETERMINISM — the same tree and the same task render byte-identical bytes', async () => {

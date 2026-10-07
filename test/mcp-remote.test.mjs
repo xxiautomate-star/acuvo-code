@@ -572,6 +572,9 @@ test('⭐⭐ REACH: bin/acuvo.mjs connects to a hosted server and calls its tool
         env: {
           ...process.env, ACUVO_HOME: SIGNED_OUT_HOME,
           NO_COLOR: '1',
+          // ⚠️ `CI` arms strict mode (a run that executed nothing exits 1), and every
+          // runner sets it. This test is about the CONNECTION, so it is cleared here.
+          CI: '',
           OPENROUTER_API_KEY: 'sk-or-v1-stub',
           ACUVO_API_URL: modelUrl,
           // ⭐ The documented escape for a non-interactive run. Without it

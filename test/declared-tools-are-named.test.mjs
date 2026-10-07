@@ -170,9 +170,15 @@ test('⭐⭐ every declared tool is reachable under SOME configuration', () => {
   const root = maximalRoot();
   try {
     const declared = TOOL_SCHEMAS.map((t) => t.function.name);
-    const offered = new Set(toolNamesForRounds(16, {
-      root, allowRun: true, interactive: true, env: MAXIMAL_ENV,
-    }));
+    /**
+     * ⭐ SIGNED IN IS A CONFIGURATION TOO. `media_chain` is gateway-only — it has
+     * no operator-key route at all — so it is reachable only through an account.
+     * The union is the honest reading of "under SOME configuration".
+     */
+    const offered = new Set([
+      ...toolNamesForRounds(16, { root, allowRun: true, interactive: true, env: MAXIMAL_ENV }),
+      ...toolNamesForRounds(16, { root, allowRun: true, interactive: true, env: MAXIMAL_ENV, home: SIGNED_IN_HOME }),
+    ]);
     const dark = declared.filter((n) => !offered.has(n) && !CANNOT_BE_SIMULATED.has(n));
     assert.deepEqual(
       dark, [],
@@ -291,13 +297,19 @@ test('⚠️ the three additions cost what was measured, not more', () => {
        * is why the ceiling below moved from 5,000 to 9,000 deliberately rather
        * than being widened until green.
        */
-      ['make_document', 'read_document', 'read_table', 'see_page', 'speak', 'transcribe', 'viral', 'podcast'].sort(),
+      // ⭐ media_chain (2026-09-28) is the ninth: gateway-only, same offer rule as `viral`.
+      ['make_document', 'read_document', 'read_table', 'see_page', 'speak', 'transcribe', 'viral', 'podcast', 'media_chain'].sort(),
       'signing in should unlock exactly the media verbs a customer account can actually reach',
     );
     const withAccount = JSON.stringify(toolSchemasFor(signedIn)).length;
     assert.ok(
-      withAccount - bytes < 9_000,
-      `signing in adds ${withAccount - bytes} bytes to every turn; 7,728 was measured (4,127 for the six + 3,601 for the two orchestrators) — a jump means a schema grew unnoticed`,
+      /**
+       * ⚠️ RAISED 9,000 → 10,000 ON 2026-10-07 for `media_chain`, which shipped
+       * in 0.6.25 without moving this line. Measured: 9,213 B total, so the
+       * verb costs +1,485 B on every signed-in turn. Deliberate, recorded.
+       */
+      withAccount - bytes < 10_000,
+      `signing in adds ${withAccount - bytes} bytes to every turn; 9,213 was measured (4,127 for the six + 3,601 for the two orchestrators + 1,485 for media_chain) — a jump means a schema grew unnoticed`,
     );
   } finally { rmSync(plain, { recursive: true, force: true }); }
 });

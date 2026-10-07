@@ -214,8 +214,11 @@ test('⚠️ programs must be an array, and the refusal names the way out', (t) 
 test('probe finds a real file on a synthetic PATH, and misses what is not there', (t) => {
   const root = workspace(t);
   writeFileSync(join(root, 'zzfake'), '#!/bin/sh\n');
-  assert.deepEqual(probe('zzfake', { PATH: root }, 'linux'), { installed: true, spawnable: true });
-  assert.deepEqual(probe('zznope', { PATH: root }, 'linux'), { installed: false, spawnable: false });
+  // ⚠️ A Windows temp dir (`C:\...`) split on the posix ':' is two bogus entries,
+  // so the synthetic PATH is read with the HOST's own rule.
+  const plat = process.platform === 'win32' ? 'win32' : 'linux';
+  assert.deepEqual(probe('zzfake', { PATH: root }, plat), { installed: true, spawnable: true });
+  assert.deepEqual(probe('zznope', { PATH: root }, plat), { installed: false, spawnable: false });
 });
 
 /**
