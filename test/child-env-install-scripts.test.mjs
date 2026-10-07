@@ -136,7 +136,25 @@ test('⚠️⚠️ END TO END: `node setup.js` installs, and the postinstall doe
       "execSync('npm install ./dep --silent --no-audit --no-fund', { cwd: __dirname, stdio: 'inherit' });",
     ].join('\n'));
 
-    const res = await runProgram({ program: 'node', args: ['setup.js'], root: ws, timeoutMs: 120_000 });
+    /**
+     * ⚠️⚠️ THE WORKSPACE SANDBOX IS SWITCHED OFF FOR THIS ONE RUN, AND THAT IS THE
+     * HONEST SETUP, NOT A WEAKENING. Since `lib/sandbox.mjs` became the default
+     * (`workspace`), Node's permission model is inherited by the `npm` that
+     * `setup.js` spawns, and npm cannot read its own `npm-cli.js` outside the
+     * workspace — so the install is refused outright and the control below
+     * failed on every platform (CI 2026-10-02, ERR_ACCESS_DENIED). That is a
+     * STRONGER stop than this file's, but it means the sandbox was being tested
+     * instead of the env layer. `ACUVO_SANDBOX=off` is a supported user setting,
+     * and with it this road still must not run a postinstall.
+     */
+    const prevSandbox = process.env.ACUVO_SANDBOX;
+    process.env.ACUVO_SANDBOX = 'off';
+    let res;
+    try {
+      res = await runProgram({ program: 'node', args: ['setup.js'], root: ws, timeoutMs: 120_000 });
+    } finally {
+      if (prevSandbox === undefined) delete process.env.ACUVO_SANDBOX; else process.env.ACUVO_SANDBOX = prevSandbox;
+    }
 
     assert.equal(existsSync(join(ws, 'node_modules', 'dep-probe')), true,
       `the install did not happen at all, so this test proves nothing: ${res.error ?? res.stderr ?? ''}`);

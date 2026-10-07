@@ -33,14 +33,27 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readdirSync, readFileSync } from 'node:fs';
+import { readdirSync, readFileSync, existsSync } from 'node:fs';
 import { join, dirname, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { PROVIDER_PIN_BY_MODEL, DEFAULT_PROVIDER_ORDER } from '../lib/provider-pin.mjs';
+import { PROVIDER_PIN_BY_MODEL, DEFAULT_PROVIDER_ORDER, PINNED_PRIMARY_MODEL } from '../lib/provider-pin.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const REPO = join(HERE, '..', '..');
+const PKG = join(HERE, '..');
+/**
+ * ⚠️⚠️ THIS PACKAGE ALSO SHIPS AS ITS OWN REPOSITORY (github.com/xxiautomate-star/acuvo-code).
+ * There `join(HERE, '..', '..')` is whatever directory the clone happens to sit in —
+ * on a laptop that was the whole of C:/Projects, on CI the runner's work dir — so the
+ * scan read strangers' trees and the bundle test died on ENOENT. ⭐ The monorepo is
+ * DETECTED, never assumed: standalone, the scan covers this package (named as
+ * `acuvo-code/...` so the register below still reads the same), and the one test
+ * whose subject lives only in the monorepo — the console bundle — is skipped by name.
+ */
+const MONO = join(HERE, '..', '..');
+const IN_MONOREPO = existsSync(join(MONO, 'console', 'vendor-agent'))
+  && existsSync(join(MONO, 'acuvo-code', 'lib', 'provider-pin.mjs'));
+const REPO = IN_MONOREPO ? MONO : PKG;
 
 /** Directories with no source of ours in them. `.next*` is matched by prefix. */
 const SKIP_DIRS = new Set([
@@ -69,7 +82,7 @@ function sourceFilesUnder(dir, out = []) {
   return out;
 }
 
-const posix = (p) => relative(REPO, p).split(sep).join('/');
+const posix = (p) => (IN_MONOREPO ? '' : 'acuvo-code/') + relative(REPO, p).split(sep).join('/');
 
 /**
  * ⭐ THE REGISTER. Every file allowed to contain a pin table, and WHY it is not
@@ -86,7 +99,7 @@ const QUOTES_NOT_COPIES = /\.test\.(mjs|ts|tsx)$/;
 
 test('🔀⭐⭐⭐ exactly one hand-written provider pin table exists in the repo', () => {
   const files = sourceFilesUnder(REPO);
-  assert.ok(files.length > 500, `the scan found only ${files.length} files — it is looking at the wrong tree`);
+  assert.ok(files.length > (IN_MONOREPO ? 500 : 300), `the scan found only ${files.length} files — it is looking at the wrong tree`);
 
   const found = files
     .filter((f) => TABLE_RE.test(readFileSync(f, 'utf8')))
@@ -110,7 +123,7 @@ test('🔀⭐⭐⭐ exactly one hand-written provider pin table exists in the re
 });
 
 test('⚠️⚠️ the primary is DERIVED, so the string that went stale cannot exist again', () => {
-  const src = readFileSync(join(REPO, 'acuvo-code', 'lib', 'provider-pin.mjs'), 'utf8');
+  const src = readFileSync(join(PKG, 'lib', 'provider-pin.mjs'), 'utf8');
   /**
    * ⚠️ THE SUBJECT IS THE ASSIGNMENT, NOT THE NAME. Asserting
    * `DEFAULT_PROVIDER_ORDER === 'Relace'` would be a fourth copy of the very
@@ -123,7 +136,8 @@ test('⚠️⚠️ the primary is DERIVED, so the string that went stale cannot 
   );
   assert.equal(
     DEFAULT_PROVIDER_ORDER,
-    PROVIDER_PIN_BY_MODEL['deepseek/deepseek-v4-flash-0731'][0],
+    // ⭐ The primary MODEL is read, never typed: it moved to v4.1-flash and the typed id went stale.
+    PROVIDER_PIN_BY_MODEL[PINNED_PRIMARY_MODEL][0],
     'the default order is not the pinned primary',
   );
 });
@@ -169,7 +183,9 @@ test('⚠️ no other module re-declares the default order as a literal', () => 
  * either CURRENT, or it is the exact stale artefact we measured. Any third value
  * means someone hand-edited a generated file, or regenerated it half way.
  */
-test('🚨 the shipped bundle is either current or the known-stale artefact — never hand-edited', () => {
+test('🚨 the shipped bundle is either current or the known-stale artefact — never hand-edited', {
+  skip: IN_MONOREPO ? false : 'the console bundle exists only in the monorepo checkout',
+}, () => {
   const bundle = readFileSync(join(REPO, 'console', 'vendor-agent', 'acuvo.mjs'), 'utf8');
   const m = bundle.match(/const DEFAULT_PROVIDER_ORDER = '([^']*)'/);
   const row = bundle.match(/'deepseek\/deepseek-v4-flash-0731': Object\.freeze\(\[([^\]]*)\]\)/);
